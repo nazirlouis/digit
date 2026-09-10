@@ -35,8 +35,10 @@ const char kIndexHtml[] PROGMEM = R"HTML(
     .panel{background:rgba(16,29,35,.9);border:1px solid #28434e;border-radius:20px;overflow:hidden;box-shadow:0 22px 70px #0008}
     .video{aspect-ratio:4/3;background:#020506;display:grid;place-items:center;position:relative}.video img{width:100%;height:100%;object-fit:contain}
     .video span{position:absolute;bottom:12px;left:12px;background:#071014cc;border-radius:999px;padding:7px 11px;font-size:13px}
-    .controls{padding:18px;display:grid;grid-template-columns:repeat(4,1fr);gap:10px}button{border:0;border-radius:13px;padding:14px 10px;font-weight:750;cursor:pointer;background:#233740;color:#fff}
+    .controls{padding:18px;display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px}button{border:0;border-radius:13px;padding:14px 10px;font-weight:750;cursor:pointer;background:#233740;color:#fff}
     button.primary{background:var(--cyan);color:#00151c}button.danger{background:#4a1d29;color:#ffdbe2}button:disabled{opacity:.35;cursor:not-allowed}
+    .volume{margin:0 18px 18px;padding:14px 16px;background:#0a151a;border-radius:14px}.volume label{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}.volume label span{color:var(--muted)}
+    .volume input{width:100%;accent-color:var(--cyan);cursor:pointer}.volume input:disabled{opacity:.35;cursor:not-allowed}
     .details{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;padding:0 18px 18px}.metric{background:#0a151a;border-radius:12px;padding:12px}.metric b{display:block;font-size:20px;margin-top:3px}.metric small{color:var(--muted)}
     #message{min-height:24px;padding:0 18px 18px;color:var(--muted)}#message.error{color:var(--red)}
     @media(max-width:650px){.controls{grid-template-columns:1fr 1fr}.details{grid-template-columns:1fr}.top{align-items:flex-start;flex-direction:column}}
@@ -51,12 +53,17 @@ const char kIndexHtml[] PROGMEM = R"HTML(
       <button class="primary" id="record" onclick="action('/api/record/start')">Record</button>
       <button class="danger" id="stopRecord" onclick="action('/api/record/stop')">Stop &amp; play</button>
       <button id="replay" onclick="action('/api/play')">Replay</button>
+      <button id="tone" onclick="action('/api/tone')">Test speaker</button>
       <button id="stopPlay" onclick="action('/api/play/stop')">Stop playback</button>
+    </div>
+    <div class="volume">
+      <label for="volume"><span>Speaker volume</span><b><span id="volumeValue">70</span>%</b></label>
+      <input id="volume" type="range" min="0" max="100" step="1" value="70" oninput="queueVolume(this.value)" aria-label="Speaker volume">
     </div>
     <div class="details">
       <div class="metric"><small>Recording</small><b id="duration">0.0 s</b></div>
       <div class="metric"><small>PSRAM free</small><b id="memory">--</b></div>
-      <div class="metric"><small>Wi-Fi clients</small><b id="clients">--</b></div>
+      <div class="metric"><small>Network address</small><b id="network">--</b></div>
     </div>
     <div id="message">Waiting for device status...</div>
   </section>
@@ -68,18 +75,32 @@ async function action(path){
   try{const response=await fetch(path,{method:'POST'});const data=await response.json();$('message').textContent=data.message||'';$('message').className=response.ok?'':'error';await refresh();}
   catch(error){$('message').textContent=error.message;$('message').className='error';}
 }
+let volumeTimer=null,volumeSending=false;
+function queueVolume(value){
+  $('volumeValue').textContent=value;
+  if(volumeTimer!==null)clearTimeout(volumeTimer);
+  volumeTimer=setTimeout(()=>sendVolume(value),150);
+}
+async function sendVolume(value){
+  volumeTimer=null;volumeSending=true;
+  try{const response=await fetch('/api/volume?value='+encodeURIComponent(value),{method:'POST'});const data=await response.json();$('message').textContent=data.message||'';$('message').className=response.ok?'':'error';}
+  catch(error){$('message').textContent=error.message;$('message').className='error';}
+  finally{volumeSending=false;await refresh();}
+}
 function formatBytes(bytes){return bytes>1048576?(bytes/1048576).toFixed(1)+' MB':Math.round(bytes/1024)+' KB'}
 async function refresh(){
   try{
-    const response=await fetch('/api/status',{cache:'no-store'});const s=await response.json();
+    const response=await fetch('/api/status',{cache:'no-store'});if(!response.ok)throw new Error('Status HTTP '+response.status);const s=await response.json();
     $('state').textContent=s.audio_state;$('camera').textContent=s.camera_ready?'LIVE · 640×480':s.camera_error;
     const elapsed=s.audio_state==='RECORDING'?s.recording_elapsed_ms:s.captured_ms;
     $('duration').textContent=(Math.min(elapsed,s.max_recording_ms)/1000).toFixed(1)+' s';
-    $('memory').textContent=formatBytes(s.psram_free);$('clients').textContent=s.wifi_clients;
+    $('memory').textContent=formatBytes(s.psram_free);$('network').textContent=s.wifi_ip;
+    if(volumeTimer===null&&!volumeSending){$('volume').value=s.speaker_volume;$('volumeValue').textContent=s.speaker_volume;}
+    $('volume').disabled=!s.audio_available;
     $('record').disabled=s.audio_state!=='READY';$('stopRecord').disabled=s.audio_state!=='RECORDING';
-    $('replay').disabled=s.audio_state!=='READY'||s.captured_ms===0;$('stopPlay').disabled=s.audio_state!=='PLAYING';
+    $('replay').disabled=s.audio_state!=='READY'||s.captured_ms===0;$('tone').disabled=s.audio_state!=='READY';$('stopPlay').disabled=s.audio_state!=='PLAYING';
     if(s.audio_error){$('message').textContent=s.audio_error;$('message').className='error';}
-    else if($('message').className==='error'){$('message').textContent='Ready';$('message').className='';}
+    else if($('message').className==='error'||$('message').textContent==='Waiting for device status...'){$('message').textContent='Ready';$('message').className='';}
   }catch(error){$('state').textContent='OFFLINE';$('message').textContent='Device status unavailable';$('message').className='error';}
 }
 refresh();setInterval(refresh,350);
@@ -100,6 +121,7 @@ esp_err_t sendJson(httpd_req_t* request, const char* json) {
 }
 
 esp_err_t rootHandler(httpd_req_t* request) {
+  Serial.printf("[%10lu] Web: GET /\n", static_cast<unsigned long>(millis()));
   httpd_resp_set_type(request, "text/html; charset=utf-8");
   setNoCache(request);
   return httpd_resp_send(request, kIndexHtml, HTTPD_RESP_USE_STRLEN);
@@ -124,28 +146,41 @@ void escapeJsonString(const char* input, char* output, size_t outputSize) {
 }
 
 esp_err_t statusHandler(httpd_req_t* request) {
+  static uint32_t lastStatusLogMs = 0;
   const AudioStatus audio = audioEngine.snapshot();
+  if (lastStatusLogMs == 0 || millis() - lastStatusLogMs >= 5000) {
+    lastStatusLogMs = millis();
+    Serial.printf("[%10lu] Web: GET /api/status -> audio=%s captured=%lu ms\n",
+                  static_cast<unsigned long>(millis()),
+                  AudioEngine::stateName(audio.state),
+                  static_cast<unsigned long>(audio.capturedMilliseconds));
+  }
   char audioError[192];
   char cameraError[192];
   escapeJsonString(audio.error, audioError, sizeof(audioError));
   escapeJsonString(camera_service::lastError(), cameraError,
                    sizeof(cameraError));
 
-  char json[640];
+  char json[700];
+  const String wifiIp = WiFi.localIP().toString();
   snprintf(
       json, sizeof(json),
       "{\"audio_state\":\"%s\",\"audio_available\":%s,"
       "\"audio_error\":\"%s\",\"captured_ms\":%lu,"
       "\"recording_elapsed_ms\":%lu,\"max_recording_ms\":%lu,"
+      "\"speaker_volume\":%u,"
       "\"camera_ready\":%s,\"camera_error\":\"%s\","
-      "\"psram_free\":%u,\"wifi_clients\":%u}",
+      "\"psram_free\":%u,\"wifi_connected\":%s,"
+      "\"wifi_ip\":\"%s\",\"wifi_rssi\":%ld}",
       AudioEngine::stateName(audio.state), audio.available ? "true" : "false",
       audioError, static_cast<unsigned long>(audio.capturedMilliseconds),
       static_cast<unsigned long>(audio.recordingElapsedMilliseconds),
       static_cast<unsigned long>(app_config::kMaximumRecordingSeconds * 1000UL),
+      audio.speakerVolumePercent,
       camera_service::ready() ? "true" : "false", cameraError,
       static_cast<unsigned int>(ESP.getFreePsram()),
-      static_cast<unsigned int>(WiFi.softAPgetStationNum()));
+      WiFi.status() == WL_CONNECTED ? "true" : "false", wifiIp.c_str(),
+      static_cast<long>(WiFi.RSSI()));
   return sendJson(request, json);
 }
 
@@ -174,27 +209,78 @@ esp_err_t sendActionResult(httpd_req_t* request, AudioActionResult result,
   char json[180];
   snprintf(json, sizeof(json), "{\"message\":\"%s\"}", message);
   httpd_resp_set_status(request, status);
+  Serial.printf("[%10lu] Web action: result=%d HTTP=%s message=\"%s\"\n",
+                static_cast<unsigned long>(millis()),
+                static_cast<int>(result), status, message);
   return sendJson(request, json);
 }
 
 esp_err_t startRecordingHandler(httpd_req_t* request) {
+  Serial.printf("[%10lu] Web: POST /api/record/start\n",
+                static_cast<unsigned long>(millis()));
   return sendActionResult(request, audioEngine.startRecording(),
                           "Recording started");
 }
 
 esp_err_t stopRecordingHandler(httpd_req_t* request) {
+  Serial.printf("[%10lu] Web: POST /api/record/stop\n",
+                static_cast<unsigned long>(millis()));
   return sendActionResult(request, audioEngine.stopRecording(),
                           "Recording will stop and play automatically");
 }
 
 esp_err_t playHandler(httpd_req_t* request) {
+  Serial.printf("[%10lu] Web: POST /api/play\n",
+                static_cast<unsigned long>(millis()));
   return sendActionResult(request, audioEngine.playLatest(),
                           "Playback started");
 }
 
+esp_err_t toneHandler(httpd_req_t* request) {
+  Serial.printf("[%10lu] Web: POST /api/tone\n",
+                static_cast<unsigned long>(millis()));
+  return sendActionResult(request, audioEngine.playTestTone(),
+                          "Playing a two-second speaker test tone");
+}
+
 esp_err_t stopPlaybackHandler(httpd_req_t* request) {
+  Serial.printf("[%10lu] Web: POST /api/play/stop\n",
+                static_cast<unsigned long>(millis()));
   return sendActionResult(request, audioEngine.stopPlayback(),
                           "Playback will stop");
+}
+
+esp_err_t volumeHandler(httpd_req_t* request) {
+  char query[48] = {};
+  char valueText[8] = {};
+  if (httpd_req_get_url_query_str(request, query, sizeof(query)) != ESP_OK ||
+      httpd_query_key_value(query, "value", valueText, sizeof(valueText)) !=
+          ESP_OK) {
+    httpd_resp_set_status(request, "400 Bad Request");
+    return sendJson(request, "{\"message\":\"Volume value is required\"}");
+  }
+
+  char* end = nullptr;
+  const long value = strtol(valueText, &end, 10);
+  if (end == valueText || *end != '\0' || value < 0 || value > 100) {
+    httpd_resp_set_status(request, "400 Bad Request");
+    return sendJson(request,
+                    "{\"message\":\"Volume must be between 0 and 100\"}");
+  }
+
+  Serial.printf("[%10lu] Web: POST /api/volume value=%ld\n",
+                static_cast<unsigned long>(millis()), value);
+  if (!audioEngine.setSpeakerVolume(static_cast<uint8_t>(value))) {
+    httpd_resp_set_status(request, "503 Service Unavailable");
+    return sendJson(
+        request,
+        "{\"message\":\"Could not update the ReSpeaker volume\"}");
+  }
+
+  char json[96];
+  snprintf(json, sizeof(json),
+           "{\"message\":\"Speaker volume set to %ld%%\"}", value);
+  return sendJson(request, json);
 }
 
 esp_err_t streamHandler(httpd_req_t* request) {
@@ -276,8 +362,10 @@ bool begin() {
       registerUri(controlServer, "/api/record/stop", HTTP_POST,
                   stopRecordingHandler) &&
       registerUri(controlServer, "/api/play", HTTP_POST, playHandler) &&
+      registerUri(controlServer, "/api/tone", HTTP_POST, toneHandler) &&
       registerUri(controlServer, "/api/play/stop", HTTP_POST,
-                  stopPlaybackHandler);
+                  stopPlaybackHandler) &&
+      registerUri(controlServer, "/api/volume", HTTP_POST, volumeHandler);
   if (!controlRoutesReady) {
     Serial.println("Web: could not register all control routes");
     return false;
@@ -298,4 +386,3 @@ bool begin() {
 }
 
 }  // namespace web_server
-

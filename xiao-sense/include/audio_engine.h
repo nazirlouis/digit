@@ -28,6 +28,7 @@ struct AudioStatus {
   size_t capturedBytes;
   uint32_t capturedMilliseconds;
   uint32_t recordingElapsedMilliseconds;
+  uint8_t speakerVolumePercent;
   char error[96];
 };
 
@@ -38,15 +39,19 @@ class AudioEngine {
   AudioActionResult startRecording();
   AudioActionResult stopRecording();
   AudioActionResult playLatest();
+  AudioActionResult playTestTone();
   AudioActionResult stopPlayback();
+  bool setSpeakerVolume(uint8_t percent);
 
   AudioStatus snapshot();
+  void logDiagnostics();
   static const char* stateName(AudioState state);
 
  private:
   enum class Command : uint8_t {
     Record,
     Play,
+    Tone,
   };
 
   static constexpr EventBits_t kStopRecordingBit = BIT0;
@@ -56,12 +61,18 @@ class AudioEngine {
   void taskLoop();
   bool captureRecording();
   bool playRecording();
+  bool playDiagnosticTone();
   bool beginI2s(bool receive);
   void endI2s();
 
   bool initializeSpeakerPath();
   bool setAmplifierEnabled(bool enabled);
   bool writeXvfGpo(uint8_t pin, uint8_t value);
+  bool readXvfCommand(uint8_t resourceId, uint8_t commandId,
+                      uint8_t* payload, size_t payloadSize,
+                      uint8_t* responseStatus);
+  bool readXvfGpoValues(uint8_t values[5], uint8_t* responseStatus);
+  bool readXvfVersion();
   bool writeCodecRegister(uint8_t reg, uint8_t value);
   bool probeI2cAddress(uint8_t address);
 
@@ -78,9 +89,10 @@ class AudioEngine {
   uint32_t recordingStartedAtMs_ = 0;
   AudioState state_ = AudioState::Unavailable;
   bool initialized_ = false;
+  bool i2sRunning_ = false;
+  uint8_t speakerVolumePercent_ = 0;
   char error_[96] = "Audio has not been initialized";
   audio_tools::I2SStream i2s_;
 };
 
 extern AudioEngine audioEngine;
-

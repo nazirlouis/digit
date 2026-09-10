@@ -1,9 +1,9 @@
 # Digit Sense camera and ReSpeaker recorder
 
-This firmware turns the XIAO ESP32S3 Sense into a private Wi-Fi camera with a
-short ReSpeaker audio recorder. It keeps the newest recording in PSRAM, plays
-it automatically when recording stops, and can replay it through the
-ReSpeaker's JST speaker output.
+This firmware connects the XIAO ESP32S3 Sense to an existing 2.4 GHz Wi-Fi
+network and serves a camera page with a short ReSpeaker audio recorder. It
+keeps the newest recording in PSRAM, plays it automatically when recording
+stops, and can replay it through the ReSpeaker's JST speaker output.
 
 ## Development setup
 
@@ -16,13 +16,10 @@ framework, so the source is Arduino C++ even though Arduino IDE is not needed.
 4. Use PlatformIO's Build, Upload, and Serial Monitor buttons. The monitor runs
    at 115200 baud.
 
-The access point defaults are in `include/app_config.h`:
-
-- Wi-Fi name: `Digit-Sense`
-- Wi-Fi password: `digit-sense`
-- Page: `http://192.168.4.1`
-
-Change the password before using the device in a public place.
+Wi-Fi credentials are stored in `include/wifi_credentials.h`. That file is
+ignored by Git so the password is not committed. Use
+`include/wifi_credentials.example.h` as the template if the private file needs
+to be recreated.
 
 ## Hardware preparation
 
@@ -51,10 +48,10 @@ Also check the following:
 
 ## Using the page
 
-1. Power the assembly and wait for `Digit-Sense` to appear.
-2. Join it with password `digit-sense`. Your phone or computer may warn that
-   the network has no internet; remain connected.
-3. Open `http://192.168.4.1`.
+1. Power the assembly and open the serial monitor at 115200 baud.
+2. Wait for `Wi-Fi: connected, open http://...`.
+3. Make sure the viewing phone or computer is connected to the same Wi-Fi
+   network, then open the printed address.
 4. Select **Record**, speak, and then select **Stop & play**. Recording also
    stops and plays automatically at ten seconds.
 5. Select **Replay** to hear the retained clip again or **Stop playback** to
@@ -68,7 +65,7 @@ the controls on port 80.
 | Method | Path | Purpose |
 | --- | --- | --- |
 | GET | `/` | Camera and audio control page |
-| GET | `http://192.168.4.1:81/stream` | MJPEG camera stream |
+| GET | `http://DEVICE_IP:81/stream` | MJPEG camera stream |
 | GET | `/api/status` | Camera, audio, PSRAM, and Wi-Fi status |
 | POST | `/api/record/start` | Start a new recording |
 | POST | `/api/record/stop` | Stop and automatically play it |
