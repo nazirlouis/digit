@@ -81,10 +81,23 @@ bool begin() {
   }
 
   sensor_t* sensor = esp_camera_sensor_get();
-  if (sensor != nullptr && sensor->id.PID == OV3660_PID) {
-    sensor->set_vflip(sensor, 1);
-    sensor->set_brightness(sensor, 1);
-    sensor->set_saturation(sensor, -2);
+  if (sensor != nullptr) {
+    if (sensor->id.PID == OV3660_PID) {
+      sensor->set_vflip(sensor, 1);
+      sensor->set_brightness(sensor, 1);
+      sensor->set_saturation(sensor, -2);
+    }
+    // Turn the current camera orientation upside down for both the live
+    // stream and still photos. The OV3660 correction above is included in
+    // the current orientation before applying this 180-degree turn.
+    const int vertical = sensor->status.vflip ? 0 : 1;
+    const int horizontal = sensor->status.hmirror ? 0 : 1;
+    if (sensor->set_vflip(sensor, vertical) != 0 ||
+        sensor->set_hmirror(sensor, horizontal) != 0) {
+      Serial.println("Camera: could not apply 180-degree rotation");
+    } else {
+      Serial.println("Camera: image rotated 180 degrees");
+    }
   }
 
   cameraError[0] = '\0';

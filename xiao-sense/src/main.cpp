@@ -5,6 +5,7 @@
 #include "audio_engine.h"
 #include "camera_service.h"
 #include "web_server.h"
+#include "vision_service.h"
 #include "wifi_credentials.h"
 #include "zumo_link.h"
 
@@ -57,6 +58,7 @@ void setup() {
   audioEngine.begin();
   camera_service::begin();
   zumo_link::begin();
+  vision_service::begin();
 
   if (connectToWifi()) {
     web_server::begin();

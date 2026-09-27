@@ -8,6 +8,7 @@
 #include "app_config.h"
 #include "audio_engine.h"
 #include "camera_service.h"
+#include "vision_service.h"
 #include "zumo_link.h"
 
 namespace {
@@ -36,6 +37,8 @@ const char kIndexHtml[] PROGMEM = R"HTML(
     .panel{background:rgba(16,29,35,.9);border:1px solid #28434e;border-radius:20px;overflow:hidden;box-shadow:0 22px 70px #0008}
     .video{aspect-ratio:4/3;background:#020506;display:grid;place-items:center;position:relative}.video img{width:100%;height:100%;object-fit:contain}
     .video span{position:absolute;bottom:12px;left:12px;background:#071014cc;border-radius:999px;padding:7px 11px;font-size:13px}
+    .person-badge{position:absolute;top:12px;left:12px;padding:9px 14px;border-radius:999px;background:#36e4ff;color:#00151c;font-size:15px;box-shadow:0 4px 20px #0009}
+    [hidden]{display:none!important}
     .controls{padding:18px;display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px}button{border:0;border-radius:13px;padding:14px 10px;font-weight:750;cursor:pointer;background:#233740;color:#fff}
     button.primary{background:var(--cyan);color:#00151c}button.danger{background:#4a1d29;color:#ffdbe2}button:disabled{opacity:.35;cursor:not-allowed}
     .volume{margin:0 18px 18px;padding:14px 16px;background:#0a151a;border-radius:14px}.volume label{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}.volume label span{color:var(--muted)}
@@ -55,13 +58,15 @@ const char kIndexHtml[] PROGMEM = R"HTML(
 <main>
   <div class="top"><div><h1>Digit Sense</h1><div style="color:var(--muted)">Live camera + ReSpeaker recorder</div></div><div class="pill" id="state">CONNECTING</div></div>
   <section class="panel">
-    <div class="video"><img id="stream" alt="Digit camera stream"><span id="camera">Camera starting...</span></div>
+    <div class="video"><img id="stream" alt="Digit camera stream"><strong class="person-badge" id="personBadge" hidden>Naz Detected</strong><span id="camera">Camera starting...</span></div>
     <div class="controls">
       <button class="primary" id="record" onclick="action('/api/record/start')">Record</button>
       <button class="danger" id="stopRecord" onclick="action('/api/record/stop')">Stop &amp; play</button>
       <button id="replay" onclick="action('/api/play')">Replay</button>
       <button id="tone" onclick="action('/api/tone')">Test speaker</button>
       <button id="stopPlay" onclick="action('/api/play/stop')">Stop playback</button>
+      <button id="takePhoto" onclick="takePhoto()" disabled>Take picture</button>
+      <button id="visionToggle" onclick="toggleVision()" disabled>Start person detection</button>
     </div>
     <div class="volume">
       <label for="volume"><span>Speaker volume</span><b><span id="volumeValue">70</span>%</b></label>
@@ -92,7 +97,7 @@ const char kIndexHtml[] PROGMEM = R"HTML(
 <script>
 const $=id=>document.getElementById(id);
 $('stream').src=`http://${location.hostname}:81/stream`;
-let heldDirection=null,driveTimer=null,driveInFlight=false,zumoReady=false;
+let heldDirection=null,driveTimer=null,driveInFlight=false,zumoReady=false,cameraReady=false,photoPending=false,visionEnabled=false,visionPending=false;
 const driveButtons=[...document.querySelectorAll('[data-drive]')];
 function speeds(direction){const value=Number($('driveSpeed').value);return {forward:[value,value],back:[-value,-value],left:[-value,value],right:[value,-value]}[direction]||[0,0]}
 async function postZumo(path){const response=await fetch(path,{method:'POST',cache:'no-store'});const data=await response.json();if(!response.ok)throw Error(data.message||'Zumo command failed');return data}
@@ -101,6 +106,8 @@ async function sendDrive(){if(!heldDirection||driveInFlight)return;driveInFlight
 function beginDrive(direction,event){if(!zumoReady||heldDirection)return;event.preventDefault();event.currentTarget.setPointerCapture(event.pointerId);heldDirection=direction;sendDrive();driveTimer=setInterval(sendDrive,100)}
 for(const button of driveButtons){button.addEventListener('pointerdown',event=>beginDrive(button.dataset.drive,event));button.addEventListener('pointerup',stopZumo);button.addEventListener('pointercancel',stopZumo);button.addEventListener('lostpointercapture',()=>{if(heldDirection)stopZumo()})}
 $('zumoStop').addEventListener('click',stopZumo);
+async function takePhoto(){if(photoPending)return;photoPending=true;const button=$('takePhoto');button.disabled=true;try{const response=await fetch('/api/camera/photo',{cache:'no-store'});if(!response.ok)throw Error((await response.text())||'Photo capture failed');const blob=await response.blob();if(blob.type!=='image/jpeg'||blob.size===0)throw Error('Camera returned an invalid photo');const url=URL.createObjectURL(blob);const link=document.createElement('a');link.href=url;link.download='digit-'+new Date().toISOString().replace(/[:.]/g,'-')+'.jpg';document.body.append(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),10000);$('message').textContent='Picture saved';$('message').className=''}catch(error){$('message').textContent=error.message;$('message').className='error'}finally{photoPending=false;button.disabled=!cameraReady}}
+async function toggleVision(){if(visionPending)return;visionPending=true;$('visionToggle').disabled=true;try{const response=await fetch('/api/vision?enabled='+(visionEnabled?'0':'1'),{method:'POST',cache:'no-store'});const data=await response.json();if(!response.ok)throw Error(data.message||'Could not change person detection');$('message').textContent=data.message;$('message').className=''}catch(error){$('message').textContent=error.message;$('message').className='error'}finally{visionPending=false;await refresh()}}
 $('driveSpeed').addEventListener('input',event=>{$('driveSpeedValue').textContent=event.target.value});
 $('zumoCalibrate').addEventListener('click',async()=>{try{await postZumo('/api/zumo/calibrate');$('zumoMessage').textContent='Calibrating floor...'}catch(error){$('zumoMessage').textContent=error.message}});
 for(const [id,value] of [['zumoHappy','HAPPY'],['zumoSad','SAD']]){$(id).addEventListener('click',async()=>{try{await postZumo('/api/zumo/face?value='+value)}catch(error){$('zumoMessage').textContent=error.message}})}
@@ -127,7 +134,7 @@ function formatBytes(bytes){return bytes>1048576?(bytes/1048576).toFixed(1)+' MB
 async function refresh(){
   try{
     const response=await fetch('/api/status',{cache:'no-store'});if(!response.ok)throw new Error('Status HTTP '+response.status);const s=await response.json();
-    $('state').textContent=s.audio_state;$('camera').textContent=s.camera_ready?'LIVE · 640×480':s.camera_error;
+    cameraReady=s.camera_ready;visionEnabled=s.vision_enabled;$('takePhoto').disabled=!cameraReady||photoPending;$('visionToggle').disabled=!s.vision_ready||visionPending;$('visionToggle').textContent=visionEnabled?'Stop person detection':'Start person detection';$('state').textContent=s.audio_state;$('camera').textContent=cameraReady?(s.vision_ready?(visionEnabled?'LIVE · 640×480 · Vision on':'LIVE · 640×480 · Vision off'):'LIVE · 640×480 · Vision unavailable'):s.camera_error;$('personBadge').hidden=!visionEnabled||!s.person_detected;
     const elapsed=s.audio_state==='RECORDING'?s.recording_elapsed_ms:s.captured_ms;
     $('duration').textContent=(Math.min(elapsed,s.max_recording_ms)/1000).toFixed(1)+' s';
     $('memory').textContent=formatBytes(s.psram_free);$('network').textContent=s.wifi_ip;
@@ -137,7 +144,7 @@ async function refresh(){
     $('replay').disabled=s.audio_state!=='READY'||s.captured_ms===0;$('tone').disabled=s.audio_state!=='READY';$('stopPlay').disabled=s.audio_state!=='PLAYING';
     if(s.audio_error){$('message').textContent=s.audio_error;$('message').className='error';}
     else if($('message').className==='error'||$('message').textContent==='Waiting for device status...'){$('message').textContent='Ready';$('message').className='';}
-  }catch(error){$('state').textContent='OFFLINE';$('message').textContent='Device status unavailable';$('message').className='error';}
+  }catch(error){cameraReady=false;$('takePhoto').disabled=true;$('visionToggle').disabled=true;$('personBadge').hidden=true;$('state').textContent='OFFLINE';$('message').textContent='Device status unavailable';$('message').className='error';}
 }
 refresh();setInterval(refresh,350);
 </script>
@@ -184,6 +191,7 @@ void escapeJsonString(const char* input, char* output, size_t outputSize) {
 esp_err_t statusHandler(httpd_req_t* request) {
   static uint32_t lastStatusLogMs = 0;
   const AudioStatus audio = audioEngine.snapshot();
+  const vision_service::Status vision = vision_service::snapshot();
   if (lastStatusLogMs == 0 || millis() - lastStatusLogMs >= 5000) {
     lastStatusLogMs = millis();
     Serial.printf("[%10lu] Web: GET /api/status -> audio=%s captured=%lu ms\n",
@@ -193,11 +201,13 @@ esp_err_t statusHandler(httpd_req_t* request) {
   }
   char audioError[192];
   char cameraError[192];
+  char visionError[96];
   escapeJsonString(audio.error, audioError, sizeof(audioError));
   escapeJsonString(camera_service::lastError(), cameraError,
                    sizeof(cameraError));
+  escapeJsonString(vision.error, visionError, sizeof(visionError));
 
-  char json[700];
+  char json[900];
   const String wifiIp = WiFi.localIP().toString();
   snprintf(
       json, sizeof(json),
@@ -206,6 +216,9 @@ esp_err_t statusHandler(httpd_req_t* request) {
       "\"recording_elapsed_ms\":%lu,\"max_recording_ms\":%lu,"
       "\"speaker_volume\":%u,"
       "\"camera_ready\":%s,\"camera_error\":\"%s\","
+      "\"vision_ready\":%s,\"vision_enabled\":%s,\"person_detected\":%s,"
+      "\"person_score_percent\":%u,\"vision_age_ms\":%lu,"
+      "\"vision_inference_ms\":%lu,\"vision_error\":\"%s\","
       "\"psram_free\":%u,\"wifi_connected\":%s,"
       "\"wifi_ip\":\"%s\",\"wifi_rssi\":%ld}",
       AudioEngine::stateName(audio.state), audio.available ? "true" : "false",
@@ -214,6 +227,11 @@ esp_err_t statusHandler(httpd_req_t* request) {
       static_cast<unsigned long>(app_config::kMaximumRecordingSeconds * 1000UL),
       audio.speakerVolumePercent,
       camera_service::ready() ? "true" : "false", cameraError,
+      vision.ready ? "true" : "false",
+      vision.enabled ? "true" : "false",
+      vision.personDetected ? "true" : "false", vision.personScorePercent,
+      static_cast<unsigned long>(vision.resultAgeMs),
+      static_cast<unsigned long>(vision.inferenceMs), visionError,
       static_cast<unsigned int>(ESP.getFreePsram()),
       WiFi.status() == WL_CONNECTED ? "true" : "false", wifiIp.c_str(),
       static_cast<long>(WiFi.RSSI()));
@@ -231,6 +249,23 @@ bool queryValue(httpd_req_t* request, const char* key, char* value,
     return false;
   }
   return httpd_query_key_value(query, key, value, valueSize) == ESP_OK;
+}
+
+esp_err_t visionHandler(httpd_req_t* request) {
+  char value[4];
+  if (!queryValue(request, "enabled", value, sizeof(value)) ||
+      (strcmp(value, "0") != 0 && strcmp(value, "1") != 0)) {
+    httpd_resp_set_status(request, "400 Bad Request");
+    return sendJson(request, "{\"message\":\"Use enabled=0 or enabled=1\"}");
+  }
+  const bool enabled = strcmp(value, "1") == 0;
+  if (!vision_service::setEnabled(enabled)) {
+    httpd_resp_set_status(request, "503 Service Unavailable");
+    return sendJson(request, "{\"message\":\"Person detection is unavailable\"}");
+  }
+  return sendJson(request, enabled
+                               ? "{\"message\":\"Person detection started\"}"
+                               : "{\"message\":\"Person detection stopped\"}");
 }
 
 bool parseSpeed(const char* value, int* result) {
@@ -459,6 +494,32 @@ esp_err_t streamHandler(httpd_req_t* request) {
   }
 }
 
+esp_err_t photoHandler(httpd_req_t* request) {
+  if (!camera_service::ready()) {
+    httpd_resp_set_status(request, "503 Service Unavailable");
+    return httpd_resp_sendstr(request, camera_service::lastError());
+  }
+
+  camera_fb_t* frame = esp_camera_fb_get();
+  if (frame == nullptr) {
+    httpd_resp_set_status(request, "503 Service Unavailable");
+    return httpd_resp_sendstr(request, "Photo capture failed");
+  }
+
+  if (frame->format != PIXFORMAT_JPEG || frame->len == 0) {
+    esp_camera_fb_return(frame);
+    httpd_resp_set_status(request, "503 Service Unavailable");
+    return httpd_resp_sendstr(request, "Camera returned an invalid photo");
+  }
+
+  httpd_resp_set_type(request, "image/jpeg");
+  setNoCache(request);
+  const esp_err_t result = httpd_resp_send(
+      request, reinterpret_cast<const char*>(frame->buf), frame->len);
+  esp_camera_fb_return(frame);
+  return result;
+}
+
 bool registerUri(httpd_handle_t server, const char* uri,
                  httpd_method_t method, esp_err_t (*handler)(httpd_req_t*)) {
   httpd_uri_t definition = {};
@@ -477,7 +538,7 @@ bool begin() {
   httpd_config_t controlConfig = HTTPD_DEFAULT_CONFIG();
   controlConfig.server_port = app_config::kControlServerPort;
   controlConfig.ctrl_port = 32768;
-  controlConfig.max_uri_handlers = 13;
+  controlConfig.max_uri_handlers = 15;
   controlConfig.lru_purge_enable = true;
 
   if (httpd_start(&controlServer, &controlConfig) != ESP_OK) {
@@ -488,6 +549,8 @@ bool begin() {
   const bool controlRoutesReady =
       registerUri(controlServer, "/", HTTP_GET, rootHandler) &&
       registerUri(controlServer, "/api/status", HTTP_GET, statusHandler) &&
+      registerUri(controlServer, "/api/vision", HTTP_POST, visionHandler) &&
+      registerUri(controlServer, "/api/camera/photo", HTTP_GET, photoHandler) &&
       registerUri(controlServer, "/api/record/start", HTTP_POST,
                   startRecordingHandler) &&
       registerUri(controlServer, "/api/record/stop", HTTP_POST,

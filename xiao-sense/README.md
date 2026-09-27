@@ -90,7 +90,23 @@ Also check the following:
    interrupt it.
 
 The live MJPEG camera stream is served separately on port 81 so it cannot block
-the controls on port 80.
+the controls on port 80. The image is rotated 180 degrees in the camera sensor
+for both the stream and still pictures. Select **Take picture** to download a
+640×480 JPEG to the viewing phone or computer.
+
+Select **Start person detection** to have the XIAO check camera frames with a
+small person-presence model. Detection is off at startup. At least 55% person
+score on two positive checks shows a **Naz Detected** badge over the live video.
+Select **Stop person detection** to stop checking frames and clear the badge;
+it also clears after two negative results or if detection becomes stale. This label
+means *a person* was detected, not that the person was identified as Naz.
+Detection does not drive the Zumo. The bundled model is TensorFlow Lite Micro's
+[`person_detect.tflite`](https://github.com/tensorflow/tflite-micro/blob/main/tensorflow/lite/micro/models/person_detect.tflite)
+(SHA-256 `808cfdfc0cf3a6fa6f6fa26bfa379ea97c16d5db7334637766e39c3408502e9d`);
+the first on-device run must confirm model startup, speed, and accuracy with
+the camera, audio, and UART active.
+The 115200-baud XIAO serial monitor prints preparation time, model time, total
+time, both class scores, and whether the badge is on for each checked frame.
 
 For Zumo control, save `zumo-controller/main.py` and
 `zumo-controller/uart_control.py` to the Zumo MicroPython device root and reset
@@ -104,7 +120,9 @@ and fault. Test direction and stopping with the tracks lifted first.
 | --- | --- | --- |
 | GET | `/` | Camera and audio control page |
 | GET | `http://DEVICE_IP:81/stream` | MJPEG camera stream |
-| GET | `/api/status` | Camera, audio, PSRAM, and Wi-Fi status |
+| GET | `/api/camera/photo` | Capture one JPEG still image |
+| GET | `/api/status` | Camera, audio, person detection, PSRAM, and Wi-Fi status |
+| POST | `/api/vision?enabled=1` or `enabled=0` | Start or stop person detection |
 | GET | `/api/zumo/status` | Zumo connection, readiness, battery, speeds, and fault |
 | POST | `/api/zumo/drive?left=4000&right=4000` | Renew held motor speeds; each side is -6000 to 6000 |
 | POST | `/api/zumo/stop` | Stop and clear held movement |
