@@ -6,7 +6,7 @@ hardware imports so its timing and safety rules can be tested on a desktop.
 
 
 MAX_LINE = 63
-MAX_DRIVE_SPEED = 2000
+MAX_DRIVE_SPEED = 6000
 DRIVE_TIMEOUT_MS = 300
 EDGE_POLL_MS = 20
 CALIBRATION_INTERVAL_MS = 10

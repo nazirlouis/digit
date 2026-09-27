@@ -106,7 +106,7 @@ and fault. Test direction and stopping with the tracks lifted first.
 | GET | `http://DEVICE_IP:81/stream` | MJPEG camera stream |
 | GET | `/api/status` | Camera, audio, PSRAM, and Wi-Fi status |
 | GET | `/api/zumo/status` | Zumo connection, readiness, battery, speeds, and fault |
-| POST | `/api/zumo/drive?left=1000&right=1000` | Renew held motor speeds; each side is -2000 to 2000 |
+| POST | `/api/zumo/drive?left=4000&right=4000` | Renew held motor speeds; each side is -6000 to 6000 |
 | POST | `/api/zumo/stop` | Stop and clear held movement |
 | POST | `/api/zumo/calibrate` | Start floor-edge calibration while stopped |
 | POST | `/api/zumo/face?value=HAPPY` | Play HAPPY or SAD on the Zumo face |

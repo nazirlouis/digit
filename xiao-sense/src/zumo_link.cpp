@@ -156,7 +156,7 @@ Status snapshot() {
 }
 
 bool drive(int left, int right) {
-  if (left < -2000 || left > 2000 || right < -2000 || right > 2000) {
+  if (left < -6000 || left > 6000 || right < -6000 || right > 6000) {
     return false;
   }
   const uint32_t now = millis();

@@ -126,14 +126,17 @@ The default `main.py` listens on Zumo UART0: GP29 RX from XIAO D2/GPIO3 TX,
 GP28 TX to XIAO D3/GPIO4 RX, plus a shared ground. Both sides use 3.3 V UART,
 115200 baud, 8 data bits, no parity, and 1 stop bit. This requires LCD CS on
 GP7, with the buzzer jumper disconnected and the silent buzzer library in place.
-The XIAO dashboard firmware is a separate next step; this Zumo program defines
-the command interface it will use.
+The XIAO dashboard sends repeated `STATUS` requests. The Zumo answers whenever
+they arrive, so either board can finish booting first; no startup handshake or
+wait delay is required.
 
 Save `uart_control.py` and the updated `main.py` to the Zumo device root. Keep
 the existing `digit_face.py`, `digit_config.py`, matching face/display files,
-and `/zumo_2040_robot` library. Reset the Zumo. The six-second startup menu
-still runs before `main.py`; after it, Thonny should print `UART CONTROL` and
-say motors are stopped. On every reset, driving starts locked until calibration.
+and `/zumo_2040_robot` library. Reset the Zumo. Once `main.py` starts, it
+prints `UART CONTROL` and says the motors are stopped. On every reset, driving
+starts locked until calibration. Opening Thonny can interrupt the running
+program and leave the REPL prompt; use a power cycle with Thonny disconnected
+when checking automatic startup.
 
 Send one ASCII command per line, ending with `\n` (an optional preceding `\r`
 is accepted). The first field is a decimal request ID from 0 to 65535. Each
@@ -148,7 +151,7 @@ events and uncorrelated errors. Commands are uppercase.
 | `12 PING` | `12 OK PONG` |
 | `13 STATUS` | Readiness, fault, applied left/right speeds, battery millivolts, and edge latch |
 | `14 CALIBRATE` | `14 OK CALIBRATING`, then `0 EVENT READY` or `0 EVENT CAL_FAILED` |
-| `15 DRIVE 1000 1000` | Run both tracks forward; each speed must be -2000 through 2000 |
+| `15 DRIVE 4000 4000` | Run both tracks forward; each speed must be -6000 through 6000 |
 | `16 DRIVE -1000 1000` | Turn in place; sign and direction depend on the installed motor polarity patch |
 | `17 STOP` | Stop immediately; also cancels calibration |
 | `18 FACE HAPPY` or `19 FACE SAD` | Play the expression while stopped |

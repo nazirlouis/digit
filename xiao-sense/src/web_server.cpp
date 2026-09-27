@@ -83,9 +83,9 @@ const char kIndexHtml[] PROGMEM = R"HTML(
         <button class="right" data-drive="right" aria-label="Hold to turn right">▶</button>
         <button class="back" data-drive="back" aria-label="Hold to reverse">▼</button>
       </div>
-      <label class="speed" for="driveSpeed">Drive speed <input id="driveSpeed" type="range" min="500" max="2000" step="100" value="1000"><b id="driveSpeedValue">1000</b></label>
+      <label class="speed" for="driveSpeed">Drive speed <input id="driveSpeed" type="range" min="500" max="6000" step="100" value="4000"><b id="driveSpeedValue">4000</b></label>
       <div class="zumo-actions"><button id="zumoCalibrate">Calibrate floor</button><button id="zumoHappy">Happy face</button><button id="zumoSad">Sad face</button></div>
-      <div id="zumoMessage">Waiting for Zumo status...</div>
+      <div id="zumoMessage">Connecting to Zumo...</div>
     </div>
   </section>
 </main>
@@ -105,7 +105,7 @@ $('driveSpeed').addEventListener('input',event=>{$('driveSpeedValue').textConten
 $('zumoCalibrate').addEventListener('click',async()=>{try{await postZumo('/api/zumo/calibrate');$('zumoMessage').textContent='Calibrating floor...'}catch(error){$('zumoMessage').textContent=error.message}});
 for(const [id,value] of [['zumoHappy','HAPPY'],['zumoSad','SAD']]){$(id).addEventListener('click',async()=>{try{await postZumo('/api/zumo/face?value='+value)}catch(error){$('zumoMessage').textContent=error.message}})}
 window.addEventListener('blur',stopZumo);document.addEventListener('visibilitychange',()=>{if(document.hidden)stopZumo()});
-async function refreshZumo(){try{const response=await fetch('/api/zumo/status',{cache:'no-store'});if(!response.ok)throw Error('Status unavailable');const s=await response.json();zumoReady=s.connected&&s.ready&&!s.calibrating;$('zumoLink').textContent=s.connected?'Zumo: connected':'Zumo: disconnected';$('zumoReady').textContent=s.calibrating?'Drive: calibrating':zumoReady?'Drive: ready':'Drive: locked';$('zumoBattery').textContent=s.battery_mv>=0?`Battery: ${(s.battery_mv/1000).toFixed(2)} V`:'Battery: --';$('zumoFault').textContent='Fault: '+s.fault;for(const button of driveButtons)button.disabled=!zumoReady;$('zumoCalibrate').disabled=!s.connected||s.calibrating||!!heldDirection;$('zumoHappy').disabled=$('zumoSad').disabled=!s.connected||!!heldDirection;if(!zumoReady&&heldDirection)stopZumo();if(s.last_error!=='NONE')$('zumoMessage').textContent=s.last_error;else if(s.fault!=='NONE')$('zumoMessage').textContent=s.fault;else if(zumoReady)$('zumoMessage').textContent='Hold a direction to drive.'}catch(error){zumoReady=false;for(const button of driveButtons)button.disabled=true;$('zumoLink').textContent='Zumo: unavailable';if(heldDirection)stopZumo()}}
+async function refreshZumo(){try{const response=await fetch('/api/zumo/status',{cache:'no-store'});if(!response.ok)throw Error('Status unavailable');const s=await response.json();zumoReady=s.connected&&s.ready&&!s.calibrating;$('zumoLink').textContent=s.connected?'Zumo: connected':'Zumo: disconnected';$('zumoReady').textContent=s.calibrating?'Drive: calibrating':zumoReady?'Drive: ready':'Drive: locked';$('zumoBattery').textContent=s.battery_mv>=0?`Battery: ${(s.battery_mv/1000).toFixed(2)} V`:'Battery: --';$('zumoFault').textContent='Fault: '+s.fault;for(const button of driveButtons)button.disabled=!zumoReady;$('zumoCalibrate').disabled=!s.connected||s.calibrating||!!heldDirection;$('zumoHappy').disabled=$('zumoSad').disabled=!s.connected||!!heldDirection;if(!zumoReady&&heldDirection)stopZumo();let message='Waiting for Zumo connection...';if(s.connected){if(s.calibrating)message='Calibrating floor...';else if(s.fault!=='NONE')message='Zumo fault: '+s.fault;else if(s.last_error!=='NONE')message=s.last_error;else if(zumoReady)message='Hold a direction to drive.';else message='Connected. Calibrate floor on a safe surface to enable driving.'}$('zumoMessage').textContent=message}catch(error){zumoReady=false;for(const button of driveButtons)button.disabled=true;$('zumoLink').textContent='Zumo: unavailable';$('zumoMessage').textContent='Zumo status unavailable';if(heldDirection)stopZumo()}}
 refreshZumo();setInterval(refreshZumo,350);
 async function action(path){
   try{const response=await fetch(path,{method:'POST'});const data=await response.json();$('message').textContent=data.message||'';$('message').className=response.ok?'':'error';await refresh();}
@@ -247,7 +247,7 @@ bool parseSpeed(const char* value, int* result) {
       return false;
     }
     number = number * 10 + (*cursor - '0');
-    if (number > 2000) {
+    if (number > 6000) {
       return false;
     }
   }
@@ -279,7 +279,7 @@ esp_err_t zumoDriveHandler(httpd_req_t* request) {
       !queryValue(request, "right", rightText, sizeof(rightText)) ||
       !parseSpeed(leftText, &left) || !parseSpeed(rightText, &right)) {
     httpd_resp_set_status(request, "400 Bad Request");
-    return sendJson(request, "{\"message\":\"Use left and right speeds from -2000 to 2000\"}");
+    return sendJson(request, "{\"message\":\"Use left and right speeds from -6000 to 6000\"}");
   }
   if (!zumo_link::drive(left, right)) {
     httpd_resp_set_status(request, "409 Conflict");

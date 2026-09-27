@@ -133,11 +133,20 @@ class UARTControlTests(unittest.TestCase):
         self.assertEqual(self.face.actions, ["happy"])
         self.assertEqual(self.command("6 FACE SAD"), "6 OK FACE")
 
+    def test_xiao_can_start_long_after_zumo(self):
+        # The Zumo has no startup connection deadline. A late peer must be
+        # able to discover it through the XIAO's periodic STATUS request.
+        self.clock.now = 60000
+        self.assertEqual(self.command("7 PING"), "7 OK PONG")
+        self.assertIn("READY=0 FAULT=NONE", self.command("8 STATUS"))
+        self.calibrate()
+        self.assertEqual(self.command("9 DRIVE 4000 4000"), "9 OK DRIVE")
+
     def test_drive_limits_stop_and_timeout(self):
         self.calibrate()
         self.assertEqual(self.command("0 PING"), "0 ERR ID_RANGE")
         self.assertEqual(self.command("2 DRIVE --3 0"), "2 ERR ARGUMENT")
-        self.assertEqual(self.command("2 DRIVE 2001 0"), "2 ERR SPEED_RANGE")
+        self.assertEqual(self.command("2 DRIVE 6001 0"), "2 ERR SPEED_RANGE")
         self.assertEqual(self.motors.speeds, (0, 0))
         self.assertEqual(self.command("3 DRIVE 1000 -900"), "3 OK DRIVE")
         self.assertEqual(self.motors.speeds, (1000, -900))
@@ -147,7 +156,7 @@ class UARTControlTests(unittest.TestCase):
         self.control.tick()
         self.assertEqual(self.motors.speeds, (0, 0))
         self.assertIn("0 EVENT TIMEOUT", self.uart.outgoing)
-        self.assertEqual(self.command("5 DRIVE -2000 2000"), "5 OK DRIVE")
+        self.assertEqual(self.command("5 DRIVE -6000 6000"), "5 OK DRIVE")
         self.assertEqual(self.command("6 STOP"), "6 OK STOPPED")
         self.assertEqual(self.motors.speeds, (0, 0))
         self.assertEqual(self.command("7 STATUS").split(" L=")[1][:7], "0 R=0 B")
