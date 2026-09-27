@@ -6,6 +6,7 @@
 #include "camera_service.h"
 #include "web_server.h"
 #include "wifi_credentials.h"
+#include "zumo_link.h"
 
 namespace {
 
@@ -55,6 +56,7 @@ void setup() {
   // variable-size frame buffers.
   audioEngine.begin();
   camera_service::begin();
+  zumo_link::begin();
 
   if (connectToWifi()) {
     web_server::begin();
@@ -62,6 +64,7 @@ void setup() {
 }
 
 void loop() {
+  zumo_link::poll();
   static uint32_t lastHealthLogMs = 0;
   if (millis() - lastHealthLogMs >= 5000) {
     lastHealthLogMs = millis();
@@ -72,5 +75,5 @@ void loop() {
                   WiFi.localIP().toString().c_str(),
                   static_cast<long>(WiFi.RSSI()));
   }
-  delay(100);
+  delay(5);
 }

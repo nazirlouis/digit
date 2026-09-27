@@ -1,7 +1,9 @@
 #include "audio_engine.h"
 
 #include <Wire.h>
+#include <driver/pcnt.h>
 #include <esp_heap_caps.h>
+#include <math.h>
 
 #include "app_config.h"
 
@@ -126,9 +128,11 @@ bool AudioEngine::begin() {
                 static_cast<unsigned long>(millis()),
                 app_config::kI2cSdaPin, app_config::kI2cSclPin);
 
-  // The XVF3800 is running the 16 kHz I2S-slave image, so the XIAO owns
-  // BCLK/WS. Start a quiet TX stream before probing its control plane, matching
-  // Seeed's standalone record/playback initialization order.
+  // The old XVF3800 slave image needs XIAO clocks, but Flex firmware may
+  // already supply them. Measure WS with both XIAO clock pins as inputs first.
+  if (!detectI2sClockSource()) {
+    return false;
+  }
   if (!beginI2s(false)) {
     setError("Could not start initial I2S clocks for the ReSpeaker");
     return false;
@@ -595,18 +599,15 @@ bool AudioEngine::playDiagnosticTone() {
 
   i2s_.write(gPlaybackSilence, sizeof(gPlaybackSilence));
   delay(30);
-  Serial.printf(
-      "[%10lu] Audio speaker test: amplifier was enabled during boot; "
-      "skipping playback-time I2C control\n",
-      static_cast<unsigned long>(millis()));
+  logCodecDiagnostics();
 
   const uint32_t totalFrames =
       (app_config::kAudioSampleRate * kTestToneDurationMs) / 1000;
-  const uint32_t halfPeriodFrames =
-      app_config::kAudioSampleRate / (kTestToneFrequencyHz * 2);
+  const uint32_t fadeFrames = app_config::kAudioSampleRate / 50;  // 20 ms
+  constexpr float kTwoPi = 6.2831853071795864769f;
   uint32_t framesWritten = 0;
   Serial.printf(
-      "[%10lu] Audio speaker test: %lu Hz square wave, %lu ms, "
+      "[%10lu] Audio speaker test: %lu Hz sine wave, %lu ms, "
       "amplitude=%ld\n",
       static_cast<unsigned long>(millis()),
       static_cast<unsigned long>(kTestToneFrequencyHz),
@@ -621,10 +622,16 @@ bool AudioEngine::playDiagnosticTone() {
         kTestToneFramesPerChunk,
         static_cast<size_t>(totalFrames - framesWritten));
     for (size_t frame = 0; frame < chunkFrames; ++frame) {
-      const int32_t sample =
-          ((framesWritten + frame) / halfPeriodFrames) % 2 == 0
-              ? kTestToneAmplitude
-              : -kTestToneAmplitude;
+      const uint32_t frameIndex = framesWritten + frame;
+      const uint32_t edgeFrames = min(frameIndex, totalFrames - 1 - frameIndex);
+      const float envelope =
+          static_cast<float>(min(edgeFrames, fadeFrames)) / fadeFrames;
+      // Derive phase from the absolute frame so chunk boundaries stay smooth.
+      const float phase = kTwoPi *
+          ((frameIndex * kTestToneFrequencyHz) % app_config::kAudioSampleRate) /
+          app_config::kAudioSampleRate;
+      const int32_t sample = static_cast<int32_t>(
+          sinf(phase) * envelope * kTestToneAmplitude);
       for (uint8_t channel = 0; channel < app_config::kAudioChannels;
            ++channel) {
         gTestTone[frame * app_config::kAudioChannels + channel] = sample;
@@ -652,6 +659,60 @@ bool AudioEngine::playDiagnosticTone() {
   return true;
 }
 
+bool AudioEngine::detectI2sClockSource() {
+  pinMode(app_config::kI2sBitClockPin, INPUT);
+  pinMode(app_config::kI2sWordSelectPin, INPUT);
+  pcnt_config_t counter = {};
+  counter.pulse_gpio_num = app_config::kI2sWordSelectPin;
+  counter.ctrl_gpio_num = PCNT_PIN_NOT_USED;
+  counter.lctrl_mode = PCNT_MODE_KEEP;
+  counter.hctrl_mode = PCNT_MODE_KEEP;
+  counter.pos_mode = PCNT_COUNT_INC;
+  counter.neg_mode = PCNT_COUNT_DIS;
+  counter.counter_h_lim = 30000;
+  counter.counter_l_lim = -1;
+  counter.unit = PCNT_UNIT_0;
+  counter.channel = PCNT_CHANNEL_0;
+  if (pcnt_unit_config(&counter) != ESP_OK) {
+    setError("Could not measure ReSpeaker I2S clock source");
+    return false;
+  }
+  // Give externally clocked firmware time to start; never drive against any
+  // detected clock, even when its rate does not match this application.
+  bool clockFound = false;
+  uint32_t externalRate = 0;
+  for (uint8_t attempt = 0; attempt < 10 && !clockFound; ++attempt) {
+    pcnt_counter_pause(PCNT_UNIT_0);
+    pcnt_counter_clear(PCNT_UNIT_0);
+    const uint32_t started = micros();
+    pcnt_counter_resume(PCNT_UNIT_0);
+    delay(50);
+    pcnt_counter_pause(PCNT_UNIT_0);
+    const uint32_t elapsed = micros() - started;
+    int16_t edges = 0;
+    pcnt_get_counter_value(PCNT_UNIT_0, &edges);
+    clockFound = edges > 0;
+    if (clockFound) {
+      externalRate = static_cast<uint32_t>(
+          static_cast<uint64_t>(edges) * 1000000ULL / elapsed);
+    }
+  }
+  pcnt_counter_pause(PCNT_UNIT_0);
+  pcnt_set_mode(PCNT_UNIT_0, PCNT_CHANNEL_0, PCNT_COUNT_DIS,
+                PCNT_COUNT_DIS, PCNT_MODE_KEEP, PCNT_MODE_KEEP);
+  xiaoI2sMaster_ = !clockFound;
+  Serial.printf("Audio clock probe: external WS=%lu Hz; clock source=%s\n",
+                static_cast<unsigned long>(externalRate),
+                xiaoI2sMaster_ ? "XIAO (master)" : "ReSpeaker (XIAO slave)");
+  if (clockFound &&
+      (externalRate < app_config::kAudioSampleRate * 95 / 100 ||
+       externalRate > app_config::kAudioSampleRate * 105 / 100)) {
+    setError("External I2S clock is not 16 kHz; check ReSpeaker firmware");
+    return false;
+  }
+  return true;
+}
+
 bool AudioEngine::beginI2s(bool receive) {
   endI2s();
 
@@ -670,15 +731,20 @@ bool AudioEngine::beginI2s(bool receive) {
   config.pin_data = receive ? app_config::kI2sDataFromRespeakerPin
                             : app_config::kI2sDataToRespeakerPin;
   config.pin_data_rx = app_config::kI2sDataFromRespeakerPin;
-  config.is_master = true;
+  config.is_master = xiaoI2sMaster_;
+  config.i2s_format = audio_tools::I2S_STD_FORMAT;
+  config.auto_clear = true;
   Serial.printf(
-      "[%10lu] Audio I2S: begin %s, master=yes, BCLK=%d WS=%d "
+      "[%10lu] Audio I2S: begin %s, master=%s, BCLK=%d WS=%d "
       "activeData=%d (TX=%d RX=%d)\n",
       static_cast<unsigned long>(millis()), receive ? "RX" : "TX",
+      xiaoI2sMaster_ ? "yes" : "no",
       config.pin_bck, config.pin_ws, config.pin_data,
       app_config::kI2sDataToRespeakerPin,
       app_config::kI2sDataFromRespeakerPin);
   i2sRunning_ = i2s_.begin(config);
+  i2s_.driver()->setWaitTimeReadMs(500);
+  i2s_.driver()->setWaitTimeWriteMs(500);
   Serial.printf("[%10lu] Audio I2S: begin result=%s\n",
                 static_cast<unsigned long>(millis()),
                 i2sRunning_ ? "success" : "FAILED");
@@ -689,8 +755,8 @@ void AudioEngine::endI2s() {
   if (i2sRunning_) {
     Serial.printf("[%10lu] Audio I2S: stopping\n",
                   static_cast<unsigned long>(millis()));
+    i2s_.end();
   }
-  i2s_.end();
   i2sRunning_ = false;
 }
 
@@ -762,6 +828,7 @@ bool AudioEngine::initializeSpeakerPath() {
   Serial.printf("[%10lu] Audio volume: initialized at %u%%\n",
                 static_cast<unsigned long>(millis()),
                 speakerVolumePercent_);
+  logCodecDiagnostics();
   return true;
 }
 
@@ -884,6 +951,37 @@ bool AudioEngine::readXvfVersion() {
                 static_cast<unsigned long>(millis()), status, version[0],
                 version[1], version[2]);
   return status == kXvfSuccessStatus;
+}
+
+void AudioEngine::logCodecDiagnostics() {
+  // Page 0 is selected by our volume initialization. Read the live clock,
+  // serial format, DAC routing and output settings; do not overwrite them.
+  constexpr uint8_t registers[] = {
+      0, 2, 3, 4, 5, 6, 7, 8, 9, 10, 37, 40, 43, 44,
+      47, 51, 64, 65, 82, 85, 86, 89, 92, 93, 94, 95, 101, 102};
+  Serial.println("Audio codec snapshot (register=value):");
+  for (uint8_t reg : registers) {
+    Wire.beginTransmission(app_config::kAic3104I2cAddress);
+    Wire.write(reg);
+    const uint8_t result = Wire.endTransmission(false);
+    if (result != 0 ||
+        Wire.requestFrom(app_config::kAic3104I2cAddress,
+                         static_cast<uint8_t>(1)) != 1) {
+      Serial.printf("  %02X=READ_FAILED\n", reg);
+      continue;
+    }
+    const uint8_t value = Wire.read();
+    Serial.printf("  %02X=%02X\n", reg, value);
+    if (reg == 0 && value != 0) {
+      Serial.println("Audio codec snapshot stopped: unexpected register page");
+      return;
+    }
+  }
+  uint8_t packed = 0;
+  uint8_t status = 0xFF;
+  if (readXvfCommand(35, 10, &packed, 1, &status)) {
+    Serial.printf("Audio XVF3800 I2S_INPUT_PACKED=%u status=%u\n", packed, status);
+  }
 }
 
 bool AudioEngine::writeCodecRegister(uint8_t reg, uint8_t value) {

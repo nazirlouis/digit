@@ -1,0 +1,71 @@
+dfu-util 0.11
+
+Copyright 2005-2009 Weston Schmidt, Harald Welte and OpenMoko Inc.
+Copyright 2010-2021 Tormod Volden and Stefan Schmidt
+This program is Free Software and has ABSOLUTELY NO WARRANTY
+Please report bugs to http://sourceforge.net/p/dfu-util/tickets/
+
+Opening DFU capable USB device...
+Device ID 2886:801c
+Device DFU version 0101
+Claiming USB DFU Interface...
+Setting Alternate Interface #1 ...
+Determining device status...
+DFU state(2) = dfuIDLE, status(0) = No error condition is present
+DFU mode device DFU version 0101
+Device returned transfer size 4096
+Copying data from PC to DFU device
+
+Download	[                         ]   0%            0 bytes
+Download	[                         ]   1%        16384 bytes
+Download	[=                        ]   4%        36864 bytes
+Download	[=                        ]   6%        57344 bytes
+Download	[==                       ]   8%        73728 bytes
+Download	[==                       ]  11%       102400 bytes
+Download	[===                      ]  12%       110592 bytes
+Download	[====                     ]  16%       143360 bytes
+Download	[====                     ]  16%       147456 bytes
+Download	[=====                    ]  20%       180224 bytes
+Download	[=====                    ]  21%       188416 bytes
+Download	[======                   ]  24%       217088 bytes
+Download	[======                   ]  26%       233472 bytes
+Download	[=======                  ]  28%       249856 bytes
+Download	[=======                  ]  31%       278528 bytes
+Download	[========                 ]  32%       286720 bytes
+Download	[========                 ]  35%       319488 bytes
+Download	[=========                ]  36%       323584 bytes
+Download	[==========               ]  40%       356352 bytes
+Download	[==========               ]  41%       364544 bytes
+Download	[===========              ]  44%       393216 bytes
+Download	[===========              ]  46%       409600 bytes
+Download	[============             ]  48%       430080 bytes
+Download	[============             ]  51%       454656 bytes
+Download	[=============            ]  52%       462848 bytes
+Download	[=============            ]  55%       495616 bytes
+Download	[==============           ]  56%       499712 bytes
+Download	[===============          ]  60%       536576 bytes
+Download	[===============          ]  60%       540672 bytes
+Download	[================         ]  64%       569344 bytes
+Download	[================         ]  65%       585728 bytes
+Download	[=================        ]  68%       606208 bytes
+Download	[=================        ]  70%       626688 bytes
+Download	[==================       ]  72%       643072 bytes
+Download	[==================       ]  75%       671744 bytes
+Download	[===================      ]  76%       675840 bytes
+Download	[====================     ]  80%       712704 bytes
+Download	[====================     ]  80%       716800 bytes
+Download	[=====================    ]  84%       749568 bytes
+Download	[=====================    ]  85%       757760 bytes
+Download	[======================   ]  88%       782336 bytes
+Download	[======================   ]  90%       802816 bytes
+Download	[=======================  ]  92%       819200 bytes
+Download	[=======================  ]  95%       847872 bytes
+Download	[======================== ]  96%       856064 bytes
+Download	[=========================] 100%       884736 bytes
+Download done.
+DFU state(7) = dfuMANIFEST, status(0) = No error condition is present
+DFU state(2) = dfuIDLE, status(0) = No error condition is present
+Done!
+Resetting USB to switch back to Run-Time mode
+Warning: Invalid DFU suffix signature
+A valid DFU suffix will be required in a future dfu-util release

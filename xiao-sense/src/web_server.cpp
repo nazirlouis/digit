@@ -8,6 +8,7 @@
 #include "app_config.h"
 #include "audio_engine.h"
 #include "camera_service.h"
+#include "zumo_link.h"
 
 namespace {
 
@@ -40,6 +41,12 @@ const char kIndexHtml[] PROGMEM = R"HTML(
     .volume{margin:0 18px 18px;padding:14px 16px;background:#0a151a;border-radius:14px}.volume label{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}.volume label span{color:var(--muted)}
     .volume input{width:100%;accent-color:var(--cyan);cursor:pointer}.volume input:disabled{opacity:.35;cursor:not-allowed}
     .details{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;padding:0 18px 18px}.metric{background:#0a151a;border-radius:12px;padding:12px}.metric b{display:block;font-size:20px;margin-top:3px}.metric small{color:var(--muted)}
+    .zumo{padding:18px;border-top:1px solid #28434e}.zumo h2{margin:0 0 8px;font-size:22px}.zumo p{color:var(--muted);margin:0 0 14px}
+    .zumo-status{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px}.zumo-status span{background:#0a151a;border-radius:10px;padding:8px 10px}
+    .drive-pad{display:grid;grid-template-columns:repeat(3,minmax(80px,110px));gap:8px;justify-content:center;touch-action:none;user-select:none}
+    .drive-pad button{min-height:64px;touch-action:none}.drive-pad .forward{grid-column:2}.drive-pad .left{grid-column:1}.drive-pad .stop{grid-column:2}.drive-pad .right{grid-column:3}.drive-pad .back{grid-column:2}
+    .zumo-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px}.zumo-actions button{flex:1 1 120px}
+    .speed{display:flex;align-items:center;gap:12px;margin:14px 0}.speed input{flex:1;accent-color:var(--cyan)}
     #message{min-height:24px;padding:0 18px 18px;color:var(--muted)}#message.error{color:var(--red)}
     @media(max-width:650px){.controls{grid-template-columns:1fr 1fr}.details{grid-template-columns:1fr}.top{align-items:flex-start;flex-direction:column}}
   </style>
@@ -66,11 +73,40 @@ const char kIndexHtml[] PROGMEM = R"HTML(
       <div class="metric"><small>Network address</small><b id="network">--</b></div>
     </div>
     <div id="message">Waiting for device status...</div>
+    <div class="zumo">
+      <h2>Zumo drive</h2><p>Hold a direction to move. Release to stop. Calibrate on safe floor first.</p>
+      <div class="zumo-status"><span id="zumoLink">Zumo: connecting</span><span id="zumoReady">Drive: locked</span><span id="zumoBattery">Battery: --</span><span id="zumoFault">Fault: --</span></div>
+      <div class="drive-pad" id="drivePad">
+        <button class="forward" data-drive="forward" aria-label="Hold to drive forward">▲</button>
+        <button class="left" data-drive="left" aria-label="Hold to turn left">◀</button>
+        <button class="stop danger" id="zumoStop" aria-label="Stop Zumo">STOP</button>
+        <button class="right" data-drive="right" aria-label="Hold to turn right">▶</button>
+        <button class="back" data-drive="back" aria-label="Hold to reverse">▼</button>
+      </div>
+      <label class="speed" for="driveSpeed">Drive speed <input id="driveSpeed" type="range" min="500" max="2000" step="100" value="1000"><b id="driveSpeedValue">1000</b></label>
+      <div class="zumo-actions"><button id="zumoCalibrate">Calibrate floor</button><button id="zumoHappy">Happy face</button><button id="zumoSad">Sad face</button></div>
+      <div id="zumoMessage">Waiting for Zumo status...</div>
+    </div>
   </section>
 </main>
 <script>
 const $=id=>document.getElementById(id);
 $('stream').src=`http://${location.hostname}:81/stream`;
+let heldDirection=null,driveTimer=null,driveInFlight=false,zumoReady=false;
+const driveButtons=[...document.querySelectorAll('[data-drive]')];
+function speeds(direction){const value=Number($('driveSpeed').value);return {forward:[value,value],back:[-value,-value],left:[-value,value],right:[value,-value]}[direction]||[0,0]}
+async function postZumo(path){const response=await fetch(path,{method:'POST',cache:'no-store'});const data=await response.json();if(!response.ok)throw Error(data.message||'Zumo command failed');return data}
+async function stopZumo(){heldDirection=null;if(driveTimer!==null){clearInterval(driveTimer);driveTimer=null}try{await postZumo('/api/zumo/stop')}catch(error){$('zumoMessage').textContent=error.message}}
+async function sendDrive(){if(!heldDirection||driveInFlight)return;driveInFlight=true;const [left,right]=speeds(heldDirection);try{await postZumo(`/api/zumo/drive?left=${left}&right=${right}`)}catch(error){$('zumoMessage').textContent=error.message;await stopZumo()}finally{driveInFlight=false}}
+function beginDrive(direction,event){if(!zumoReady||heldDirection)return;event.preventDefault();event.currentTarget.setPointerCapture(event.pointerId);heldDirection=direction;sendDrive();driveTimer=setInterval(sendDrive,100)}
+for(const button of driveButtons){button.addEventListener('pointerdown',event=>beginDrive(button.dataset.drive,event));button.addEventListener('pointerup',stopZumo);button.addEventListener('pointercancel',stopZumo);button.addEventListener('lostpointercapture',()=>{if(heldDirection)stopZumo()})}
+$('zumoStop').addEventListener('click',stopZumo);
+$('driveSpeed').addEventListener('input',event=>{$('driveSpeedValue').textContent=event.target.value});
+$('zumoCalibrate').addEventListener('click',async()=>{try{await postZumo('/api/zumo/calibrate');$('zumoMessage').textContent='Calibrating floor...'}catch(error){$('zumoMessage').textContent=error.message}});
+for(const [id,value] of [['zumoHappy','HAPPY'],['zumoSad','SAD']]){$(id).addEventListener('click',async()=>{try{await postZumo('/api/zumo/face?value='+value)}catch(error){$('zumoMessage').textContent=error.message}})}
+window.addEventListener('blur',stopZumo);document.addEventListener('visibilitychange',()=>{if(document.hidden)stopZumo()});
+async function refreshZumo(){try{const response=await fetch('/api/zumo/status',{cache:'no-store'});if(!response.ok)throw Error('Status unavailable');const s=await response.json();zumoReady=s.connected&&s.ready&&!s.calibrating;$('zumoLink').textContent=s.connected?'Zumo: connected':'Zumo: disconnected';$('zumoReady').textContent=s.calibrating?'Drive: calibrating':zumoReady?'Drive: ready':'Drive: locked';$('zumoBattery').textContent=s.battery_mv>=0?`Battery: ${(s.battery_mv/1000).toFixed(2)} V`:'Battery: --';$('zumoFault').textContent='Fault: '+s.fault;for(const button of driveButtons)button.disabled=!zumoReady;$('zumoCalibrate').disabled=!s.connected||s.calibrating||!!heldDirection;$('zumoHappy').disabled=$('zumoSad').disabled=!s.connected||!!heldDirection;if(!zumoReady&&heldDirection)stopZumo();if(s.last_error!=='NONE')$('zumoMessage').textContent=s.last_error;else if(s.fault!=='NONE')$('zumoMessage').textContent=s.fault;else if(zumoReady)$('zumoMessage').textContent='Hold a direction to drive.'}catch(error){zumoReady=false;for(const button of driveButtons)button.disabled=true;$('zumoLink').textContent='Zumo: unavailable';if(heldDirection)stopZumo()}}
+refreshZumo();setInterval(refreshZumo,350);
 async function action(path){
   try{const response=await fetch(path,{method:'POST'});const data=await response.json();$('message').textContent=data.message||'';$('message').className=response.ok?'':'error';await refresh();}
   catch(error){$('message').textContent=error.message;$('message').className='error';}
@@ -182,6 +218,101 @@ esp_err_t statusHandler(httpd_req_t* request) {
       WiFi.status() == WL_CONNECTED ? "true" : "false", wifiIp.c_str(),
       static_cast<long>(WiFi.RSSI()));
   return sendJson(request, json);
+}
+
+bool queryValue(httpd_req_t* request, const char* key, char* value,
+                size_t valueSize) {
+  const size_t queryLength = httpd_req_get_url_query_len(request);
+  if (queryLength == 0 || queryLength >= 80) {
+    return false;
+  }
+  char query[80];
+  if (httpd_req_get_url_query_str(request, query, sizeof(query)) != ESP_OK) {
+    return false;
+  }
+  return httpd_query_key_value(query, key, value, valueSize) == ESP_OK;
+}
+
+bool parseSpeed(const char* value, int* result) {
+  const bool negative = *value == '-';
+  if (negative) {
+    ++value;
+  }
+  if (*value == '\0') {
+    return false;
+  }
+  int number = 0;
+  for (const char* cursor = value; *cursor != '\0'; ++cursor) {
+    if (*cursor < '0' || *cursor > '9') {
+      return false;
+    }
+    number = number * 10 + (*cursor - '0');
+    if (number > 2000) {
+      return false;
+    }
+  }
+  *result = negative ? -number : number;
+  return true;
+}
+
+esp_err_t zumoStatusHandler(httpd_req_t* request) {
+  const zumo_link::Status zumo = zumo_link::snapshot();
+  char fault[48], lastError[64];
+  escapeJsonString(zumo.fault, fault, sizeof(fault));
+  escapeJsonString(zumo.lastError, lastError, sizeof(lastError));
+  char json[320];
+  snprintf(json, sizeof(json),
+           "{\"connected\":%s,\"ready\":%s,\"calibrating\":%s,"
+           "\"edge\":%s,\"left\":%d,\"right\":%d,\"battery_mv\":%d,"
+           "\"reply_age_ms\":%lu,\"fault\":\"%s\",\"last_error\":\"%s\"}",
+           zumo.connected ? "true" : "false", zumo.ready ? "true" : "false",
+           zumo.calibrating ? "true" : "false", zumo.edge ? "true" : "false",
+           zumo.left, zumo.right, zumo.batteryMillivolts,
+           static_cast<unsigned long>(zumo.replyAgeMs), fault, lastError);
+  return sendJson(request, json);
+}
+
+esp_err_t zumoDriveHandler(httpd_req_t* request) {
+  char leftText[12], rightText[12];
+  int left = 0, right = 0;
+  if (!queryValue(request, "left", leftText, sizeof(leftText)) ||
+      !queryValue(request, "right", rightText, sizeof(rightText)) ||
+      !parseSpeed(leftText, &left) || !parseSpeed(rightText, &right)) {
+    httpd_resp_set_status(request, "400 Bad Request");
+    return sendJson(request, "{\"message\":\"Use left and right speeds from -2000 to 2000\"}");
+  }
+  if (!zumo_link::drive(left, right)) {
+    httpd_resp_set_status(request, "409 Conflict");
+    return sendJson(request, "{\"message\":\"Zumo is disconnected or not calibrated\"}");
+  }
+  return sendJson(request, "{\"message\":\"Drive command accepted\"}");
+}
+
+esp_err_t zumoStopHandler(httpd_req_t* request) {
+  zumo_link::stop();
+  return sendJson(request, "{\"message\":\"Zumo stop requested\"}");
+}
+
+esp_err_t zumoCalibrateHandler(httpd_req_t* request) {
+  if (!zumo_link::calibrate()) {
+    httpd_resp_set_status(request, "409 Conflict");
+    return sendJson(request, "{\"message\":\"Zumo must be connected and stopped\"}");
+  }
+  return sendJson(request, "{\"message\":\"Floor calibration requested\"}");
+}
+
+esp_err_t zumoFaceHandler(httpd_req_t* request) {
+  char value[12];
+  if (!queryValue(request, "value", value, sizeof(value)) ||
+      (strcmp(value, "HAPPY") != 0 && strcmp(value, "SAD") != 0)) {
+    httpd_resp_set_status(request, "400 Bad Request");
+    return sendJson(request, "{\"message\":\"Use HAPPY or SAD\"}");
+  }
+  if (!zumo_link::face(strcmp(value, "HAPPY") == 0)) {
+    httpd_resp_set_status(request, "409 Conflict");
+    return sendJson(request, "{\"message\":\"Zumo must be connected and stopped\"}");
+  }
+  return sendJson(request, "{\"message\":\"Face command accepted\"}");
 }
 
 esp_err_t sendActionResult(httpd_req_t* request, AudioActionResult result,
@@ -346,7 +477,7 @@ bool begin() {
   httpd_config_t controlConfig = HTTPD_DEFAULT_CONFIG();
   controlConfig.server_port = app_config::kControlServerPort;
   controlConfig.ctrl_port = 32768;
-  controlConfig.max_uri_handlers = 8;
+  controlConfig.max_uri_handlers = 13;
   controlConfig.lru_purge_enable = true;
 
   if (httpd_start(&controlServer, &controlConfig) != ESP_OK) {
@@ -365,7 +496,17 @@ bool begin() {
       registerUri(controlServer, "/api/tone", HTTP_POST, toneHandler) &&
       registerUri(controlServer, "/api/play/stop", HTTP_POST,
                   stopPlaybackHandler) &&
-      registerUri(controlServer, "/api/volume", HTTP_POST, volumeHandler);
+      registerUri(controlServer, "/api/volume", HTTP_POST, volumeHandler) &&
+      registerUri(controlServer, "/api/zumo/status", HTTP_GET,
+                  zumoStatusHandler) &&
+      registerUri(controlServer, "/api/zumo/drive", HTTP_POST,
+                  zumoDriveHandler) &&
+      registerUri(controlServer, "/api/zumo/stop", HTTP_POST,
+                  zumoStopHandler) &&
+      registerUri(controlServer, "/api/zumo/calibrate", HTTP_POST,
+                  zumoCalibrateHandler) &&
+      registerUri(controlServer, "/api/zumo/face", HTTP_POST,
+                  zumoFaceHandler);
   if (!controlRoutesReady) {
     Serial.println("Web: could not register all control routes");
     return false;

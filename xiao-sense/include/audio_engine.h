@@ -62,6 +62,7 @@ class AudioEngine {
   bool captureRecording();
   bool playRecording();
   bool playDiagnosticTone();
+  bool detectI2sClockSource();
   bool beginI2s(bool receive);
   void endI2s();
 
@@ -73,6 +74,7 @@ class AudioEngine {
                       uint8_t* responseStatus);
   bool readXvfGpoValues(uint8_t values[5], uint8_t* responseStatus);
   bool readXvfVersion();
+  void logCodecDiagnostics();
   bool writeCodecRegister(uint8_t reg, uint8_t value);
   bool probeI2cAddress(uint8_t address);
 
@@ -90,6 +92,7 @@ class AudioEngine {
   AudioState state_ = AudioState::Unavailable;
   bool initialized_ = false;
   bool i2sRunning_ = false;
+  bool xiaoI2sMaster_ = true;
   uint8_t speakerVolumePercent_ = 0;
   char error_[96] = "Audio has not been initialized";
   audio_tools::I2SStream i2s_;

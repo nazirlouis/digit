@@ -1,4 +1,4 @@
-"""Show VL53L4CD distance on a Zumo 2040 OLED and serial console.
+"""Show VL53L4CD distance on Digit's Waveshare LCD and serial console.
 
 Wiring on the Zumo 2040 expansion header:
     VL53L4CD VIN -> 3V3
@@ -6,13 +6,14 @@ Wiring on the Zumo 2040 expansion header:
     VL53L4CD SDA -> SDA / GP4
     VL53L4CD SCL -> SCL / GP5
 
-Copy this file to the Zumo root and place vl53l4cd.py in /zumo_2040_robot,
+Copy this file and digit_display.py to the Zumo root and place vl53l4cd.py in /zumo_2040_robot,
 then run tof_distance.py.
 Press button C to stop.
 """
 
 from machine import I2C, Pin
 from zumo_2040_robot import robot
+from digit_display import Display
 import time
 
 from zumo_2040_robot.vl53l4cd import VL53L4CD
@@ -30,7 +31,7 @@ def show(display, title, value=""):
     display.show()
 
 
-display = robot.Display()
+display = Display()
 button_c = robot.ButtonC()
 i2c = I2C(id=0, scl=Pin(5), sda=Pin(4), freq=400_000)
 sensor = None

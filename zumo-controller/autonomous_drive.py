@@ -1,5 +1,6 @@
 from machine import I2C, Pin
 from zumo_2040_robot import robot
+from digit_display import Display
 from zumo_2040_robot.vl53l4cd import VL53L4CD
 import time
 
@@ -271,7 +272,7 @@ tof_sensor = None
 
 try:
     motors.off()
-    display = robot.Display()
+    display = Display()
     button_a = robot.ButtonA()
     button_c = robot.ButtonC()
     proximity_sensors = robot.ProximitySensors()
