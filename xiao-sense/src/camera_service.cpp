@@ -38,7 +38,7 @@ void fail(const char* message) {
 namespace camera_service {
 
 bool begin() {
-  if (!psramFound()) {
+  if (heap_caps_get_total_size(MALLOC_CAP_SPIRAM) == 0) {
     fail("PSRAM was not detected");
     return false;
   }

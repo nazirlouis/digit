@@ -1,0 +1,4 @@
+dependencies:
+  espressif/esp32-camera: "^2.0.0"
+  espressif/pedestrian_detect: "0.3.2"
+  espressif/esp_new_jpeg: "1.0.2"

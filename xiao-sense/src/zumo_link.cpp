@@ -20,6 +20,7 @@ zumo_link::Status status = {false, false, false, false, 0, 0, -1, 0,
 int desiredLeft = 0;
 int desiredRight = 0;
 bool driveWanted = false;
+bool turnWanted = false;
 bool stopPending = false;
 bool calibrationPending = false;
 int facePending = 0;
@@ -43,6 +44,7 @@ uint16_t sendPrefix() {
 
 void clearDrive() {
   driveWanted = false;
+  turnWanted = false;
   desiredLeft = 0;
   desiredRight = 0;
 }
@@ -167,12 +169,32 @@ bool drive(int left, int right) {
   if (allowed) {
     desiredLeft = left;
     desiredRight = right;
+    turnWanted = false;
     facePending = 0;
     driveWanted = left != 0 || right != 0;
     lastBrowserDrive = now;
     if (!driveWanted) {
       stopPending = true;
     }
+  }
+  portEXIT_CRITICAL(&stateLock);
+  return allowed;
+}
+
+bool turn(int speed) {
+  if (speed < -6000 || speed > 6000) return false;
+  const uint32_t now = millis();
+  portENTER_CRITICAL(&stateLock);
+  const bool allowed = status.ready && lastReply != 0 &&
+                       now - lastReply < kLinkTimeoutMs && !status.calibrating;
+  if (allowed) {
+    desiredLeft = speed;
+    desiredRight = -speed;
+    turnWanted = true;
+    facePending = 0;
+    driveWanted = speed != 0;
+    lastBrowserDrive = now;
+    if (!driveWanted) stopPending = true;
   }
   portEXIT_CRITICAL(&stateLock);
   return allowed;
@@ -222,6 +244,7 @@ void poll() {
   bool sendStop = false, sendCalibration = false;
   int sendFace = 0;
   bool sendDrive = false;
+  bool sendTurn = false;
   int left = 0, right = 0;
   portENTER_CRITICAL(&stateLock);
   const bool connected = lastReply != 0 && now - lastReply < kLinkTimeoutMs;
@@ -247,6 +270,7 @@ void poll() {
   } else if (driveWanted && connected && status.ready &&
              now - lastDriveSent >= kDrivePeriodMs) {
     sendDrive = true;
+    sendTurn = turnWanted;
     left = desiredLeft;
     right = desiredRight;
     lastDriveSent = now;
@@ -264,7 +288,8 @@ void poll() {
     zumoUart.println(sendFace == 1 ? "FACE HAPPY" : "FACE SAD");
   } else if (sendDrive) {
     sendPrefix();
-    zumoUart.printf("DRIVE %d %d\n", left, right);
+    if (sendTurn) zumoUart.printf("TURN %d\n", left);
+    else zumoUart.printf("DRIVE %d %d\n", left, right);
   }
   if (now - lastStatusSent >= kStatusPeriodMs) {
     lastStatusSent = now;
