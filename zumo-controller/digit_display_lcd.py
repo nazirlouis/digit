@@ -46,6 +46,13 @@ class Display(framebuf.FrameBuffer):
         # Two scaled physical rows are prepared together and sent in one write.
         self._rows = bytearray(self.width * 8)
         self._rows_view = memoryview(self._rows)
+        # Four source pixels per lookup entry (two entries per source byte).
+        # Allocate once: 16 mutable blocks use only 256 bytes of pixel data.
+        # Palette changes update these blocks instead of allocating another
+        # 256-entry table while the old one is still live on the RP2040 heap.
+        self._lookup = tuple(bytearray(16) for _ in range(16))
+        self._foreground = None
+        self._background = None
         self.last_show_us = 0
         self.last_rows_sent = 0
         self.last_bytes_sent = 0
@@ -136,16 +143,27 @@ class Display(framebuf.FrameBuffer):
         self.dc(1)
 
     def set_colors(self, foreground=0xFFFF, background=0x0000):
-        """Map monochrome 1/0 to RGB565 colors (white/black by default)."""
-        # MONO_HLSB stores the leftmost pixel in bit 7. Expand once per byte,
-        # then copy 16 precomputed blocks per row instead of per-pixel drawing.
-        fg = bytes((foreground >> 8, foreground & 255)) * 2
-        bg = bytes((background >> 8, background & 255)) * 2
-        self._lookup = tuple(
-            b"".join(fg if value & (128 >> bit) else bg for bit in range(8))
-            for value in range(256)
-        )
+        """Change RGB565 colors in place; no new lookup buffers or tuple."""
+        if foreground == self._foreground and background == self._background:
+            return
         self._valid = False
+        fg_hi, fg_lo = foreground >> 8, foreground & 255
+        bg_hi, bg_lo = background >> 8, background & 255
+        # MONO_HLSB is most-significant bit first. Each source pixel expands
+        # to two horizontal RGB565 pixels; show() duplicates the whole row.
+        for value in range(16):
+            block = self._lookup[value]
+            for bit in range(4):
+                foreground_pixel = value & (8 >> bit)
+                hi = fg_hi if foreground_pixel else bg_hi
+                lo = fg_lo if foreground_pixel else bg_lo
+                start = bit * 4
+                block[start] = hi
+                block[start + 1] = lo
+                block[start + 2] = hi
+                block[start + 3] = lo
+        self._foreground = foreground
+        self._background = background
 
     def clear_panel(self, color=0x0000):
         """Clear the whole physical panel, including the canvas margins."""
@@ -229,7 +247,9 @@ class Display(framebuf.FrameBuffer):
                     offset = y * row_bytes + first_byte
                     for x_byte in range(changed_byte_count):
                         start = x_byte * 32
-                        rows[start:start + 32] = lookup[buf[offset + x_byte]]
+                        value = buf[offset + x_byte]
+                        rows[start:start + 16] = lookup[value >> 4]
+                        rows[start + 16:start + 32] = lookup[value & 15]
                     rows_view[physical_row_bytes:physical_row_bytes * 2] = \
                         rows_view[:physical_row_bytes]
                     self.spi.write(rows_view[:physical_row_bytes * 2])

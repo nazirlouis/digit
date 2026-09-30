@@ -4,17 +4,27 @@
 #include <driver/pcnt.h>
 #include <esp_heap_caps.h>
 #include <math.h>
+#include <cstring>
 
 #include "app_config.h"
+#include "wake_word.h"
+#include "xvf_read.h"
 
 namespace {
+
+SemaphoreHandle_t busMutex = nullptr;
+// Includes the XVF command/STOP/delay/read sequence, not just each transfer.
+class BusLock {
+ public:
+  BusLock() { if (busMutex) xSemaphoreTakeRecursive(busMutex, portMAX_DELAY); }
+  ~BusLock() { if (busMutex) xSemaphoreGiveRecursive(busMutex); }
+};
 
 constexpr uint8_t kGpoServicerResourceId = 20;
 constexpr uint8_t kGpoReadCommandId = 0;
 constexpr uint8_t kGpoWriteCommandId = 1;
 constexpr uint8_t kAmplifierEnablePin = 31;
 constexpr uint8_t kAmplifierGpoIndex = 2;
-constexpr uint8_t kXvfReadBit = 0x80;
 constexpr uint8_t kVersionResourceId = 48;
 constexpr uint8_t kVersionCommandId = 0;
 constexpr uint8_t kXvfSuccessStatus = 0;
@@ -32,20 +42,29 @@ constexpr uint8_t kCodecMaximumAttenuation = 0x7F;
 
 constexpr size_t kAudioFrameBytes =
     app_config::kAudioChannels * (app_config::kAudioBitsPerSample / 8);
-constexpr uint32_t kNoDataFailureLimit = 100;
 constexpr uint32_t kPlaybackTargetPeak = 0x10000000;
 constexpr uint32_t kMaximumPlaybackGain = 65536;
 constexpr uint32_t kTestToneFrequencyHz = 440;
 constexpr uint32_t kTestToneDurationMs = 2000;
 constexpr int32_t kTestToneAmplitude = 0x08000000;
-constexpr size_t kTestToneFramesPerChunk = 256;
+constexpr size_t kStreamFrames = wake_word::kFrameSamples;
+constexpr uint32_t kChimeFrames = app_config::kAudioSampleRate * 400 / 1000;
+int32_t gInput[kStreamFrames * 2] = {};
+int32_t gOutput[kStreamFrames * 2] = {};
 
-// These buffers must not live on the audio task's stack.  The Wire/I2C driver
-// also needs several kilobytes of stack, and combining it with the old 4 KiB
-// silence buffer plus 2 KiB tone buffer overflowed the 8 KiB task stack before
-// the first tone sample could be written.
-uint8_t gPlaybackSilence[app_config::kAudioIoChunkBytes] = {};
-int32_t gTestTone[kTestToneFramesPerChunk * app_config::kAudioChannels] = {};
+int32_t toneSample(uint32_t frame, uint32_t total, uint32_t frequency) {
+  if (frame >= total) return 0;
+  const uint32_t fade = app_config::kAudioSampleRate / 50;
+  const float envelope = static_cast<float>(min(min(frame, total - 1 - frame), fade)) / fade;
+  const float phase = 6.28318530718f * ((frame * frequency) % app_config::kAudioSampleRate) /
+                      app_config::kAudioSampleRate;
+  return static_cast<int32_t>(sinf(phase) * envelope * kTestToneAmplitude);
+}
+
+int32_t chimeSample(uint32_t frame) {
+  const uint32_t noteFrames = kChimeFrames / 2;
+  return toneSample(frame % noteFrames, noteFrames, frame < noteFrames ? 660 : 990);
+}
 
 uint8_t volumePercentToCodecValue(uint8_t percent) {
   if (percent == 0) {
@@ -78,6 +97,7 @@ const char* i2cResultName(uint8_t result) {
 }
 
 void printI2cScan() {
+  BusLock lock;
   Serial.println("Audio: scanning I2C addresses on GPIO5/GPIO6");
   bool foundAny = false;
   for (uint8_t address = 1; address < 127; ++address) {
@@ -103,9 +123,10 @@ bool AudioEngine::begin() {
                 app_config::kAudioChannels, app_config::kAudioBitsPerSample,
                 static_cast<unsigned long>(app_config::kI2cFrequencyHz));
   mutex_ = xSemaphoreCreateMutex();
+  busMutex = xSemaphoreCreateRecursiveMutex();
   commandQueue_ = xQueueCreate(2, sizeof(Command));
   stopEvents_ = xEventGroupCreate();
-  if (mutex_ == nullptr || commandQueue_ == nullptr || stopEvents_ == nullptr) {
+  if (mutex_ == nullptr || busMutex == nullptr || commandQueue_ == nullptr || stopEvents_ == nullptr) {
     setError("Could not create audio synchronization objects");
     return false;
   }
@@ -133,7 +154,7 @@ bool AudioEngine::begin() {
   if (!detectI2sClockSource()) {
     return false;
   }
-  if (!beginI2s(false)) {
+  if (!beginI2s()) {
     setError("Could not start initial I2S clocks for the ReSpeaker");
     return false;
   }
@@ -142,20 +163,18 @@ bool AudioEngine::begin() {
     endI2s();
     return false;
   }
-  endI2s();
-
-  const BaseType_t taskResult = xTaskCreatePinnedToCore(
-      taskEntry, "digit-audio", 8192, this, 3, &task_, 1);
-  if (taskResult != pdPASS) {
-    setError("Could not start the audio task");
-    return false;
-  }
+  // Keep both directions clocked for the lifetime of the audio task.
 
   xSemaphoreTake(mutex_, portMAX_DELAY);
   initialized_ = true;
   state_ = AudioState::Ready;
   error_[0] = '\0';
   xSemaphoreGive(mutex_);
+  if (xTaskCreatePinnedToCore(taskEntry, "digit-audio", 8192, this, 3, &task_, 1) != pdPASS) {
+    endI2s();
+    setError("Could not start the audio task");
+    return false;
+  }
 
   Serial.printf("Audio: ready, %u-byte PSRAM buffer\n",
                 static_cast<unsigned int>(app_config::kAudioBufferBytes));
@@ -292,7 +311,7 @@ AudioActionResult AudioEngine::stopPlayback() {
   if (!available) {
     return AudioActionResult::Unavailable;
   }
-  if (currentState != AudioState::Playing) {
+  if (currentState != AudioState::Playing && !snapshot().wakeChimePlaying) {
     return AudioActionResult::Conflict;
   }
   xEventGroupSetBits(stopEvents_, kStopPlaybackBit);
@@ -353,6 +372,7 @@ AudioStatus AudioEngine::snapshot() {
     status.recordingElapsedMilliseconds = 0;
   }
   status.speakerVolumePercent = speakerVolumePercent_;
+  status.wakeChimePlaying = wakeChimePlaying_;
   snprintf(status.error, sizeof(status.error), "%s", error_);
   xSemaphoreGive(mutex_);
   return status;
@@ -392,271 +412,126 @@ void AudioEngine::taskEntry(void* context) {
   static_cast<AudioEngine*>(context)->taskLoop();
 }
 
+bool AudioEngine::playWakeChime() {
+  if (!snapshot().available) return false;
+  xEventGroupSetBits(stopEvents_, kWakeChimeBit);
+  return true;
+}
+
 void AudioEngine::taskLoop() {
+  enum class Mode { Idle, Record, Play, Tone };
+  Mode mode = Mode::Idle;
+  size_t recordOffset = 0, playOffset = 0;
+  uint32_t recordingPeak = 0, playbackGain = 1, toneFrame = 0;
+  uint32_t chimeFrame = kChimeFrames;
+  uint32_t emptyReads = 0;
   for (;;) {
     Command command;
-    if (xQueueReceive(commandQueue_, &command, portMAX_DELAY) != pdTRUE) {
-      continue;
-    }
-
-    if (command == Command::Record) {
-      if (!captureRecording()) {
-        continue;
+    if (xQueueReceive(commandQueue_, &command, 0) == pdTRUE) {
+      if (command == Command::Record) {
+        recordOffset = 0;
+        recordingPeak = 0;
+        mode = Mode::Record;
+      } else if (command == Command::Play) {
+        playOffset = 0;
+        mode = Mode::Play;
+      } else if (command == Command::Tone) {
+        toneFrame = 0;
+        mode = Mode::Tone;
       }
-
-      AudioStatus status = snapshot();
-      if (status.capturedBytes == 0) {
+    }
+    const EventBits_t events = xEventGroupClearBits(stopEvents_, kWakeChimeBit | kStopPlaybackBit);
+    if (events & kWakeChimeBit) chimeFrame = 0;
+    if (events & kStopPlaybackBit) {
+      chimeFrame = kChimeFrames;
+      if (mode == Mode::Play || mode == Mode::Tone) {
+        mode = Mode::Idle;
         setState(AudioState::Ready);
-        continue;
       }
-
-      setState(AudioState::Playing);
-      xEventGroupClearBits(stopEvents_, kStopPlaybackBit);
-      playRecording();
-    } else if (command == Command::Play) {
-      playRecording();
-    } else if (command == Command::Tone) {
-      playDiagnosticTone();
-    }
-  }
-}
-
-bool AudioEngine::captureRecording() {
-  Serial.printf("[%10lu] Audio: recording task started\n",
-                static_cast<unsigned long>(millis()));
-  if (!beginI2s(true)) {
-    setError("Could not start the ReSpeaker I2S input");
-    return false;
-  }
-
-  size_t offset = 0;
-  uint32_t emptyReads = 0;
-  uint32_t nextProgressBytes = app_config::kAudioBytesPerSecond;
-  while (offset < app_config::kAudioBufferBytes) {
-    if ((xEventGroupGetBits(stopEvents_) & kStopRecordingBit) != 0) {
-      break;
     }
 
-    const size_t remaining = app_config::kAudioBufferBytes - offset;
-    const size_t requested =
-        min(remaining, static_cast<size_t>(app_config::kAudioIoChunkBytes));
-    const size_t received = i2s_.readBytes(audioBuffer_ + offset, requested);
-    if (received == 0) {
-      if (++emptyReads >= kNoDataFailureLimit) {
+    const size_t received = i2s_.readBytes(reinterpret_cast<uint8_t*>(gInput), sizeof(gInput));
+    if (!received) {
+      if (++emptyReads >= 20) {
         endI2s();
-        setError("No audio samples arrived from the ReSpeaker");
-        return false;
+        setError("No microphone samples from the ReSpeaker");
+        vTaskDelete(nullptr);
+        return;
       }
-      vTaskDelay(pdMS_TO_TICKS(10));
       continue;
     }
-
     emptyReads = 0;
-    offset += received;
-    updateCapturedBytes(offset - (offset % kAudioFrameBytes));
-    if (offset >= nextProgressBytes) {
-      Serial.printf("[%10lu] Audio RX: %u bytes captured (%.1f s)\n",
-                    static_cast<unsigned long>(millis()),
-                    static_cast<unsigned int>(offset),
-                    static_cast<double>(offset) /
-                        app_config::kAudioBytesPerSecond);
-      nextProgressBytes += app_config::kAudioBytesPerSecond;
-    }
-  }
-
-  endI2s();
-  updateCapturedBytes(offset - (offset % kAudioFrameBytes));
-  const size_t sampleCount = offset / sizeof(int32_t);
-  const int32_t* samples = reinterpret_cast<const int32_t*>(audioBuffer_);
-  uint32_t peak[2] = {};
-  size_t nonZero[2] = {};
-  for (size_t index = 0; index < sampleCount; ++index) {
-    const uint8_t channel = index % app_config::kAudioChannels;
-    const int64_t signedSample = samples[index];
-    const uint32_t magnitude = static_cast<uint32_t>(
-        signedSample < 0 ? -signedSample : signedSample);
-    peak[channel] = max(peak[channel], magnitude);
-    if (samples[index] != 0) {
-      ++nonZero[channel];
-    }
-  }
-  const size_t frames = sampleCount / app_config::kAudioChannels;
-  Serial.printf(
-      "[%10lu] Audio RX signal: frames=%u ch0_peak=%u ch0_nonzero=%u/%u "
-      "ch1_peak=%u ch1_nonzero=%u/%u\n",
-      static_cast<unsigned long>(millis()), static_cast<unsigned int>(frames),
-      static_cast<unsigned int>(peak[0]),
-      static_cast<unsigned int>(nonZero[0]), static_cast<unsigned int>(frames),
-      static_cast<unsigned int>(peak[1]),
-      static_cast<unsigned int>(nonZero[1]), static_cast<unsigned int>(frames));
-
-  const uint32_t strongestPeak = max(peak[0], peak[1]);
-  uint32_t playbackGain = 1;
-  if (strongestPeak > 0 && strongestPeak < kPlaybackTargetPeak) {
-    playbackGain = min(kMaximumPlaybackGain,
-                       kPlaybackTargetPeak / strongestPeak);
-  }
-  if (playbackGain > 1) {
-    int32_t* writableSamples = reinterpret_cast<int32_t*>(audioBuffer_);
-    for (size_t index = 0; index < sampleCount; ++index) {
-      const int64_t scaled =
-          static_cast<int64_t>(writableSamples[index]) * playbackGain;
-      writableSamples[index] = static_cast<int32_t>(
-          constrain(scaled, static_cast<int64_t>(INT32_MIN),
-                    static_cast<int64_t>(INT32_MAX)));
-    }
-  }
-  Serial.printf(
-      "[%10lu] Audio playback normalization: source_peak=%u gain=%ux "
-      "target_peak=%u\n",
-      static_cast<unsigned long>(millis()),
-      static_cast<unsigned int>(strongestPeak),
-      static_cast<unsigned int>(playbackGain),
-      static_cast<unsigned int>(kPlaybackTargetPeak));
-  xSemaphoreTake(mutex_, portMAX_DELAY);
-  recordingStartedAtMs_ = 0;
-  xSemaphoreGive(mutex_);
-  Serial.printf("Audio: recording stopped at %u bytes\n",
-                static_cast<unsigned int>(offset));
-  return true;
-}
-
-bool AudioEngine::playRecording() {
-  AudioStatus status = snapshot();
-  const size_t bytesToPlay = status.capturedBytes;
-  if (bytesToPlay == 0) {
-    setState(AudioState::Ready);
-    return true;
-  }
-
-  // Keep BCLK/WS present while using the XVF3800 I2C control plane. The
-  // 16 kHz slave image can NACK or ignore GPO writes when its I2S clocks stop.
-  if (!beginI2s(false)) {
-    setError("Could not start the ReSpeaker I2S output");
-    return false;
-  }
-  i2s_.write(gPlaybackSilence, sizeof(gPlaybackSilence));
-  delay(30);
-
-  // initializeSpeakerPath() already verified that X0D31 booted low (enabled).
-  // Avoid I2C traffic here: the XVF3800 and XIAO share this multi-master bus
-  // while audio clocks are active, and repeated control writes are unnecessary.
-  Serial.printf("[%10lu] Audio: using boot-time speaker amplifier state\n",
-                static_cast<unsigned long>(millis()));
-
-  Serial.printf("Audio: playing %u bytes\n",
-                static_cast<unsigned int>(bytesToPlay));
-  size_t offset = 0;
-  uint32_t emptyWrites = 0;
-  uint32_t nextProgressBytes = app_config::kAudioBytesPerSecond;
-  while (offset < bytesToPlay) {
-    if ((xEventGroupGetBits(stopEvents_) & kStopPlaybackBit) != 0) {
-      break;
-    }
-
-    const size_t remaining = bytesToPlay - offset;
-    const size_t requested =
-        min(remaining, static_cast<size_t>(app_config::kAudioIoChunkBytes));
-    const size_t written = i2s_.write(audioBuffer_ + offset, requested);
-    if (written == 0) {
-      if (++emptyWrites >= kNoDataFailureLimit) {
-        endI2s();
-        setError("The ReSpeaker stopped accepting playback samples");
-        return false;
-      }
-      vTaskDelay(pdMS_TO_TICKS(10));
-      continue;
-    }
-    emptyWrites = 0;
-    offset += written;
-    if (offset >= nextProgressBytes) {
-      Serial.printf("[%10lu] Audio TX: %u/%u bytes played (%.1f s)\n",
-                    static_cast<unsigned long>(millis()),
-                    static_cast<unsigned int>(offset),
-                    static_cast<unsigned int>(bytesToPlay),
-                    static_cast<double>(offset) /
-                        app_config::kAudioBytesPerSecond);
-      nextProgressBytes += app_config::kAudioBytesPerSecond;
-    }
-  }
-
-  // A short zero tail prevents the final sample from being held at the output.
-  i2s_.write(gPlaybackSilence, sizeof(gPlaybackSilence));
-  delay(30);
-  endI2s();
-
-  setState(AudioState::Ready);
-  Serial.printf("Audio: playback ended at %u bytes\n",
-                static_cast<unsigned int>(offset));
-  return true;
-}
-
-bool AudioEngine::playDiagnosticTone() {
-  if (!beginI2s(false)) {
-    setError("Could not start I2S for the speaker test");
-    return false;
-  }
-
-  i2s_.write(gPlaybackSilence, sizeof(gPlaybackSilence));
-  delay(30);
-  logCodecDiagnostics();
-
-  const uint32_t totalFrames =
-      (app_config::kAudioSampleRate * kTestToneDurationMs) / 1000;
-  const uint32_t fadeFrames = app_config::kAudioSampleRate / 50;  // 20 ms
-  constexpr float kTwoPi = 6.2831853071795864769f;
-  uint32_t framesWritten = 0;
-  Serial.printf(
-      "[%10lu] Audio speaker test: %lu Hz sine wave, %lu ms, "
-      "amplitude=%ld\n",
-      static_cast<unsigned long>(millis()),
-      static_cast<unsigned long>(kTestToneFrequencyHz),
-      static_cast<unsigned long>(kTestToneDurationMs),
-      static_cast<long>(kTestToneAmplitude));
-
-  while (framesWritten < totalFrames) {
-    if ((xEventGroupGetBits(stopEvents_) & kStopPlaybackBit) != 0) {
-      break;
-    }
-    const size_t chunkFrames = min(
-        kTestToneFramesPerChunk,
-        static_cast<size_t>(totalFrames - framesWritten));
-    for (size_t frame = 0; frame < chunkFrames; ++frame) {
-      const uint32_t frameIndex = framesWritten + frame;
-      const uint32_t edgeFrames = min(frameIndex, totalFrames - 1 - frameIndex);
-      const float envelope =
-          static_cast<float>(min(edgeFrames, fadeFrames)) / fadeFrames;
-      // Derive phase from the absolute frame so chunk boundaries stay smooth.
-      const float phase = kTwoPi *
-          ((frameIndex * kTestToneFrequencyHz) % app_config::kAudioSampleRate) /
-          app_config::kAudioSampleRate;
-      const int32_t sample = static_cast<int32_t>(
-          sinf(phase) * envelope * kTestToneAmplitude);
-      for (uint8_t channel = 0; channel < app_config::kAudioChannels;
-           ++channel) {
-        gTestTone[frame * app_config::kAudioChannels + channel] = sample;
-      }
-    }
-    const size_t bytesRequested =
-        chunkFrames * app_config::kAudioChannels * sizeof(int32_t);
-    const size_t bytesWritten = i2s_.write(
-        reinterpret_cast<const uint8_t*>(gTestTone), bytesRequested);
-    if (bytesWritten != bytesRequested) {
+    if (received % kAudioFrameBytes) {
       endI2s();
-      setError("The ReSpeaker stopped accepting the speaker test tone");
-      return false;
+      setError("Incomplete stereo microphone frame");
+      vTaskDelete(nullptr);
+      return;
     }
-    framesWritten += chunkFrames;
-  }
+    const size_t frames = received / kAudioFrameBytes;
+    wake_word::submit(gInput, frames);
 
-  i2s_.write(gPlaybackSilence, sizeof(gPlaybackSilence));
-  delay(30);
-  endI2s();
-  setState(AudioState::Ready);
-  Serial.printf("[%10lu] Audio speaker test ended after %lu frames\n",
-                static_cast<unsigned long>(millis()),
-                static_cast<unsigned long>(framesWritten));
-  return true;
+    if (mode == Mode::Record) {
+      const bool stop = (xEventGroupGetBits(stopEvents_) & kStopRecordingBit) != 0;
+      if (!stop) {
+        const size_t count = min(received, app_config::kAudioBufferBytes - recordOffset);
+        memcpy(audioBuffer_ + recordOffset, gInput, count);
+        for (size_t i = 0; i < count / sizeof(int32_t); ++i) {
+          const int64_t value = gInput[i];
+          recordingPeak = max(recordingPeak, static_cast<uint32_t>(value < 0 ? -value : value));
+        }
+        recordOffset += count;
+        updateCapturedBytes(recordOffset);
+      }
+      if (stop || recordOffset == app_config::kAudioBufferBytes) {
+        playbackGain = recordingPeak && recordingPeak < kPlaybackTargetPeak
+                           ? min(kMaximumPlaybackGain, kPlaybackTargetPeak / recordingPeak) : 1;
+        xSemaphoreTake(mutex_, portMAX_DELAY);
+        recordingStartedAtMs_ = 0;
+        xSemaphoreGive(mutex_);
+        playOffset = 0;
+        mode = recordOffset ? Mode::Play : Mode::Idle;
+        setState(recordOffset ? AudioState::Playing : AudioState::Ready);
+        Serial.printf("Audio: captured %u bytes, peak=%u, playback gain=%u\n",
+                      (unsigned)recordOffset, (unsigned)recordingPeak, (unsigned)playbackGain);
+      }
+    }
+
+    const size_t recordedBytes = snapshot().capturedBytes;
+    for (size_t frame = 0; frame < frames; ++frame) {
+      const int32_t chime = chimeFrame < kChimeFrames ? chimeSample(chimeFrame++) : 0;
+      int32_t tone = 0;
+      if (mode == Mode::Tone) {
+        const uint32_t total = app_config::kAudioSampleRate * kTestToneDurationMs / 1000;
+        tone = toneSample(toneFrame++, total, kTestToneFrequencyHz);
+        if (toneFrame >= total) { mode = Mode::Idle; setState(AudioState::Ready); }
+      }
+      for (size_t channel = 0; channel < 2; ++channel) {
+        int64_t sample = tone;
+        if (mode == Mode::Play && playOffset < recordedBytes) {
+          int32_t original;
+          memcpy(&original, audioBuffer_ + playOffset, sizeof(original));
+          sample = static_cast<int64_t>(original) * playbackGain;
+          playOffset += sizeof(original);
+        }
+        // Mix the wake chime over playback without stopping microphone capture.
+        gOutput[frame * 2 + channel] = static_cast<int32_t>(
+            constrain(sample + chime, static_cast<int64_t>(INT32_MIN), static_cast<int64_t>(INT32_MAX)));
+      }
+      if (mode == Mode::Play && playOffset >= recordedBytes) {
+        mode = Mode::Idle;
+        setState(AudioState::Ready);
+      }
+    }
+    xSemaphoreTake(mutex_, portMAX_DELAY);
+    wakeChimePlaying_ = chimeFrame < kChimeFrames;
+    xSemaphoreGive(mutex_);
+    if (i2s_.write(reinterpret_cast<const uint8_t*>(gOutput), received) != received) {
+      endI2s();
+      setError("The ReSpeaker stopped accepting speaker samples");
+      vTaskDelete(nullptr);
+      return;
+    }
+  }
 }
 
 bool AudioEngine::detectI2sClockSource() {
@@ -713,41 +588,23 @@ bool AudioEngine::detectI2sClockSource() {
   return true;
 }
 
-bool AudioEngine::beginI2s(bool receive) {
+bool AudioEngine::beginI2s() {
   endI2s();
-
-  const audio_tools::AudioInfo info(app_config::kAudioSampleRate,
-                                    app_config::kAudioChannels,
-                                    app_config::kAudioBitsPerSample);
-  audio_tools::I2SConfig config =
-      i2s_.defaultConfig(receive ? RX_MODE : TX_MODE);
-  config.copyFrom(info);
-  config.rx_tx_mode = receive ? RX_MODE : TX_MODE;
+  auto config = i2s_.defaultConfig(RXTX_MODE);
+  config.copyFrom(audio_tools::AudioInfo(app_config::kAudioSampleRate,
+                                       app_config::kAudioChannels, app_config::kAudioBitsPerSample));
   config.pin_bck = app_config::kI2sBitClockPin;
   config.pin_ws = app_config::kI2sWordSelectPin;
-  // AudioTools 1.2.5's legacy ESP32 driver uses pin_data (not pin_data_rx)
-  // as the physical input when configured for RX_MODE.  Leaving GPIO44 here
-  // records the XIAO's outgoing data line instead of the XVF3800 microphone.
-  config.pin_data = receive ? app_config::kI2sDataFromRespeakerPin
-                            : app_config::kI2sDataToRespeakerPin;
+  config.pin_data = app_config::kI2sDataToRespeakerPin;
   config.pin_data_rx = app_config::kI2sDataFromRespeakerPin;
   config.is_master = xiaoI2sMaster_;
-  config.i2s_format = audio_tools::I2S_STD_FORMAT;
   config.auto_clear = true;
-  Serial.printf(
-      "[%10lu] Audio I2S: begin %s, master=%s, BCLK=%d WS=%d "
-      "activeData=%d (TX=%d RX=%d)\n",
-      static_cast<unsigned long>(millis()), receive ? "RX" : "TX",
-      xiaoI2sMaster_ ? "yes" : "no",
-      config.pin_bck, config.pin_ws, config.pin_data,
-      app_config::kI2sDataToRespeakerPin,
-      app_config::kI2sDataFromRespeakerPin);
   i2sRunning_ = i2s_.begin(config);
-  i2s_.driver()->setWaitTimeReadMs(500);
-  i2s_.driver()->setWaitTimeWriteMs(500);
-  Serial.printf("[%10lu] Audio I2S: begin result=%s\n",
-                static_cast<unsigned long>(millis()),
-                i2sRunning_ ? "success" : "FAILED");
+  i2s_.setWaitTimeReadMs(100);
+  i2s_.setWaitTimeWriteMs(100);
+  Serial.printf("Audio: full duplex 16 kHz RX=%d TX=%d, XIAO master=%s, ready=%s\n",
+                config.pin_data_rx, config.pin_data, config.is_master ? "yes" : "no",
+                i2sRunning_ ? "yes" : "no");
   return i2sRunning_;
 }
 
@@ -841,6 +698,7 @@ bool AudioEngine::setAmplifierEnabled(bool enabled) {
 }
 
 bool AudioEngine::writeXvfGpo(uint8_t pin, uint8_t value) {
+  BusLock lock;
   for (uint8_t attempt = 1; attempt <= kI2cAttemptCount; ++attempt) {
     Wire.beginTransmission(app_config::kXvf3800I2cAddress);
     Wire.write(kGpoServicerResourceId);
@@ -889,47 +747,18 @@ bool AudioEngine::writeXvfGpo(uint8_t pin, uint8_t value) {
 bool AudioEngine::readXvfCommand(uint8_t resourceId, uint8_t commandId,
                                  uint8_t* payload, size_t payloadSize,
                                  uint8_t* responseStatus) {
-  const size_t responseSize = payloadSize + 1;
-  Wire.beginTransmission(app_config::kXvf3800I2cAddress);
-  Wire.write(resourceId);
-  Wire.write(commandId | kXvfReadBit);
-  Wire.write(static_cast<uint8_t>(responseSize));
-  // Seeed's current Arduino reference ends the command with a STOP before
-  // requesting the response. This also avoids wedging the ESP32 I2C driver
-  // when the XVF3800 is busy as a second bus master for its codec.
-  const uint8_t txResult = Wire.endTransmission();
-  if (txResult != 0) {
-    Serial.printf(
-        "[%10lu] XVF3800 I2C read command failed: resource=%u command=%u "
-        "result=%u (%s), SDA=%d SCL=%d\n",
-        static_cast<unsigned long>(millis()), resourceId, commandId, txResult,
-        i2cResultName(txResult), digitalRead(app_config::kI2cSdaPin),
-        digitalRead(app_config::kI2cSclPin));
-    return false;
+  BusLock lock;
+  if (!responseStatus) return false;
+  const auto result = xvf_read::command(Wire, [](uint32_t ms) { delay(ms); },
+      app_config::kXvf3800I2cAddress, resourceId, commandId, payload, payloadSize);
+  *responseStatus = result.status;
+  if (!result.transportOk) {
+    Serial.printf("XVF3800 read transport failed: resource=%u command=%u TX=%u RX=%u/%u SDA=%d SCL=%d\n",
+                  resourceId, commandId, result.writeError, (unsigned)result.received,
+                  (unsigned)(payloadSize + 1), digitalRead(app_config::kI2cSdaPin),
+                  digitalRead(app_config::kI2cSclPin));
   }
-
-  delay(2);
-  const size_t received = Wire.requestFrom(
-      app_config::kXvf3800I2cAddress, responseSize, true);
-  if (received != responseSize || Wire.available() < responseSize) {
-    Serial.printf(
-        "[%10lu] XVF3800 I2C short response: resource=%u command=%u "
-        "wanted=%u received=%u available=%u\n",
-        static_cast<unsigned long>(millis()), resourceId, commandId,
-        static_cast<unsigned int>(responseSize),
-        static_cast<unsigned int>(received),
-        static_cast<unsigned int>(Wire.available()));
-    while (Wire.available()) {
-      Wire.read();
-    }
-    return false;
-  }
-
-  *responseStatus = Wire.read();
-  for (size_t index = 0; index < payloadSize; ++index) {
-    payload[index] = Wire.read();
-  }
-  return true;
+  return result.transportOk;
 }
 
 bool AudioEngine::readXvfGpoValues(uint8_t values[5],
@@ -954,6 +783,7 @@ bool AudioEngine::readXvfVersion() {
 }
 
 void AudioEngine::logCodecDiagnostics() {
+  BusLock lock;
   // Page 0 is selected by our volume initialization. Read the live clock,
   // serial format, DAC routing and output settings; do not overwrite them.
   constexpr uint8_t registers[] = {
@@ -985,6 +815,7 @@ void AudioEngine::logCodecDiagnostics() {
 }
 
 bool AudioEngine::writeCodecRegister(uint8_t reg, uint8_t value) {
+  BusLock lock;
   Wire.beginTransmission(app_config::kAic3104I2cAddress);
   Wire.write(reg);
   Wire.write(value);
@@ -998,6 +829,7 @@ bool AudioEngine::writeCodecRegister(uint8_t reg, uint8_t value) {
 }
 
 bool AudioEngine::probeI2cAddress(uint8_t address) {
+  BusLock lock;
   Wire.beginTransmission(address);
   const uint8_t result = Wire.endTransmission();
   Serial.printf("[%10lu] I2C probe: address=0x%02X result=%u (%s)\n",
@@ -1028,6 +860,7 @@ void AudioEngine::setError(const char* message) {
   if (mutex_ != nullptr) {
     xSemaphoreGive(mutex_);
   }
+  wake_word::audioFault();
   Serial.printf("Audio error: %s\n", message);
 }
 

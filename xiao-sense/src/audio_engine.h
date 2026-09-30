@@ -29,6 +29,7 @@ struct AudioStatus {
   uint32_t capturedMilliseconds;
   uint32_t recordingElapsedMilliseconds;
   uint8_t speakerVolumePercent;
+  bool wakeChimePlaying;
   char error[96];
 };
 
@@ -40,11 +41,17 @@ class AudioEngine {
   AudioActionResult stopRecording();
   AudioActionResult playLatest();
   AudioActionResult playTestTone();
+  bool playWakeChime();
   AudioActionResult stopPlayback();
   bool setSpeakerVolume(uint8_t percent);
 
   AudioStatus snapshot();
   void logDiagnostics();
+  // Shared I2C access with bounded retries of status 0x40. Bool is transport
+  // success; payload changes only on status 0. Never call from audio capture.
+  bool readXvfCommand(uint8_t resourceId, uint8_t commandId,
+                      uint8_t* payload, size_t payloadSize,
+                      uint8_t* responseStatus);
   static const char* stateName(AudioState state);
 
  private:
@@ -56,22 +63,17 @@ class AudioEngine {
 
   static constexpr EventBits_t kStopRecordingBit = BIT0;
   static constexpr EventBits_t kStopPlaybackBit = BIT1;
+  static constexpr EventBits_t kWakeChimeBit = BIT2;
 
   static void taskEntry(void* context);
   void taskLoop();
-  bool captureRecording();
-  bool playRecording();
-  bool playDiagnosticTone();
   bool detectI2sClockSource();
-  bool beginI2s(bool receive);
+  bool beginI2s();
   void endI2s();
 
   bool initializeSpeakerPath();
   bool setAmplifierEnabled(bool enabled);
   bool writeXvfGpo(uint8_t pin, uint8_t value);
-  bool readXvfCommand(uint8_t resourceId, uint8_t commandId,
-                      uint8_t* payload, size_t payloadSize,
-                      uint8_t* responseStatus);
   bool readXvfGpoValues(uint8_t values[5], uint8_t* responseStatus);
   bool readXvfVersion();
   void logCodecDiagnostics();
@@ -93,6 +95,7 @@ class AudioEngine {
   bool initialized_ = false;
   bool i2sRunning_ = false;
   bool xiaoI2sMaster_ = true;
+  bool wakeChimePlaying_ = false;
   uint8_t speakerVolumePercent_ = 0;
   char error_[96] = "Audio has not been initialized";
   audio_tools::I2SStream i2s_;

@@ -5,6 +5,11 @@ hardware imports so its timing and safety rules can be tested on a desktop.
 """
 
 
+from digit_face_engine import EXPRESSIONS
+from wake_reaction import WakeReaction
+from voice_turn import VoiceTurn
+
+
 MAX_LINE = 63
 MAX_DRIVE_SPEED = 6000
 DRIVE_TIMEOUT_MS = 300
@@ -17,16 +22,22 @@ MIN_EDGE_MARGIN = 180
 
 class UARTController:
     def __init__(self, uart, motors, line_sensors, battery, face,
-                 button_a, button_b, button_c, clock):
+                 button_a, button_b, button_c, clock, rgb_leds=None,
+                 gyro=None, turn_motor_sign=1):
         self.uart = uart
         self.motors = motors
         self.line_sensors = line_sensors
         self.battery = battery
         self.face = face
+        self.rgb_leds = rgb_leds
         self.button_a = button_a
         self.button_b = button_b
         self.button_c = button_c
         self.clock = clock
+        self.wake = WakeReaction(face, rgb_leds, clock)
+        self.voice_turn = VoiceTurn(gyro, clock, turn_motor_sign) if gyro else None
+        self.look_id = None
+        self.last_keep = None
         self.line = bytearray()
         self.dropping = False
         self.ready = False
@@ -49,6 +60,20 @@ class UARTController:
         self.left = 0
         self.right = 0
         self.last_drive = None
+        if self.look_id is not None:
+            self._send(self.look_id + " ERR LOOK_CANCELLED")
+        self.look_id = None
+        self.last_keep = None
+        if self.voice_turn:
+            self.voice_turn.cancel()
+        self._cancel_wake()
+
+    def _cancel_wake(self):
+        try:
+            self.wake.cancel()
+        except Exception as error:
+            print("UART CONTROL: wake restore error:", error)
+            self._send("0 EVENT WAKE_FAILED")
 
     def _latch(self, reason):
         self._stop()
@@ -138,9 +163,28 @@ class UARTController:
         except Exception as error:
             print("UART CONTROL: battery read error:", error)
             millivolts = -1
-        self._send("{} OK READY={} FAULT={} L={} R={} BAT={} EDGE={}".format(
+        self._send("{} OK READY={} FAULT={} L={} R={} BAT={} EDGE={} VOICE={}".format(
             command_id, int(self.ready), self.fault, self.left, self.right,
-            millivolts, int(self.edge)))
+            millivolts, int(self.edge), int(self.voice_turn is not None)))
+
+    def _apply_motion(self, command_id, left, right, now, reply):
+        if not self.ready:
+            self._send(command_id + " ERR NOT_READY")
+            return
+        readings = self._read_edge()
+        if readings is None or self._edge_seen(readings):
+            if readings is not None:
+                self._latch("EDGE")
+            self._send(command_id + " ERR " + self.fault)
+            return
+        if self.look_id is not None:
+            self._stop()  # Manual motion supersedes an automatic voice turn.
+        else:
+            self._cancel_wake()
+        self.motors.set_speeds(left, right)
+        self.left, self.right = left, right
+        self.last_drive = now if left or right else None
+        self._send(command_id + " OK " + reply)
 
     def _handle_line(self, raw, now):
         try:
@@ -168,6 +212,40 @@ class UARTController:
             self._send(command_id + " OK STOPPED")
         elif command == "CALIBRATE" and not args:
             self._start_calibration(command_id, now)
+        elif command == "LOOK" and len(args) == 1:
+            argument = args[0]
+            if not (argument[1:] if argument.startswith("-") else argument).isdigit():
+                self._send(command_id + " ERR ARGUMENT")
+            elif not -180 <= int(argument) <= 180:
+                self._send(command_id + " ERR ANGLE_RANGE")
+            elif not self.ready:
+                self._send(command_id + " ERR NOT_READY")
+            elif self.button_c.is_pressed():
+                self._latch("BUTTON_C")
+                self._send(command_id + " ERR BUTTON_C")
+            elif self.voice_turn is None:
+                self._send(command_id + " ERR NO_GYRO")
+            elif self.look_id is not None or self.left or self.right or self.calibration is not None:
+                self._send(command_id + " ERR BUSY")
+            else:
+                readings = self._read_edge()
+                if readings is None or self._edge_seen(readings):
+                    if readings is not None:
+                        self._latch("EDGE")
+                    self._send(command_id + " ERR " + self.fault)
+                else:
+                    self._stop()
+                    self.look_id = command_id
+                    self.last_keep = now
+                    self.voice_turn.start(int(argument), now)
+                    self._send(command_id + " OK LOOKING")
+        elif command == "KEEP" and len(args) == 1:
+            # Only the original LOOK id can refresh its 300 ms lease.
+            if self.look_id is not None and args[0] == self.look_id:
+                self.last_keep = now
+                self._send(command_id + " OK KEEP")
+            else:
+                self._send(command_id + " ERR NO_LOOK")
         elif command == "DRIVE" and len(args) == 2:
             if not all((arg[1:] if arg.startswith("-") else arg).isdigit()
                        for arg in args):
@@ -177,31 +255,71 @@ class UARTController:
             if not (-MAX_DRIVE_SPEED <= left <= MAX_DRIVE_SPEED and
                     -MAX_DRIVE_SPEED <= right <= MAX_DRIVE_SPEED):
                 self._send(command_id + " ERR SPEED_RANGE")
-            elif not self.ready:
-                self._send(command_id + " ERR NOT_READY")
             else:
-                readings = self._read_edge()
-                if readings is None or self._edge_seen(readings):
-                    if readings is not None:
-                        self._latch("EDGE")
-                    self._send(command_id + " ERR " + self.fault)
-                else:
-                    self.motors.set_speeds(left, right)
-                    self.left, self.right = left, right
-                    self.last_drive = now if left or right else None
-                    self._send(command_id + " OK DRIVE")
-        elif command == "FACE" and len(args) == 1:
+                self._apply_motion(command_id, left, right, now, "DRIVE")
+        elif command == "TURN" and len(args) == 1:
+            argument = args[0]
+            if not (argument[1:] if argument.startswith("-") else argument).isdigit():
+                self._send(command_id + " ERR ARGUMENT")
+                return
+            speed = int(argument)
+            if not -MAX_DRIVE_SPEED <= speed <= MAX_DRIVE_SPEED:
+                self._send(command_id + " ERR SPEED_RANGE")
+            else:
+                # Equal and opposite tracks enforce rotation at the robot.
+                # Positive turns right; negative turns left.
+                self._apply_motion(command_id, speed, -speed, now, "TURN")
+        elif command == "WAKE" and not args:
             if self.left or self.right:
                 self._send(command_id + " ERR MOVING")
-            elif args[0] == "HAPPY":
-                self.face.play_happy()
-                self._send(command_id + " OK FACE")
-            elif args[0] == "SAD":
-                self.face.play_sad()
+            elif self.calibration is not None or self.wake.active or self.look_id is not None:
+                self._send(command_id + " ERR BUSY")
+            elif self.button_c.is_pressed():
+                self._send(command_id + " ERR BUTTON_C")
+            elif self.rgb_leds is None:
+                self._send(command_id + " ERR LED_UNAVAILABLE")
+            else:
+                try:
+                    self.wake.start(now)
+                except Exception as error:
+                    self._cancel_wake()
+                    print("UART CONTROL: wake reaction error:", error)
+                    self._send(command_id + " ERR WAKE_IO")
+                else:
+                    self._send(command_id + " OK WAKE")
+        elif command == "FACE" and len(args) == 1:
+            if self.left or self.right or self.look_id is not None:
+                self._send(command_id + " ERR MOVING")
+            elif args[0] == args[0].upper() and args[0].lower() in EXPRESSIONS:
+                self._cancel_wake()
+                self.face.play(args[0].lower())
                 self._send(command_id + " OK FACE")
             else:
                 self._send(command_id + " ERR ARGUMENT")
-        elif command in ("PING", "STATUS", "STOP", "CALIBRATE", "DRIVE", "FACE"):
+        elif command == "LED" and len(args) == 5:
+            target = args[0]
+            values = args[1:]
+            if (target != "ALL" and not (target.isdigit() and 0 <= int(target) < 6)) or not all(value.isdigit() for value in values):
+                self._send(command_id + " ERR ARGUMENT")
+            else:
+                red, green, blue, brightness = (int(value) for value in values)
+                if any(value > 255 for value in (red, green, blue)) or brightness > 31:
+                    self._send(command_id + " ERR LED_RANGE")
+                elif self.rgb_leds is None:
+                    self._send(command_id + " ERR LED_UNAVAILABLE")
+                else:
+                    try:
+                        self._cancel_wake()
+                        for index in range(6) if target == "ALL" else (int(target),):
+                            self.rgb_leds.set_brightness(brightness, led=index)
+                            self.rgb_leds.set(index, (red, green, blue))
+                        self.rgb_leds.show()
+                    except Exception as error:
+                        print("UART CONTROL: RGB LED error:", error)
+                        self._send(command_id + " ERR LED_IO")
+                    else:
+                        self._send(command_id + " OK LED")
+        elif command in ("PING", "STATUS", "STOP", "CALIBRATE", "DRIVE", "TURN", "FACE", "LED", "WAKE", "LOOK", "KEEP"):
             self._send(command_id + " ERR ARGUMENT")
         else:
             self._send(command_id + " ERR UNKNOWN_COMMAND")
@@ -231,6 +349,10 @@ class UARTController:
         now = self.clock.ticks_ms()
         if self.button_c.check() is True:
             self._latch("BUTTON_C")
+        if (self.look_id is not None and
+                self.clock.ticks_diff(now, self.last_keep) >= DRIVE_TIMEOUT_MS):
+            self._stop()
+            self._send("0 EVENT TIMEOUT")
         if (self.last_drive is not None and
                 self.clock.ticks_diff(now, self.last_drive) >= DRIVE_TIMEOUT_MS):
             self._stop()
@@ -244,16 +366,38 @@ class UARTController:
                 self._latch("EDGE")
         self._poll_uart(now)
         self._sample_calibration(now)
+        if self.look_id is not None:
+            left, right = self.voice_turn.update(now)
+            if self.voice_turn.result is not None:
+                result = self.voice_turn.result
+                command_id, self.look_id = self.look_id, None
+                self._stop()
+                if result == "DONE":
+                    self._send(command_id + " OK LOOK_DONE")
+                else:
+                    self._send(command_id + " ERR " + result)
+                    self._latch("TURN_FAULT")
+            else:
+                self.motors.set_speeds(left, right)
+                self.left, self.right = left, right
         pressed_a = self.button_a.check() is True
         pressed_b = self.button_b.check() is True
-        if not (self.left or self.right):
+        if not (self.left or self.right) and self.look_id is None:
             if pressed_a:
+                self._cancel_wake()
                 self.face.play_sad()
             if pressed_b:
+                self._cancel_wake()
                 self.face.play_happy()
         # LCD transfers can take longer than a control-loop tick. Keep the
         # transport and motor safety checks ahead of display work.
-        if not (self.left or self.right):
+        if not (self.left or self.right) and self.look_id is None:
+            try:
+                self.wake.update(now)
+            except Exception as error:
+                self._cancel_wake()
+                print("UART CONTROL: wake animation error:", error)
+                self._send("0 EVENT WAKE_FAILED")
             self.face.update()
 
     def close(self):

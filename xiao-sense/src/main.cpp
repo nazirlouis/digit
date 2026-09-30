@@ -14,6 +14,8 @@
 #include "web_server.h"
 #include "wifi_credentials.h"
 #include "zumo_link.h"
+#include "wake_word.h"
+#include "voice_direction.h"
 
 namespace {
 constexpr char kTag[] = "digit";
@@ -59,9 +61,11 @@ extern "C" void app_main() {
   }
   ESP_ERROR_CHECK(nvs);
   ESP_LOGI(kTag, "Digit ESP-IDF 5.5 starting; PSRAM=%u bytes", (unsigned)ESP.getFreePsram());
+  wake_word::begin();
   audioEngine.begin();
   camera_service::begin();
   zumo_link::begin();
+  voice_direction::begin();
   vision_service::begin();
   start_wifi();
   bool web_started = false;
@@ -69,11 +73,17 @@ extern "C" void app_main() {
   for (;;) {
     zumo_link::poll();
     person_follow::poll();
+    wake_word::poll();
     if (!web_started && WiFi.status() == WL_CONNECTED) web_started = web_server::begin();
     if (millis() - last_health >= 5000) {
       last_health = millis();
       refresh_wifi_signal();
       audioEngine.logDiagnostics();
+      const auto wake = wake_word::snapshot();
+      ESP_LOGI(kTag, "Wake=%s detections=%lu mic_peak=%u inference=%lu us dropped=%lu",
+               !wake.ready ? "error" : wake.pausedForVision ? "paused-for-vision" : "listening",
+               (unsigned long)wake.detections, wake.micPeak, (unsigned long)wake.inferenceUs,
+               (unsigned long)wake.droppedFrames);
       ESP_LOGI(kTag, "Wi-Fi=%s IP=%s RSSI=%d dBm", WiFi.status() == WL_CONNECTED ? "connected" : "disconnected",
                WiFi.localIP().toString().c_str(), WiFi.RSSI());
     }

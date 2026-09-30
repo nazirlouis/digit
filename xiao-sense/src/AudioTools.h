@@ -4,6 +4,7 @@
 
 constexpr int RX_MODE = 1;
 constexpr int TX_MODE = 2;
+constexpr int RXTX_MODE = RX_MODE | TX_MODE;
 namespace audio_tools {
 constexpr int I2S_STD_FORMAT = 0;
 struct AudioInfo {

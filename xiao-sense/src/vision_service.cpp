@@ -8,6 +8,7 @@
 #include "esp_jpeg_dec.h"
 #include "esp_partition.h"
 #include "pedestrian_detect.hpp"
+#include "wake_word.h"
 
 namespace {
 constexpr size_t kJpegCapacity = 256 * 1024;
@@ -107,7 +108,9 @@ void task(void*) {
     image.width = kWidth;
     image.height = kHeight;
     image.pix_type = dl::image::DL_IMAGE_PIX_TYPE_RGB565LE;
+    wake_word::beginVisionInference();
     auto& results = detector->run(image);
+    wake_word::endVisionInference();
     const uint32_t inference_ms = millis() - started - decode_ms;
     vision_service::Status::Box boxes[5] = {};
     uint8_t count = 0;
@@ -180,6 +183,7 @@ bool setEnabled(bool enabled) {
   state.intervalMs = 0;
   result_at = 0;
   ++generation;
+  wake_word::setVisionEnabled(enabled);
   portEXIT_CRITICAL(&lock);
   return true;
 }

@@ -1,4 +1,4 @@
-# This program spins the robot in place while Digit shows a dizzy face.
+# This program spins the robot in place while Digit shows an excited face.
 # Keep the robot on the floor, guard it closely, and disconnect USB first.
 
 from digit_face import DigitFace
@@ -37,7 +37,7 @@ rgb_leds.show()
 face.show_happy()
 time.sleep_ms(1200)
 
-face.start_dizzy()
+face.play("excited", hold_ms=-1)
 buzzer.play_in_background(circus)
 
 max_speed = motors.MAX_SPEED
@@ -72,4 +72,4 @@ finally:
     motors.off()
     rgb_leds.off()
     buzzer.off()
-    face.stop_dizzy()
+    face.play("neutral")

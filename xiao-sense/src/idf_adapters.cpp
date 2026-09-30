@@ -147,7 +147,8 @@ bool audio_tools::I2SStream::begin(const I2SConfig& config) {
   end();
   i2s_config_t driver = {};
   driver.mode = static_cast<i2s_mode_t>((config.is_master ? I2S_MODE_MASTER : I2S_MODE_SLAVE) |
-                                         (config.rx_tx_mode == RX_MODE ? I2S_MODE_RX : I2S_MODE_TX));
+                                         ((config.rx_tx_mode & RX_MODE) ? I2S_MODE_RX : 0) |
+                                         ((config.rx_tx_mode & TX_MODE) ? I2S_MODE_TX : 0));
   driver.sample_rate = config.sample_rate;
   driver.bits_per_sample = static_cast<i2s_bits_per_sample_t>(config.bits);
   driver.channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT;
@@ -163,8 +164,9 @@ bool audio_tools::I2SStream::begin(const I2SConfig& config) {
   pins.mck_io_num = I2S_PIN_NO_CHANGE;
   pins.bck_io_num = config.pin_bck;
   pins.ws_io_num = config.pin_ws;
-  pins.data_out_num = config.rx_tx_mode == TX_MODE ? config.pin_data : I2S_PIN_NO_CHANGE;
-  pins.data_in_num = config.rx_tx_mode == RX_MODE ? config.pin_data : I2S_PIN_NO_CHANGE;
+  pins.data_out_num = (config.rx_tx_mode & TX_MODE) ? config.pin_data : I2S_PIN_NO_CHANGE;
+  pins.data_in_num = config.rx_tx_mode == RXTX_MODE ? config.pin_data_rx :
+                    config.rx_tx_mode == RX_MODE ? config.pin_data : I2S_PIN_NO_CHANGE;
   if (i2s_set_pin(I2S_NUM_0, &pins) != ESP_OK) {
     i2s_driver_uninstall(I2S_NUM_0);
     return false;

@@ -61,8 +61,8 @@ try:
         time.sleep_ms(5)
 
     if collision_detected:
-        # Keep the animated dizzy face running until the script is stopped.
-        face.start_dizzy()
+        # Hold a surprised expression until the script is stopped.
+        face.play("surprised", hold_ms=-1)
         while True:
             face.update()
             time.sleep_ms(20)

@@ -240,6 +240,58 @@ class DisplayTests(unittest.TestCase):
         self.display.show()
         self.assertEqual(len(self.frame_data()), 65536)
 
+    def test_color_change_resends_unchanged_pixels_in_the_new_palette(self):
+        self.display.pixel(0, 0, 1)
+        self.display.show()
+        previous_pixels = bytes(self.display.buffer)
+        self.spi.writes.clear()
+        self.display.set_colors(0xF800, 0)
+        self.display.show()
+        self.assertEqual(bytes(self.display.buffer), previous_pixels)
+        self.assertEqual(self.frame_data()[:8], b"\xf8\x00" * 2 + b"\x00" * 4)
+        self.assertEqual(len(self.frame_data()), 65536)
+        self.assert_idle()
+
+    def test_palette_reuses_small_buffers_across_all_expression_colors(self):
+        from digit_face_engine import COLORS, SURPRISE_FLASH_COLOR
+        lookup = self.display._lookup
+        blocks = tuple(lookup)
+        self.assertEqual(sum(len(block) for block in blocks), 256)
+        # Color changes must not allocate a new table, pixel bytes or buffers.
+        def unexpected_allocation(*args, **kwargs):
+            self.fail("palette rebuilt a container during color change")
+        with patch.object(self.module, "tuple", unexpected_allocation, create=True), \
+             patch.object(self.module, "bytes", unexpected_allocation, create=True), \
+             patch.object(self.module, "bytearray", unexpected_allocation, create=True):
+            for _ in range(20):
+                for color in tuple(COLORS.values()) + (SURPRISE_FLASH_COLOR,):
+                    self.display.set_colors(color, 0)
+                    self.assertIs(self.display._lookup, lookup)
+                    for old, current in zip(blocks, self.display._lookup):
+                        self.assertIs(current, old)
+        self.display.show()
+        self.spi.writes.clear()
+        self.display.set_colors(SURPRISE_FLASH_COLOR, 0)
+        self.display.show()
+        self.assertEqual(self.spi.writes, [])
+
+    def test_all_source_bytes_expand_correctly_after_palette_changes(self):
+        for foreground, background in ((0xF800, 0), (0x07FF, 0x1234)):
+            self.display.set_colors(foreground, background)
+            # The first 16 source rows contain every possible byte value.
+            self.display.buffer[:256] = bytes(range(256))
+            self.spi.writes.clear()
+            self.display.show()
+            wire = self.frame_data()
+            for row in range(16):
+                expected = bytearray()
+                for value in range(row * 16, (row + 1) * 16):
+                    for bit in range(7, -1, -1):
+                        color = foreground if value & (1 << bit) else background
+                        expected.extend(bytes((color >> 8, color & 255)) * 2)
+                start = row * 1024
+                self.assertEqual(wire[start:start + 1024], bytes(expected) * 2)
+
     def test_transfer_failure_releases_bus_and_forces_retry(self):
         self.display.show()
         self.display.pixel(2, 20, 1)
@@ -319,7 +371,7 @@ class DisplayTests(unittest.TestCase):
         self.assertEqual(face.display.pixel(36, 56), 1)
         self.assertEqual(face.display.pixel(100, 56), 1)
         self.assertEqual(face.display.pixel(12, 21), 0)
-        self.assertEqual(face.display._lookup[0x80][:4], b"\xfc\xe0" * 2)
+        self.assertEqual(face.display._lookup[0x8][:4], b"\xfc\xe0" * 2)
         self.assertGreater(face.display.last_bytes_sent, 0)
 
 

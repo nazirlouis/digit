@@ -4,6 +4,7 @@ sdkconfig.*
 !sdkconfig.defaults
 dependencies.lock
 build.log
+build-wake.log
 serial.log
 serial*.log
 backups/
