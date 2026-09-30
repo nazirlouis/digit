@@ -5,6 +5,7 @@ sdkconfig.*
 dependencies.lock
 build.log
 build-wake.log
+build-commands.log
 serial.log
 serial*.log
 backups/

@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 #include <AudioTools.h>
+#include "audio_cues.h"
 #include <freertos/FreeRTOS.h>
 #include <freertos/event_groups.h>
 #include <freertos/queue.h>
@@ -42,6 +43,9 @@ class AudioEngine {
   AudioActionResult playLatest();
   AudioActionResult playTestTone();
   bool playWakeChime();
+  bool playCue(AudioCue cue);
+  void cancelOutput();
+  bool cuePlaying();
   AudioActionResult stopPlayback();
   bool setSpeakerVolume(uint8_t percent);
 
@@ -96,6 +100,9 @@ class AudioEngine {
   bool i2sRunning_ = false;
   bool xiaoI2sMaster_ = true;
   bool wakeChimePlaying_ = false;
+  AudioCue pendingCue_ = AudioCue::None;
+  bool cuePlaying_ = false;
+  uint32_t outputGeneration_ = 0;
   uint8_t speakerVolumePercent_ = 0;
   char error_[96] = "Audio has not been initialized";
   audio_tools::I2SStream i2s_;

@@ -1,5 +1,12 @@
 # Digit Zumo controller — Waveshare LCD
 
+The voice-command upgrade uses the updated `main.py` and `uart_control.py` in
+this folder. It adds front-distance reporting and guarded `SAFE` drive commands
+for the XIAO's routines. See [voice actions and installation](../xiao-sense/VOICE_ACTIONS.md).
+`STOP` cancels the active turn/wake effect and resets the face to neutral.
+The standalone `autonomous_drive.py` remains a separate program; dashboard
+**Explore** now runs through the UART controller with edge-stop locking.
+
 The optional LCD is the [Waveshare 1.69-inch LCD module](https://www.waveshare.com/product/displays/lcd-oled/lcd-oled-3/1.69inch-lcd-module.htm)
 ([purchased screen](https://www.amazon.com/dp/B0C238JCLH)): ST7789V2, 240×280, SPI.
 The driver displays it in landscape (280×240).

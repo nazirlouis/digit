@@ -16,6 +16,8 @@
 #include "zumo_link.h"
 #include "wake_word.h"
 #include "voice_direction.h"
+#include "robot_actions.h"
+#include "speech_commands.h"
 
 namespace {
 constexpr char kTag[] = "digit";
@@ -23,6 +25,7 @@ void wifi_event(void*, esp_event_base_t base, int32_t id, void*) {
   if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START) {
     esp_wifi_connect();
   } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
+    robot_actions::stop("Wi-Fi disconnected");
     ESP_LOGW(kTag, "Wi-Fi disconnected; reconnecting");
     esp_wifi_connect();
   } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
@@ -62,6 +65,8 @@ extern "C" void app_main() {
   ESP_ERROR_CHECK(nvs);
   ESP_LOGI(kTag, "Digit ESP-IDF 5.5 starting; PSRAM=%u bytes", (unsigned)ESP.getFreePsram());
   wake_word::begin();
+  speech_commands::begin();
+  robot_actions::begin();
   audioEngine.begin();
   camera_service::begin();
   zumo_link::begin();
@@ -71,9 +76,14 @@ extern "C" void app_main() {
   bool web_started = false;
   uint32_t last_health = 0;
   for (;;) {
-    zumo_link::poll();
-    person_follow::poll();
-    wake_word::poll();
+    {
+      robot_actions::Guard control;
+      zumo_link::poll();
+      person_follow::poll();
+      speech_commands::poll();
+      robot_actions::poll();
+      wake_word::poll();
+    }
     if (!web_started && WiFi.status() == WL_CONNECTED) web_started = web_server::begin();
     if (millis() - last_health >= 5000) {
       last_health = millis();

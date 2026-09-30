@@ -24,6 +24,9 @@ void setVisionEnabled(bool enabled);
 // Serialize both models, including a last in-flight vision result at shutdown.
 void beginVisionInference();
 void endVisionInference();
+void beginInference();
+void endInference();
+void cancel();
 void poll();
 bool testReaction();
 Status snapshot();

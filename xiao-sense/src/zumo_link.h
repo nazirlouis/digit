@@ -22,6 +22,10 @@ struct Status {
   uint32_t controlGeneration;
   char lookResult[24];
   bool manualDriving;
+  bool actionCapable;
+  bool rangeValid;
+  int distanceMm;
+  uint32_t safetyEvents;
 };
 
 void begin();
@@ -29,6 +33,7 @@ void poll();
 Status snapshot();
 bool drive(int left, int right);
 bool turn(int speed);
+bool safeDrive(int left, int right);
 void stop();
 bool calibrate();
 bool isFaceName(const char* name);

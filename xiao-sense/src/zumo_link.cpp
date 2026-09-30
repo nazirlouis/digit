@@ -12,7 +12,7 @@ constexpr int kTxPin = 3;  // XIAO D2 -> Zumo GP29
 constexpr uint32_t kBaud = 115200;
 constexpr uint32_t kDrivePeriodMs = 100;
 constexpr uint32_t kBrowserLeaseMs = 250;
-constexpr uint32_t kStatusPeriodMs = 500;
+constexpr uint32_t kStatusPeriodMs = 100;
 constexpr uint32_t kLinkTimeoutMs = 2000;
 constexpr const char* kFaceNames[] = {
     "NEUTRAL", "HAPPY", "SAD", "MAD", "SERIOUS", "CURIOUS", "SURPRISED",
@@ -27,11 +27,12 @@ int faceIndex(const char* name) {
 }
 
 zumo_link::Status status = {false, false, false, false, 0, 0, -1, 0,
-                            "NONE", "NONE", "NONE", "NONE", false, false, 0, "NONE", false};
+                            "NONE", "NONE", "NONE", "NONE", false, false, 0, "NONE", false, false, false, -1, 0};
 int desiredLeft = 0;
 int desiredRight = 0;
 bool driveWanted = false;
 bool turnWanted = false;
+bool safeWanted = false;
 bool stopPending = false;
 bool calibrationPending = false;
 int facePending = 0;
@@ -53,7 +54,7 @@ uint32_t lastDriveSent = 0;
 uint32_t lastStatusSent = 0;
 uint16_t nextId = 1;
 uint16_t calibrationId = 0;
-char receiveLine[128];
+char receiveLine[192];
 size_t received = 0;
 bool dropping = false;
 
@@ -68,6 +69,7 @@ uint16_t sendPrefix() {
 void clearDrive() {
   driveWanted = false;
   turnWanted = false;
+  safeWanted = false;
   desiredLeft = 0;
   desiredRight = 0;
 }
@@ -103,6 +105,12 @@ void handleLine(const char* line, uint32_t now) {
     status.right = right;
     status.batteryMillivolts = battery;
     status.voiceCapable = voice == 1;
+    int distance = -1, valid = 0, capable = 0;
+    const char* range = strstr(line, " DIST=");
+    if (range) sscanf(range, " DIST=%d RANGE=%d AUTO=%d", &distance, &valid, &capable);
+    status.distanceMm = distance;
+    status.rangeValid = valid == 1;
+    status.actionCapable = capable == 1;
     snprintf(status.fault, sizeof(status.fault), "%s", fault);
     if (!status.ready) {
       clearDrive();
@@ -158,6 +166,7 @@ void handleLine(const char* line, uint32_t now) {
              strcmp(line, "0 EVENT TURN_FAULT") == 0 ||
              strcmp(line, "0 EVENT SENSOR") == 0) {
     const char* reason = line + strlen("0 EVENT ");
+    ++status.safetyEvents;
     status.ready = false;
     status.calibrating = false;
     status.edge = strcmp(reason, "EDGE") == 0;
@@ -166,7 +175,9 @@ void handleLine(const char* line, uint32_t now) {
     clearDrive();
     finishLook(reason, true);
     stopPending = true;
-  } else if (strcmp(line, "0 EVENT TIMEOUT") == 0) {
+  } else if (strcmp(line, "0 EVENT TIMEOUT") == 0 ||
+             strcmp(line, "0 EVENT OBSTACLE") == 0) {
+    ++status.safetyEvents;
     status.left = status.right = 0;
     clearDrive();
     finishLook("TIMEOUT", true);
@@ -176,6 +187,9 @@ void handleLine(const char* line, uint32_t now) {
     status.ready = false;
   } else if (strstr(line, " ERR ") != nullptr) {
     const char* reason = strstr(line, " ERR ") + 5;
+    if (!strcmp(reason,"OBSTACLE") || !strcmp(reason,"RANGE_UNAVAILABLE") || !strcmp(reason,"NOT_READY")) {
+      ++status.safetyEvents; clearDrive(); stopPending = true;
+    }
     snprintf(status.lastError, sizeof(status.lastError), "%s", reason);
     if (id == calibrationId) {
       status.calibrating = false;
@@ -244,6 +258,7 @@ bool drive(int left, int right) {
     desiredLeft = left;
     desiredRight = right;
     turnWanted = false;
+    safeWanted = false;
     facePending = 0;
     driveWanted = left != 0 || right != 0;
     lastBrowserDrive = now;
@@ -266,6 +281,7 @@ bool turn(int speed) {
     desiredLeft = speed;
     desiredRight = -speed;
     turnWanted = true;
+    safeWanted = false;
     facePending = 0;
     driveWanted = speed != 0;
     lastBrowserDrive = now;
@@ -279,10 +295,35 @@ void stop() {
   portENTER_CRITICAL(&stateLock);
   manualOverride();
   clearDrive();
+  wakePending = false;
+  wakeCommandId = 0;
+  facePending = 0;
+  ledPending = false;
   calibrationPending = false;
   status.calibrating = false;
   stopPending = true;
   portEXIT_CRITICAL(&stateLock);
+}
+
+bool safeDrive(int left, int right) {
+  if (left < -2000 || left > 2000 || right < -2000 || right > 2000) return false;
+  const uint32_t now = millis();
+  portENTER_CRITICAL(&stateLock);
+  const bool allowed = status.ready && !status.edge && !strcmp(status.fault, "NONE") &&
+      lastReply && now - lastReply < 500 && status.actionCapable &&
+      status.rangeValid && !status.calibrating && !status.lookActive &&
+      (left + right <= 0 || status.distanceMm > 150);
+  if (allowed) {
+    desiredLeft = left;
+    desiredRight = right;
+    driveWanted = left || right;
+    turnWanted = false;
+    safeWanted = true;
+    lastBrowserDrive = now;
+    if (!driveWanted) stopPending = true;
+  }
+  portEXIT_CRITICAL(&stateLock);
+  return allowed;
 }
 
 bool calibrate() {
@@ -399,6 +440,7 @@ void poll() {
   uint8_t red = 0, green = 0, blue = 0, brightness = 0;
   bool sendDrive = false;
   bool sendTurn = false;
+  bool sendSafe = false;
   int left = 0, right = 0;
   portENTER_CRITICAL(&stateLock);
   const bool connected = lastReply != 0 && now - lastReply < kLinkTimeoutMs;
@@ -467,6 +509,7 @@ void poll() {
              now - lastDriveSent >= kDrivePeriodMs) {
     sendDrive = true;
     sendTurn = turnWanted;
+    sendSafe = safeWanted;
     left = desiredLeft;
     right = desiredRight;
     lastDriveSent = now;
@@ -507,7 +550,7 @@ void poll() {
   } else if (sendDrive) {
     sendPrefix();
     if (sendTurn) zumoUart.printf("TURN %d\n", left);
-    else zumoUart.printf("DRIVE %d %d\n", left, right);
+    else zumoUart.printf("%s %d %d\n", sendSafe ? "SAFE" : "DRIVE", left, right);
   }
   if (now - lastStatusSent >= kStatusPeriodMs) {
     lastStatusSent = now;

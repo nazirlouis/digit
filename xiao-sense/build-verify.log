@@ -1,0 +1,37 @@
+Processing xiao_esp32s3_sense_idf (platform: espressif32 @ 6.12.0; board: seeed_xiao_esp32s3; framework: espidf)
+--------------------------------------------------------------------------------
+Verbose mode can be enabled via `-v, --verbose` option
+CONFIGURATION: https://docs.platformio.org/page/boards/espressif32/seeed_xiao_esp32s3.html
+PLATFORM: Espressif 32 (6.12.0) > Seeed Studio XIAO ESP32S3
+HARDWARE: ESP32S3 240MHz, 320KB RAM, 8MB Flash
+DEBUG: Current (cmsis-dap) External (cmsis-dap, esp-bridge, esp-builtin, esp-prog, iot-bus-jtag, jlink, minimodule, olimex-arm-usb-ocd, olimex-arm-usb-ocd-h, olimex-arm-usb-tiny-h, olimex-jtag-tiny, tumpa)
+PACKAGES: 
+ - framework-espidf @ 3.50500.0 (5.5.0) 
+ - tool-cmake @ 3.30.2 
+ - tool-esp-rom-elfs @ 0.0.1+20241011 
+ - tool-esptoolpy @ 2.40900.250804 (4.9.0) 
+ - tool-idf @ 1.0.1 
+ - tool-mconf @ 1.4060000.20190628 (406.0.0) 
+ - tool-ninja @ 1.9.0 
+ - tool-riscv32-esp-elf-gdb @ 11.2.0+20220823 
+ - tool-xtensa-esp-elf-gdb @ 11.2.0+20230208 
+ - toolchain-esp32ulp @ 1.23800.240113 (2.38.0) 
+ - toolchain-riscv32-esp @ 14.2.0+20241119 
+ - toolchain-xtensa-esp-elf @ 14.2.0+20241119
+Reading CMake configuration...
+LDF: Library Dependency Finder -> https://bit.ly/configure-pio-ldf
+LDF Modes: Finder ~ chain, Compatibility ~ soft
+Found 0 compatible libraries
+Scanning dependencies...
+No dependencies
+Building in release mode
+Archiving .pio\build\xiao_esp32s3_sense_idf\esp-idf\esp_app_format\libesp_app_format.a
+Archiving .pio\build\xiao_esp32s3_sense_idf\esp-idf\esp_bootloader_format\libesp_bootloader_format.a
+Generating project linker script .pio\build\xiao_esp32s3_sense_idf\sections.ld
+Linking .pio\build\xiao_esp32s3_sense_idf\firmware.elf
+Retrieving maximum program size .pio\build\xiao_esp32s3_sense_idf\firmware.elf
+Checking size .pio\build\xiao_esp32s3_sense_idf\firmware.elf
+Advanced Memory Usage is available via "PlatformIO Home > Project Inspect"
+RAM:   [==        ]  19.8% (used 64764 bytes from 327680 bytes)
+Flash: [=====     ]  50.8% (used 3192997 bytes from 6291456 bytes)
+========================= [SUCCESS] Took 21.35 seconds =========================

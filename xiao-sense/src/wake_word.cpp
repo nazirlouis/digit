@@ -4,6 +4,8 @@
 #include "audio_engine.h"
 #include "zumo_link.h"
 #include "voice_direction.h"
+#include "robot_actions.h"
+#include "speech_commands.h"
 #include <cstring>
 #include <frontend.h>
 #include <frontend_util.h>
@@ -44,12 +46,14 @@ SemaphoreHandle_t modelGate = nullptr;
 portMUX_TYPE stateLock = portMUX_INITIALIZER_UNLOCKED;
 wake_word::Status state = {};
 bool visionEnabled = false, visionRunning = false, reactionPending = false;
+bool audioSuppressed = false;
 uint32_t epoch = 0, lastReaction = 0;
 bool hasReaction = false;
 bool detectionLatched = false;
 bool turning = false, pendingBearing = false;
 int pendingDegrees = 0;
 uint32_t bearingGeneration = 0, controlGeneration = 0;
+uint32_t actionGeneration = 0;
 
 void fail(const char* error) {
   portENTER_CRITICAL(&stateLock);
@@ -182,7 +186,7 @@ void processFeature(const int8_t features[kFeatureCount], uint32_t frameEpoch) {
   const bool bearing = voice_direction::target(degrees, directionGeneration);
   const auto zumo = zumo_link::snapshot();
   portENTER_CRITICAL(&stateLock);
-  const bool accept = state.ready && frameEpoch == epoch && !visionEnabled && !visionRunning && !turning &&
+  const bool accept = state.ready && frameEpoch == epoch && !turning &&
                       (!hasReaction || now - lastReaction >= kReactionMs);
   if (accept) {
     ++state.detections;
@@ -195,6 +199,7 @@ void processFeature(const int8_t features[kFeatureCount], uint32_t frameEpoch) {
     pendingDegrees = degrees;
     bearingGeneration = directionGeneration;
     controlGeneration = zumo.controlGeneration;
+    actionGeneration = robot_actions::generation();
   }
   portEXIT_CRITICAL(&stateLock);
   if (accept) {
@@ -211,9 +216,9 @@ void task(void*) {
     if (xQueueReceive(framesQueue, &frame, portMAX_DELAY) != pdTRUE) continue;
     xSemaphoreTake(modelGate, portMAX_DELAY);
     portENTER_CRITICAL(&stateLock);
-    const bool allowed = state.ready && !visionEnabled && !visionRunning && frame.epoch == epoch;
+    const bool allowed = state.ready && frame.epoch == epoch;
     portEXIT_CRITICAL(&stateLock);
-    if (allowed && millis() - frame.capturedAt <= 200) {
+    if (allowed && millis() - frame.capturedAt <= 1000) {
       if (processedEpoch != frame.epoch) {
         FrontendReset(&frontendState);
         if (interpreter->Reset() != kTfLiteOk) fail("Could not reset Digit model");
@@ -258,7 +263,9 @@ bool react() {
 namespace wake_word {
 void begin() {
   modelGate = xSemaphoreCreateMutex();
-  framesQueue = xQueueCreate(20, sizeof(Frame));
+  static StaticQueue_t queueControl;
+  auto* storage = static_cast<uint8_t*>(heap_caps_malloc(100 * sizeof(Frame), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  if (storage) framesQueue = xQueueCreateStatic(100, sizeof(Frame), storage, &queueControl);
   if (!modelGate || !framesQueue) { fail("Could not allocate wake synchronization"); return; }
   if (!beginModel() || !beginFrontend()) { fail("Could not initialize Digit model/frontend"); return; }
   portENTER_CRITICAL(&stateLock);
@@ -267,16 +274,19 @@ void begin() {
   if (xTaskCreatePinnedToCore(task, "digit-wake", 8192, nullptr, 2, nullptr, 0) != pdPASS) {
     fail("Could not start Digit listener"); return;
   }
-  Serial.println("Wake: listening for Digit; pauses only for vision");
+  Serial.println("Wake: listening for Digit; inference serialized with vision and commands");
 }
 
 void submit(const int32_t* stereo, size_t count) {
   if (!framesQueue || !count || count > kFrameSamples) return;
   Frame frame;
+  const bool suppress = speech_commands::snapshot().listening || audioEngine.cuePlaying();
   portENTER_CRITICAL(&stateLock);
-  const bool active = state.ready && !visionEnabled && !visionRunning;
+  if (audioSuppressed != suppress) { audioSuppressed = suppress; ++epoch; }
+  const bool active = state.ready;
   frame.epoch = epoch;
   portEXIT_CRITICAL(&stateLock);
+  if (suppress) return;
   if (!active) return;
   frame.capturedAt = millis();
   frame.count = count;
@@ -295,33 +305,39 @@ void submit(const int32_t* stereo, size_t count) {
 void audioFault() { fail("Microphone unavailable; check audio status"); }
 void setVisionEnabled(bool enabled) {
   portENTER_CRITICAL(&stateLock);
-  if (visionEnabled != enabled) { visionEnabled = enabled; ++epoch; reactionPending = false; }
+  visionEnabled = enabled;
   portEXIT_CRITICAL(&stateLock);
 }
 void beginVisionInference() {
   if (modelGate) xSemaphoreTake(modelGate, portMAX_DELAY);
   portENTER_CRITICAL(&stateLock);
   visionRunning = true;
-  ++epoch;
-  reactionPending = false;
   portEXIT_CRITICAL(&stateLock);
 }
 void endVisionInference() {
   portENTER_CRITICAL(&stateLock);
   visionRunning = false;
-  ++epoch;
   portEXIT_CRITICAL(&stateLock);
   if (modelGate) xSemaphoreGive(modelGate);
+}
+void beginInference() { if (modelGate) xSemaphoreTake(modelGate, portMAX_DELAY); }
+void endInference() { if (modelGate) xSemaphoreGive(modelGate); }
+void cancel() {
+  portENTER_CRITICAL(&stateLock);
+  ++epoch; reactionPending = false; turning = false; pendingBearing = false;
+  lastReaction = millis(); hasReaction = true;
+  portEXIT_CRITICAL(&stateLock);
 }
 void poll() {
   portENTER_CRITICAL(&stateLock);
   const bool wasTurning = turning;
-  const bool paused = visionEnabled || visionRunning || !state.ready;
+  const bool paused = !state.ready;
   const bool hasBearing = pendingBearing;
   const int degrees = pendingDegrees;
   const uint32_t directionGeneration = bearingGeneration;
   const uint32_t manualGeneration = controlGeneration;
-  const bool pending = reactionPending && !visionEnabled && !visionRunning && state.ready &&
+  const uint32_t routineGeneration = actionGeneration;
+  const bool pending = reactionPending && state.ready &&
                        millis() - lastReaction < 500;
   reactionPending = false;
   portEXIT_CRITICAL(&stateLock);
@@ -334,12 +350,15 @@ void poll() {
     turning = false;
     lastReaction = millis();  // Also ignore the end-of-turn chime as a new wake.
     portEXIT_CRITICAL(&stateLock);
-    if (allowed && zumo.controlGeneration == manualGeneration && !strcmp(zumo.lookResult, "DONE")) react();
+    if (allowed && zumo.controlGeneration == manualGeneration && !strcmp(zumo.lookResult, "DONE") &&
+        routineGeneration == robot_actions::generation()) {
+      react(); speech_commands::listen(routineGeneration);
+    }
     else Serial.printf("Voice turn ended: %s\n", zumo.lookResult);
     return;
   }
-  if (pending) {
-    if (hasBearing && voice_direction::accepts(directionGeneration) &&
+  if (pending && routineGeneration == robot_actions::generation()) {
+    if (!robot_actions::snapshot().active && hasBearing && voice_direction::accepts(directionGeneration) &&
         zumo_link::look(degrees, manualGeneration)) {
       portENTER_CRITICAL(&stateLock);
       turning = true;
@@ -348,13 +367,14 @@ void poll() {
     } else {
       Serial.println("Voice turn skipped: disabled, uncertain direction, or Zumo unavailable/busy");
       react();
+      speech_commands::listen(routineGeneration);
     }
   }
 }
 bool testReaction() {
   const uint32_t now = millis();
   portENTER_CRITICAL(&stateLock);
-  const bool allowed = !visionEnabled && !visionRunning && !turning &&
+  const bool allowed = !turning &&
                        (!hasReaction || now - lastReaction >= kReactionMs);
   if (allowed) { lastReaction = now; hasReaction = true; }
   portEXIT_CRITICAL(&stateLock);
@@ -363,7 +383,7 @@ bool testReaction() {
 Status snapshot() {
   portENTER_CRITICAL(&stateLock);
   Status copy = state;
-  copy.pausedForVision = visionEnabled || visionRunning;
+  copy.pausedForVision = false;
   copy.reacting = turning || (hasReaction && millis() - lastReaction < kReactionMs);
   portEXIT_CRITICAL(&stateLock);
   return copy;

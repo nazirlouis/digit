@@ -8,6 +8,7 @@
 
 #include "app_config.h"
 #include "wake_word.h"
+#include "speech_commands.h"
 #include "xvf_read.h"
 
 namespace {
@@ -311,10 +312,10 @@ AudioActionResult AudioEngine::stopPlayback() {
   if (!available) {
     return AudioActionResult::Unavailable;
   }
-  if (currentState != AudioState::Playing && !snapshot().wakeChimePlaying) {
+  if (currentState != AudioState::Playing && !snapshot().wakeChimePlaying && !cuePlaying()) {
     return AudioActionResult::Conflict;
   }
-  xEventGroupSetBits(stopEvents_, kStopPlaybackBit);
+  cancelOutput();
   return AudioActionResult::Accepted;
 }
 
@@ -418,6 +419,33 @@ bool AudioEngine::playWakeChime() {
   return true;
 }
 
+bool AudioEngine::playCue(AudioCue cue) {
+  if (!snapshot().available) return false;
+  xSemaphoreTake(mutex_, portMAX_DELAY);
+  pendingCue_ = cue;
+  cuePlaying_ = cue != AudioCue::None;
+  xSemaphoreGive(mutex_);
+  return true;
+}
+bool AudioEngine::cuePlaying() {
+  if (!mutex_) return false;
+  xSemaphoreTake(mutex_, portMAX_DELAY);
+  const bool playing = cuePlaying_;
+  xSemaphoreGive(mutex_);
+  return playing;
+}
+void AudioEngine::cancelOutput() {
+  if (!mutex_ || !stopEvents_) return;
+  xSemaphoreTake(mutex_, portMAX_DELAY);
+  ++outputGeneration_;
+  pendingCue_ = AudioCue::None;
+  cuePlaying_ = false;
+  xSemaphoreGive(mutex_);
+  if (commandQueue_) xQueueReset(commandQueue_);
+  xEventGroupClearBits(stopEvents_, kWakeChimeBit);
+  xEventGroupSetBits(stopEvents_, kStopPlaybackBit);
+}
+
 void AudioEngine::taskLoop() {
   enum class Mode { Idle, Record, Play, Tone };
   Mode mode = Mode::Idle;
@@ -425,7 +453,18 @@ void AudioEngine::taskLoop() {
   uint32_t recordingPeak = 0, playbackGain = 1, toneFrame = 0;
   uint32_t chimeFrame = kChimeFrames;
   uint32_t emptyReads = 0;
+  AudioCue activeCue = AudioCue::None;
+  CueSamples cue = {nullptr, 0};
+  size_t cueFrame = 0;
+  uint32_t cueGeneration = 0;
   for (;;) {
+    xSemaphoreTake(mutex_, portMAX_DELAY);
+    if (cueGeneration != outputGeneration_) { activeCue = AudioCue::None; cueGeneration = outputGeneration_; }
+    if (pendingCue_ != AudioCue::None) {
+      activeCue = pendingCue_; pendingCue_ = AudioCue::None;
+      cue = cueSamples(activeCue); cueFrame = 0;
+    }
+    xSemaphoreGive(mutex_);
     Command command;
     if (xQueueReceive(commandQueue_, &command, 0) == pdTRUE) {
       if (command == Command::Record) {
@@ -444,7 +483,7 @@ void AudioEngine::taskLoop() {
     if (events & kWakeChimeBit) chimeFrame = 0;
     if (events & kStopPlaybackBit) {
       chimeFrame = kChimeFrames;
-      if (mode == Mode::Play || mode == Mode::Tone) {
+      if (mode == Mode::Play || mode == Mode::Tone || mode == Mode::Record) {
         mode = Mode::Idle;
         setState(AudioState::Ready);
       }
@@ -469,6 +508,7 @@ void AudioEngine::taskLoop() {
     }
     const size_t frames = received / kAudioFrameBytes;
     wake_word::submit(gInput, frames);
+    speech_commands::submit(gInput, frames);
 
     if (mode == Mode::Record) {
       const bool stop = (xEventGroupGetBits(stopEvents_) & kStopRecordingBit) != 0;
@@ -499,6 +539,16 @@ void AudioEngine::taskLoop() {
     const size_t recordedBytes = snapshot().capturedBytes;
     for (size_t frame = 0; frame < frames; ++frame) {
       const int32_t chime = chimeFrame < kChimeFrames ? chimeSample(chimeFrame++) : 0;
+      int32_t cueSample = 0;
+      if (activeCue == AudioCue::Dance) {
+        static const uint16_t notes[] = {523,659,784,659,587,698,880,698,523,784,1047,784};
+        const uint32_t noteFrames = app_config::kAudioSampleRate / 4;
+        if (cueFrame < noteFrames * 12) cueSample = toneSample(cueFrame % noteFrames, noteFrames, notes[cueFrame / noteFrames]);
+        if (++cueFrame >= noteFrames * 12) activeCue = AudioCue::None;
+      } else if (activeCue != AudioCue::None) {
+        if (cueFrame < cue.count) cueSample = static_cast<int32_t>(cue.data[cueFrame++]) * 16384;
+        if (cueFrame >= cue.count) activeCue = AudioCue::None;
+      }
       int32_t tone = 0;
       if (mode == Mode::Tone) {
         const uint32_t total = app_config::kAudioSampleRate * kTestToneDurationMs / 1000;
@@ -515,7 +565,7 @@ void AudioEngine::taskLoop() {
         }
         // Mix the wake chime over playback without stopping microphone capture.
         gOutput[frame * 2 + channel] = static_cast<int32_t>(
-            constrain(sample + chime, static_cast<int64_t>(INT32_MIN), static_cast<int64_t>(INT32_MAX)));
+            constrain(sample + chime + cueSample, static_cast<int64_t>(INT32_MIN), static_cast<int64_t>(INT32_MAX)));
       }
       if (mode == Mode::Play && playOffset >= recordedBytes) {
         mode = Mode::Idle;
@@ -524,6 +574,7 @@ void AudioEngine::taskLoop() {
     }
     xSemaphoreTake(mutex_, portMAX_DELAY);
     wakeChimePlaying_ = chimeFrame < kChimeFrames;
+    cuePlaying_ = activeCue != AudioCue::None || pendingCue_ != AudioCue::None;
     xSemaphoreGive(mutex_);
     if (i2s_.write(reinterpret_cast<const uint8_t*>(gOutput), received) != received) {
       endI2s();

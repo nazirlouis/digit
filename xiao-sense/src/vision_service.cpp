@@ -9,6 +9,7 @@
 #include "esp_partition.h"
 #include "pedestrian_detect.hpp"
 #include "wake_word.h"
+#include "speech_commands.h"
 
 namespace {
 constexpr size_t kJpegCapacity = 256 * 1024;
@@ -89,7 +90,7 @@ void task(void*) {
     const bool enabled = state.enabled;
     const uint32_t current_generation = generation;
     portEXIT_CRITICAL(&lock);
-    if (!enabled) { vTaskDelay(pdMS_TO_TICKS(100)); continue; }
+    if (!enabled || speech_commands::snapshot().listening) { vTaskDelay(pdMS_TO_TICKS(100)); continue; }
     const uint32_t started = millis();
     camera_fb_t* frame = esp_camera_fb_get();
     const bool frame_ok = frame && frame->format == PIXFORMAT_JPEG && frame->width == 640 &&

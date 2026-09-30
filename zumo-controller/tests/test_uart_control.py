@@ -261,7 +261,7 @@ class UARTControlTests(unittest.TestCase):
         self.command("8 STOP")
         self.b.event = True
         self.control.tick()
-        self.assertEqual(self.face.actions, ["happy"])
+        self.assertEqual(self.face.actions, ["neutral", "happy"])
 
     def test_edge_latches_until_recalibrated(self):
         self.calibrate()
@@ -345,7 +345,7 @@ class UARTControlTests(unittest.TestCase):
         self.command("6 STOP")
         self.c.pressed = True
         self.assertEqual(self.command("7 WAKE"), "7 ERR BUTTON_C")
-        self.assertEqual(self.face.actions, [])
+        self.assertEqual(self.face.actions, ["neutral", "neutral"])
         self.assertEqual(self.command("8 WAKE HAPPY"), "8 ERR ARGUMENT")
 
     def test_manual_override_is_not_undone_when_animation_expires(self):

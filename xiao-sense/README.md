@@ -50,12 +50,14 @@ The dashboard shows when the Zumo acknowledges the LED command.
 
 ## Digit wake reaction
 
+The six-command MultiNet integration is described in [VOICE_ACTIONS.md](VOICE_ACTIONS.md),
+including installation, the revised model partitions, and dashboard Stop behavior.
+
 Wake listening starts automatically and stays on during camera streaming,
-recording, playback, and the wake chime. Enabling **person detection** pauses
-wake inference for the entire time vision is enabled. Stopping person detection
-automatically resumes listening after a one-second fresh-audio warmup. There is
-no wake on/off switch. Vision and wake inference share a lock so a final vision
-frame cannot overlap a resumed wake inference.
+recording, playback, and the wake chime. Wake and vision inference share a lock
+and buffered audio. Vision briefly yields during the five-second MultiNet
+command window. Routine speech clips suppress wake detection to avoid
+self-triggering; the dashboard Stop button remains available throughout.
 
 Saying **Digit** queues a 400 ms rising chime through the ReSpeaker speaker and
 a `WAKE` command over the existing UART. The Zumo shows a happy expression and
@@ -67,10 +69,10 @@ not arm motors or enable following. With voice turning disabled (the boot defaul
 it does not move the robot. A busy/moving/calibrating
 Zumo skips its reaction while the XIAO can still chime.
 
-The dashboard shows listening/vision-pause/error status, the last detection's
+The dashboard shows listening/error status, the last detection's
 age and score, and the Zumo acknowledgement. **Test wake reaction** (or
 `POST /api/wake/test`) tests lights, face, and sound without requiring speech.
-It is unavailable during vision and cooldown. `/api/status` includes `wake_*`
+It is unavailable during turns and cooldown. `/api/status` includes `wake_*`
 diagnostics, including inference time, microphone peak, and dropped audio frames.
 The serial console prints `DIGIT HEARD (score=..., inference=... ms)`.
 
@@ -79,9 +81,9 @@ the application, using ESP-IDF TensorFlow Lite Micro plus the pinned speech
 frontend from the earlier listener. I2S runs full duplex at 16 kHz with GPIO43
 as input and GPIO44 as output. A single audio task feeds microphone samples to
 both recording and a bounded wake queue; a chime mixes into speaker playback.
-Queued audio is discarded across vision pauses/overflow, then the streaming
-model and frontend reset. The application and pedestrian model partition
-layout remain unchanged.
+Queued audio is discarded across Stop, command windows, routine speech, and
+overflow, then the streaming model and frontend reset. The flash layout now
+includes separate pedestrian and MultiNet model partitions.
 
 Install `wake_reaction.py`, `voice_turn.py`, `uart_control.py`, `main.py`, and
 `digit_config.py` on the Zumo before trying this version. Keep the RGB library
@@ -95,9 +97,9 @@ Bench acceptance after both boards are updated:
    check all six LEDs, the happy transition, audible chime, and restoration.
 2. Say Digit repeatedly with pauses, then try other words and background speech.
    Adjust model sensitivity only after measuring misses and false detections.
-3. Enable person detection: wake must show **Paused for vision** and produce no
-   speech-triggered reactions. Disable it: listening must resume automatically.
-   Repeat while streaming video; camera streaming alone must never pause wake.
+3. Enable person detection and check wake responsiveness and dropped-frame
+   counters. Say Digit: vision must briefly yield while MultiNet listens.
+   Repeat while streaming video and check actual recognition performance.
 4. Say Digit during recording, replay, and the speaker test. Confirm microphone
    capture continues and the chime overlays playback. Verify the chime does not
    trigger repeated reactions on the actual speaker/microphone arrangement.
@@ -176,8 +178,8 @@ setup state, gyro availability, last read resource/command/status and the last t
 /api/voice/setup?action=front|left|on|off|reset` performs setup and enabling.
 Calibration/enable are session-only. Once enabled, wake listening and voice
 turning work without keeping the browser open; browser visibility still
-controls the separate person-follow mode. Vision pauses wake listening and
-cancels an active voice turn. It resumes listening after vision is stopped.
+controls the separate turn-only person-follow mode. The six-command controller
+owns its own following mode and cancels it through the same dashboard Stop path.
 
 ## Build
 
@@ -186,16 +188,13 @@ cancels an active voice turn. It resumes listening after vision is stopped.
    file is ignored by Git.
 2. From this directory, run
    `C:\Users\nazir\.platformio\penv\Scripts\pio.exe run -e xiao_esp32s3_sense_idf -j 2`.
-3. Pack the model with
-   `managed_components/espressif__esp-dl/fbs_loader/pack_espdl_models.py`,
-   taking its input from
-   `managed_components/espressif__pedestrian_detect/models/s3/pedestrian_detect_pico_s8_v1.espdl`.
+3. Models are packed automatically. Use normal PlatformIO Upload to install
+   the application and both model partitions together.
 
-The custom partition table reserves 6 MB for the app and 1 MB at `0x610000`
-for the packed pedestrian model. A normal app upload does not populate that
-model partition. On a fresh board, flash the bootloader, partition table,
-firmware, and packed model together. Subsequent firmware uploads preserve the
-model. Update `upload_port` in `platformio.ini` if Windows assigns a port
+The custom partition table reserves 4.5 MB for the app, 448 KB at `0x490000`
+for the pedestrian model, and 3 MB at `0x500000` for MultiNet. This upgrade needs
+the new partition table and both models, not just firmware.bin.
+Update `upload_port` in `platformio.ini` if Windows assigns a port
 other than COM7. The board has 8 MB flash and 8 MB PSRAM.
 
 The original 8 MB Arduino flash image was backed up locally before testing

@@ -23,7 +23,7 @@ MIN_EDGE_MARGIN = 180
 class UARTController:
     def __init__(self, uart, motors, line_sensors, battery, face,
                  button_a, button_b, button_c, clock, rgb_leds=None,
-                 gyro=None, turn_motor_sign=1):
+                 gyro=None, turn_motor_sign=1, tof=None):
         self.uart = uart
         self.motors = motors
         self.line_sensors = line_sensors
@@ -34,6 +34,12 @@ class UARTController:
         self.button_b = button_b
         self.button_c = button_c
         self.clock = clock
+        self.tof = tof
+        self.distance_mm = -1
+        self.range_at = None
+        self.last_range_poll = None
+        self.range_failed = False
+        self.safe_motion = False
         self.wake = WakeReaction(face, rgb_leds, clock)
         self.voice_turn = VoiceTurn(gyro, clock, turn_motor_sign) if gyro else None
         self.look_id = None
@@ -60,6 +66,7 @@ class UARTController:
         self.left = 0
         self.right = 0
         self.last_drive = None
+        self.safe_motion = False
         if self.look_id is not None:
             self._send(self.look_id + " ERR LOOK_CANCELLED")
         self.look_id = None
@@ -163,9 +170,38 @@ class UARTController:
         except Exception as error:
             print("UART CONTROL: battery read error:", error)
             millivolts = -1
-        self._send("{} OK READY={} FAULT={} L={} R={} BAT={} EDGE={} VOICE={}".format(
+        valid = self._range_valid(self.clock.ticks_ms())
+        self._send("{} OK READY={} FAULT={} L={} R={} BAT={} EDGE={} VOICE={} DIST={} RANGE={} AUTO=1".format(
             command_id, int(self.ready), self.fault, self.left, self.right,
-            millivolts, int(self.edge), int(self.voice_turn is not None)))
+            millivolts, int(self.edge), int(self.voice_turn is not None),
+            self.distance_mm, int(valid)))
+
+    def _range_valid(self, now):
+        return (self.tof is not None and self.range_at is not None and
+                self.clock.ticks_diff(now, self.range_at) < 250 and
+                self.distance_mm > 0)
+
+    def _poll_range(self, now):
+        if self.tof is None or (self.last_range_poll is not None and
+                self.clock.ticks_diff(now, self.last_range_poll) < 20):
+            return
+        self.last_range_poll = now
+        try:
+            if self.tof.data_ready:
+                distance = self.tof.distance_mm
+                valid = self.tof.range_status == 0
+                self.tof.clear_interrupt()
+                self.distance_mm = distance if valid else -1
+                self.range_at = now if valid else None
+                self.range_failed = False
+        except Exception as error:
+            self.distance_mm = -1
+            self.range_at = None
+            if self.safe_motion:
+                self._latch("SENSOR")
+            if not self.range_failed:
+                print("UART CONTROL: range sensor error:", error)
+            self.range_failed = True
 
     def _apply_motion(self, command_id, left, right, now, reply):
         if not self.ready:
@@ -182,6 +218,7 @@ class UARTController:
         else:
             self._cancel_wake()
         self.motors.set_speeds(left, right)
+        self.safe_motion = False
         self.left, self.right = left, right
         self.last_drive = now if left or right else None
         self._send(command_id + " OK " + reply)
@@ -209,6 +246,7 @@ class UARTController:
         elif command == "STOP" and not args:
             self._stop()
             self.calibration = None
+            self.face.play("neutral")
             self._send(command_id + " OK STOPPED")
         elif command == "CALIBRATE" and not args:
             self._start_calibration(command_id, now)
@@ -246,7 +284,7 @@ class UARTController:
                 self._send(command_id + " OK KEEP")
             else:
                 self._send(command_id + " ERR NO_LOOK")
-        elif command == "DRIVE" and len(args) == 2:
+        elif command in ("DRIVE", "SAFE") and len(args) == 2:
             if not all((arg[1:] if arg.startswith("-") else arg).isdigit()
                        for arg in args):
                 self._send(command_id + " ERR ARGUMENT")
@@ -255,8 +293,15 @@ class UARTController:
             if not (-MAX_DRIVE_SPEED <= left <= MAX_DRIVE_SPEED and
                     -MAX_DRIVE_SPEED <= right <= MAX_DRIVE_SPEED):
                 self._send(command_id + " ERR SPEED_RANGE")
+            elif command == "SAFE" and not self._range_valid(now):
+                self._stop()
+                self._send(command_id + " ERR RANGE_UNAVAILABLE")
+            elif command == "SAFE" and left + right > 0 and self.distance_mm <= 150:
+                self._stop()
+                self._send(command_id + " ERR OBSTACLE")
             else:
-                self._apply_motion(command_id, left, right, now, "DRIVE")
+                self._apply_motion(command_id, left, right, now, command)
+                self.safe_motion = command == "SAFE" and bool(self.left or self.right)
         elif command == "TURN" and len(args) == 1:
             argument = args[0]
             if not (argument[1:] if argument.startswith("-") else argument).isdigit():
@@ -319,7 +364,7 @@ class UARTController:
                         self._send(command_id + " ERR LED_IO")
                     else:
                         self._send(command_id + " OK LED")
-        elif command in ("PING", "STATUS", "STOP", "CALIBRATE", "DRIVE", "TURN", "FACE", "LED", "WAKE", "LOOK", "KEEP"):
+        elif command in ("PING", "STATUS", "STOP", "CALIBRATE", "DRIVE", "SAFE", "TURN", "FACE", "LED", "WAKE", "LOOK", "KEEP"):
             self._send(command_id + " ERR ARGUMENT")
         else:
             self._send(command_id + " ERR UNKNOWN_COMMAND")
@@ -364,6 +409,13 @@ class UARTController:
             readings = self._read_edge()
             if readings is not None and self._edge_seen(readings):
                 self._latch("EDGE")
+        self._poll_range(now)
+        if self.safe_motion:
+            if not self._range_valid(now):
+                self._latch("SENSOR")
+            elif self.left + self.right > 0 and self.distance_mm <= 150:
+                self._stop()
+                self._send("0 EVENT OBSTACLE")
         self._poll_uart(now)
         self._sample_calibration(now)
         if self.look_id is not None:
