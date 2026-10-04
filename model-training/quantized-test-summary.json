@@ -1,0 +1,180 @@
+{
+  "threshold": 0.35,
+  "iou_threshold": 0.5,
+  "true_positives": 6,
+  "false_positives": 0,
+  "false_negatives": 1,
+  "background_images": 4,
+  "background_images_with_false_detections": 0,
+  "predictions": [
+    {
+      "image": "digit-2026-10-03T18-49-20-060Z_jpg.rf.3c7fa24532309da05afb3d416f94377c.jpg",
+      "truth_boxes": [
+        [
+          139.5,
+          108.0,
+          150.5,
+          144.0
+        ]
+      ],
+      "boxes": [
+        [
+          138.5,
+          109.0,
+          153.0,
+          143.5
+        ]
+      ],
+      "confidence": [
+        0.8175744414329529
+      ]
+    },
+    {
+      "image": "digit-2026-10-03T18-51-53-345Z_jpg.rf.c16a91a2f43a43a1f9c24af1f9f4f843.jpg",
+      "truth_boxes": [
+        [
+          73.5,
+          103.5,
+          82.5,
+          126.49999999999999
+        ]
+      ],
+      "boxes": [],
+      "confidence": []
+    },
+    {
+      "image": "digit-2026-10-03T18-51-59-574Z_jpg.rf.a0d3387d45a1396d2461ef338ed87a1b.jpg",
+      "truth_boxes": [
+        [
+          109.50000000000001,
+          109.00000000000001,
+          122.5,
+          151.0
+        ]
+      ],
+      "boxes": [
+        [
+          110.5,
+          110.5,
+          125.0,
+          151.5
+        ]
+      ],
+      "confidence": [
+        0.8175744414329529
+      ]
+    },
+    {
+      "image": "digit-2026-10-03T18-53-32-082Z_jpg.rf.dedb34adf86f106e34921624ae5ce692.jpg",
+      "truth_boxes": [
+        [
+          92.0,
+          107.0,
+          104.0,
+          143.0
+        ]
+      ],
+      "boxes": [
+        [
+          91.5,
+          108.0,
+          104.5,
+          144.0
+        ]
+      ],
+      "confidence": [
+        0.7310585379600525
+      ]
+    },
+    {
+      "image": "digit-2026-10-03T18-53-43-959Z_jpg.rf.f975880c25d3e4eba595ff9ba5dd185b.jpg",
+      "truth_boxes": [
+        [
+          112.0,
+          116.50000000000003,
+          128.0,
+          173.5
+        ]
+      ],
+      "boxes": [
+        [
+          111.0,
+          118.0,
+          131.0,
+          174.0
+        ]
+      ],
+      "confidence": [
+        0.8807970285415649
+      ]
+    },
+    {
+      "image": "digit-2026-10-03T18-53-50-739Z_jpg.rf.cd16815cb751c5ce3e0464203e82254b.jpg",
+      "truth_boxes": [
+        [
+          150.5,
+          113.00000000000003,
+          167.5,
+          161.0
+        ]
+      ],
+      "boxes": [
+        [
+          149.5,
+          113.0,
+          169.0,
+          161.5
+        ]
+      ],
+      "confidence": [
+        0.8807970285415649
+      ]
+    },
+    {
+      "image": "digit-2026-10-03T18-54-13-838Z_jpg.rf.bd710f24e16247f8bfcc64161b64fd05.jpg",
+      "truth_boxes": [
+        [
+          92.00000000000001,
+          115.99999999999999,
+          108.0,
+          170.0
+        ]
+      ],
+      "boxes": [
+        [
+          91.0,
+          116.5,
+          110.5,
+          169.0
+        ]
+      ],
+      "confidence": [
+        0.8175744414329529
+      ]
+    },
+    {
+      "image": "digit-2026-10-03T18-54-29-199Z_jpg.rf.1e0fa68763edfda3ff3412b8dd483c8a.jpg",
+      "truth_boxes": [],
+      "boxes": [],
+      "confidence": []
+    },
+    {
+      "image": "digit-2026-10-03T18-54-36-556Z_jpg.rf.36f6574111e8438bee11595258a47f91.jpg",
+      "truth_boxes": [],
+      "boxes": [],
+      "confidence": []
+    },
+    {
+      "image": "digit-2026-10-03T18-54-43-704Z_jpg.rf.86fa02abec1a6f5db27a64f7e5661762.jpg",
+      "truth_boxes": [],
+      "boxes": [],
+      "confidence": []
+    },
+    {
+      "image": "digit-2026-10-03T18-55-51-308Z_jpg.rf.a244eb9f6f454073c71c35e1b71b7c3c.jpg",
+      "truth_boxes": [],
+      "boxes": [],
+      "confidence": []
+    }
+  ]
+}

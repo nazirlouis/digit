@@ -26,15 +26,16 @@ struct Status {
   bool rangeValid;
   int distanceMm;
   uint32_t safetyEvents;
+  bool brakeCapable;
 };
 
 void begin();
 void poll();
 Status snapshot();
-bool drive(int left, int right);
+bool drive(int left, int right, int acceleration = 6000);
 bool turn(int speed);
 bool safeDrive(int left, int right);
-void stop();
+void stop(bool smooth = false);
 bool calibrate();
 bool isFaceName(const char* name);
 bool face(const char* name);

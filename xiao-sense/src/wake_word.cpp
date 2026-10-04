@@ -49,6 +49,7 @@ bool visionEnabled = false, visionRunning = false, reactionPending = false;
 bool audioSuppressed = false;
 uint32_t epoch = 0, lastReaction = 0;
 bool hasReaction = false;
+bool reactionActive = false;
 bool detectionLatched = false;
 bool turning = false, pendingBearing = false;
 int pendingDegrees = 0;
@@ -194,6 +195,7 @@ void processFeature(const int8_t features[kFeatureCount], uint32_t frameEpoch) {
     state.lastScore = score;
     lastReaction = now;
     hasReaction = true;
+    reactionActive = true;
     reactionPending = true;
     pendingBearing = bearing;
     pendingDegrees = degrees;
@@ -325,6 +327,9 @@ void endInference() { if (modelGate) xSemaphoreGive(modelGate); }
 void cancel() {
   portENTER_CRITICAL(&stateLock);
   ++epoch; reactionPending = false; turning = false; pendingBearing = false;
+  reactionActive = false;
+  // Keep detection cooldown separate from an actual reaction. A drive refresh
+  // cancels wake work, but must not look like new wake work and queue STOP again.
   lastReaction = millis(); hasReaction = true;
   portEXIT_CRITICAL(&stateLock);
 }
@@ -376,7 +381,7 @@ bool testReaction() {
   portENTER_CRITICAL(&stateLock);
   const bool allowed = !turning &&
                        (!hasReaction || now - lastReaction >= kReactionMs);
-  if (allowed) { lastReaction = now; hasReaction = true; }
+  if (allowed) { lastReaction = now; hasReaction = true; reactionActive = true; }
   portEXIT_CRITICAL(&stateLock);
   return allowed && react();
 }
@@ -384,7 +389,7 @@ Status snapshot() {
   portENTER_CRITICAL(&stateLock);
   Status copy = state;
   copy.pausedForVision = false;
-  copy.reacting = turning || (hasReaction && millis() - lastReaction < kReactionMs);
+  copy.reacting = turning || (reactionActive && millis() - lastReaction < kReactionMs);
   portEXIT_CRITICAL(&stateLock);
   return copy;
 }

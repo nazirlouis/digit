@@ -20,14 +20,20 @@ struct Status {
   struct Box {
     int x1, y1, x2, y2;
     uint8_t scorePercent;
+    uint8_t classId;
   } boxes[5];
   uint8_t boxCount;
   uint16_t imageWidth;
   uint16_t imageHeight;
+  bool batteryReady;
+  bool batteryMode;
+  bool batteryDetected;
+  uint8_t batteryScorePercent;
 };
 
 void begin();
 bool setEnabled(bool enabled);
+bool setBatteryEnabled(bool enabled);
 Status snapshot();
 
 }  // namespace vision_service

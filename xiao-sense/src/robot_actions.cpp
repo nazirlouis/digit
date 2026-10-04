@@ -50,10 +50,10 @@ const Step dance[] = {
   {1000,0,0,0,"HAPPY",AudioCue::Photo,"Dance complete"},
 };
 
-void finish(const char* reason) {
+void finish(const char* reason, bool smooth = false) {
   active = false; command = Command::None; phase = reason; pulsing = false;
   audioEngine.cancelOutput();
-  zumo_link::stop();
+  zumo_link::stop(smooth);
   if (ownsVision) vision_service::setEnabled(false);
   ownsVision = false;
 }
@@ -105,7 +105,7 @@ void stopPulse() {
 void trackPerson(uint32_t now, bool photo) {
   const auto vision = vision_service::snapshot();
   const auto z = zumo_link::snapshot();
-  if (!vision.ready || !vision.enabled) { finish("Person detection stopped"); return; }
+  if (!vision.ready || !vision.enabled || vision.batteryMode) { finish("Person detection stopped"); return; }
   if (photo && now - started > 45000) { finish("Picture cancelled: no centered person"); return; }
   if (pulsing && now - pulseAt >= 120) stopPulse();
   if (!vision.hasResult || vision.resultAgeMs > 900) {
@@ -224,13 +224,14 @@ const char* name(Command value) {
   return index < 8 ? names[index] : "Unknown";
 }
 Status snapshot() { Guard guard; return {command, phase, active, controlEpoch.load()}; }
-void stop(const char* reason) {
+void stop(const char* reason, bool smooth) {
   Guard guard;
   ++controlEpoch;
   wake_word::cancel(); speech_commands::cancel(); photo_store::cancel();
   person_follow::setEnabled(false);
+  if (vision_service::snapshot().batteryMode) vision_service::setEnabled(false);
   audioEngine.cancelOutput();
-  finish(reason);
+  finish(reason, smooth);
 }
 void manualOverride() {
   Guard guard;

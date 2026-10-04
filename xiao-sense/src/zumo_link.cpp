@@ -27,13 +27,15 @@ int faceIndex(const char* name) {
 }
 
 zumo_link::Status status = {false, false, false, false, 0, 0, -1, 0,
-                            "NONE", "NONE", "NONE", "NONE", false, false, 0, "NONE", false, false, false, -1, 0};
+                            "NONE", "NONE", "NONE", "NONE", false, false, 0, "NONE", false, false, false, -1, 0, false};
 int desiredLeft = 0;
 int desiredRight = 0;
+int desiredAcceleration = 6000;
 bool driveWanted = false;
 bool turnWanted = false;
 bool safeWanted = false;
 bool stopPending = false;
+bool brakePending = false;
 bool calibrationPending = false;
 int facePending = 0;
 bool ledPending = false;
@@ -66,6 +68,11 @@ uint16_t sendPrefix() {
   return id;
 }
 
+void queueStop(bool smooth = false) {
+  stopPending = true;
+  brakePending = smooth;
+}
+
 void clearDrive() {
   driveWanted = false;
   turnWanted = false;
@@ -81,7 +88,7 @@ void finishLook(const char* result, bool sendStop) {
   lookId = 0;
   if (wasActive) {
     snprintf(status.lookResult, sizeof(status.lookResult), "%s", result);
-    if (sendStop) stopPending = true;
+    if (sendStop) queueStop();
   }
 }
 
@@ -111,6 +118,8 @@ void handleLine(const char* line, uint32_t now) {
     status.distanceMm = distance;
     status.rangeValid = valid == 1;
     status.actionCapable = capable == 1;
+    const char* brake = strstr(line, " BRAKE=");
+    status.brakeCapable = brake && brake[7] == '1';
     snprintf(status.fault, sizeof(status.fault), "%s", fault);
     if (!status.ready) {
       clearDrive();
@@ -171,24 +180,24 @@ void handleLine(const char* line, uint32_t now) {
     status.calibrating = false;
     status.edge = strcmp(reason, "EDGE") == 0;
     status.left = status.right = 0;
-    snprintf(status.fault, sizeof(status.fault), "%s", reason);
+    snprintf(status.fault, sizeof(status.fault), "%.23s", reason);
     clearDrive();
     finishLook(reason, true);
-    stopPending = true;
+    queueStop();
   } else if (strcmp(line, "0 EVENT TIMEOUT") == 0 ||
              strcmp(line, "0 EVENT OBSTACLE") == 0) {
     ++status.safetyEvents;
     status.left = status.right = 0;
     clearDrive();
     finishLook("TIMEOUT", true);
-    stopPending = true;
+    queueStop();
   } else if (strstr(line, " OK CALIBRATING") != nullptr) {
     status.calibrating = true;
     status.ready = false;
   } else if (strstr(line, " ERR ") != nullptr) {
     const char* reason = strstr(line, " ERR ") + 5;
     if (!strcmp(reason,"OBSTACLE") || !strcmp(reason,"RANGE_UNAVAILABLE") || !strcmp(reason,"NOT_READY")) {
-      ++status.safetyEvents; clearDrive(); stopPending = true;
+      ++status.safetyEvents; clearDrive(); queueStop();
     }
     snprintf(status.lastError, sizeof(status.lastError), "%s", reason);
     if (id == calibrationId) {
@@ -244,8 +253,9 @@ Status snapshot() {
   return result;
 }
 
-bool drive(int left, int right) {
-  if (left < -6000 || left > 6000 || right < -6000 || right > 6000) {
+bool drive(int left, int right, int acceleration) {
+  if (left < -6000 || left > 6000 || right < -6000 || right > 6000 ||
+      acceleration < 500 || acceleration > 6000) {
     return false;
   }
   const uint32_t now = millis();
@@ -257,13 +267,14 @@ bool drive(int left, int right) {
     manualOverride();
     desiredLeft = left;
     desiredRight = right;
+    desiredAcceleration = acceleration;
     turnWanted = false;
     safeWanted = false;
     facePending = 0;
     driveWanted = left != 0 || right != 0;
     lastBrowserDrive = now;
     if (!driveWanted) {
-      stopPending = true;
+      queueStop(status.brakeCapable);
     }
   }
   portEXIT_CRITICAL(&stateLock);
@@ -285,13 +296,13 @@ bool turn(int speed) {
     facePending = 0;
     driveWanted = speed != 0;
     lastBrowserDrive = now;
-    if (!driveWanted) stopPending = true;
+    if (!driveWanted) queueStop();
   }
   portEXIT_CRITICAL(&stateLock);
   return allowed;
 }
 
-void stop() {
+void stop(bool smooth) {
   portENTER_CRITICAL(&stateLock);
   manualOverride();
   clearDrive();
@@ -301,7 +312,8 @@ void stop() {
   ledPending = false;
   calibrationPending = false;
   status.calibrating = false;
-  stopPending = true;
+  queueStop(smooth && status.brakeCapable && status.ready && lastReply &&
+            millis() - lastReply < kLinkTimeoutMs);
   portEXIT_CRITICAL(&stateLock);
 }
 
@@ -320,7 +332,7 @@ bool safeDrive(int left, int right) {
     turnWanted = false;
     safeWanted = true;
     lastBrowserDrive = now;
-    if (!driveWanted) stopPending = true;
+    if (!driveWanted) queueStop();
   }
   portEXIT_CRITICAL(&stateLock);
   return allowed;
@@ -336,7 +348,7 @@ bool calibrate() {
     status.ready = false;
     status.calibrating = true;
     snprintf(status.lastError, sizeof(status.lastError), "NONE");
-    stopPending = true;
+    queueStop();
     calibrationPending = true;
   }
   portEXIT_CRITICAL(&stateLock);
@@ -429,7 +441,7 @@ void poll() {
   const uint32_t now = millis();
   pollReceive(now);
 
-  bool sendStop = false, sendCalibration = false;
+  bool sendStop = false, sendBrake = false, sendCalibration = false;
   int sendFace = 0;
   bool sendLed = false;
   bool sendWake = false;
@@ -441,7 +453,7 @@ void poll() {
   bool sendDrive = false;
   bool sendTurn = false;
   bool sendSafe = false;
-  int left = 0, right = 0;
+  int left = 0, right = 0, acceleration = 6000;
   portENTER_CRITICAL(&stateLock);
   const bool connected = lastReply != 0 && now - lastReply < kLinkTimeoutMs;
   if (status.lookActive && (!connected || !status.ready || status.calibrating ||
@@ -476,11 +488,13 @@ void poll() {
   }
   if (driveWanted && now - lastBrowserDrive >= kBrowserLeaseMs) {
     clearDrive();
-    stopPending = true;
+    queueStop();
   }
   if (stopPending) {
     sendStop = true;
+    sendBrake = brakePending && connected && status.ready && status.brakeCapable;
     stopPending = false;
+    brakePending = false;
   } else if (calibrationPending) {
     sendCalibration = true;
     calibrationPending = false;
@@ -512,13 +526,14 @@ void poll() {
     sendSafe = safeWanted;
     left = desiredLeft;
     right = desiredRight;
+    acceleration = desiredAcceleration;
     lastDriveSent = now;
   }
   portEXIT_CRITICAL(&stateLock);
 
   if (sendStop) {
     sendPrefix();
-    zumoUart.println("STOP");
+    zumoUart.println(sendBrake ? "BRAKE" : "STOP");
   } else if (sendCalibration) {
     calibrationId = sendPrefix();
     zumoUart.println("CALIBRATE");
@@ -550,7 +565,8 @@ void poll() {
   } else if (sendDrive) {
     sendPrefix();
     if (sendTurn) zumoUart.printf("TURN %d\n", left);
-    else zumoUart.printf("%s %d %d\n", sendSafe ? "SAFE" : "DRIVE", left, right);
+    else if (sendSafe) zumoUart.printf("SAFE %d %d\n", left, right);
+    else zumoUart.printf("DRIVE %d %d %d\n", left, right, acceleration);
   }
   if (now - lastStatusSent >= kStatusPeriodMs) {
     lastStatusSent = now;

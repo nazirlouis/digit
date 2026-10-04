@@ -98,8 +98,10 @@ class VoiceTurnTests(unittest.TestCase):
         self.assertIsNone(self.controller.look_id)
         self.start_motion()
         self.assertEqual(self.send("4 DRIVE 800 800"), "4 OK DRIVE")
-        self.assertEqual(self.motors.speeds, (800, 800))
+        self.assertEqual(self.motors.speeds, (0, 0))
         self.assertIsNone(self.controller.look_id)
+        self.step(5, keep=False)
+        self.assertEqual(self.motors.speeds, (15, 15))
         self.step(300, keep=False)
         self.assertEqual(self.motors.speeds, (0, 0))
 
@@ -109,7 +111,7 @@ class VoiceTurnTests(unittest.TestCase):
                 self.setUp()
                 self.start_motion()
                 if fault == "EDGE":
-                    self.sensors.values[0] = 900
+                    self.sensors.values[0] = 980
                 elif fault == "BUTTON_C":
                     self.c.event = True
                 else:

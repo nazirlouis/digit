@@ -4,6 +4,9 @@ The original Pololu library is preserved in `../factory-backup/`. The
 files here are replacements for the corresponding files in the Zumo's existing
 `/zumo_2040_robot/` directory:
 
+- `zumo_2040_robot/display.py` routes all legacy display imports, including
+  `robot.Display()`, to the LCD. Also upload `digit_display_lcd.py` to the
+  device root before restarting.
 - `zumo_2040_robot/motors.py` reverses the **left motor** so a positive speed
   commands forward motion on both tracks. The right motor is unchanged.
 - `zumo_2040_robot/encoders.py` restores the **factory encoder signs**. The

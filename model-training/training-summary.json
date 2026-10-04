@@ -1,0 +1,144 @@
+{
+  "gpu": "NVIDIA GeForce RTX 5060 Ti",
+  "torch": "2.7.1+cu128",
+  "best_checkpoint": "C:\\Users\\nazir\\Documents\\Projects\\digit\\model-training\\runs\\battery\\weights\\best.pt",
+  "input_size": [
+    224,
+    224
+  ],
+  "validation": {
+    "metrics/precision(B)": 0.9941133390604333,
+    "metrics/recall(B)": 1.0,
+    "metrics/mAP50(B)": 0.995,
+    "metrics/mAP50-95(B)": 0.7963538461538461,
+    "fitness": 0.7963538461538461
+  },
+  "test": {
+    "metrics/precision(B)": 0.9927142471728859,
+    "metrics/recall(B)": 1.0,
+    "metrics/mAP50(B)": 0.995,
+    "metrics/mAP50-95(B)": 0.6915833333333333,
+    "fitness": 0.6915833333333333
+  },
+  "threshold": 0.35,
+  "test_predictions": [
+    {
+      "image": "digit-2026-10-03T18-49-20-060Z_jpg.rf.3c7fa24532309da05afb3d416f94377c.jpg",
+      "boxes": [
+        [
+          139.68606567382812,
+          108.46298217773438,
+          152.85906982421875,
+          143.91964721679688
+        ]
+      ],
+      "confidence": [
+        0.8608710169792175
+      ]
+    },
+    {
+      "image": "digit-2026-10-03T18-51-53-345Z_jpg.rf.c16a91a2f43a43a1f9c24af1f9f4f843.jpg",
+      "boxes": [
+        [
+          74.16188049316406,
+          104.77091979980469,
+          82.90675354003906,
+          126.59111022949219
+        ]
+      ],
+      "confidence": [
+        0.7527363300323486
+      ]
+    },
+    {
+      "image": "digit-2026-10-03T18-51-59-574Z_jpg.rf.a0d3387d45a1396d2461ef338ed87a1b.jpg",
+      "boxes": [
+        [
+          111.1053466796875,
+          110.91397094726562,
+          124.34292602539062,
+          149.95361328125
+        ]
+      ],
+      "confidence": [
+        0.8191967010498047
+      ]
+    },
+    {
+      "image": "digit-2026-10-03T18-53-32-082Z_jpg.rf.dedb34adf86f106e34921624ae5ce692.jpg",
+      "boxes": [
+        [
+          92.26658630371094,
+          108.570068359375,
+          104.13787841796875,
+          143.38455200195312
+        ]
+      ],
+      "confidence": [
+        0.8243289589881897
+      ]
+    },
+    {
+      "image": "digit-2026-10-03T18-53-43-959Z_jpg.rf.f975880c25d3e4eba595ff9ba5dd185b.jpg",
+      "boxes": [
+        [
+          111.01081848144531,
+          117.2044448852539,
+          130.0127410888672,
+          173.80062866210938
+        ]
+      ],
+      "confidence": [
+        0.8858782649040222
+      ]
+    },
+    {
+      "image": "digit-2026-10-03T18-53-50-739Z_jpg.rf.cd16815cb751c5ce3e0464203e82254b.jpg",
+      "boxes": [
+        [
+          150.66336059570312,
+          113.94544982910156,
+          167.55197143554688,
+          159.9664764404297
+        ]
+      ],
+      "confidence": [
+        0.8898337483406067
+      ]
+    },
+    {
+      "image": "digit-2026-10-03T18-54-13-838Z_jpg.rf.bd710f24e16247f8bfcc64161b64fd05.jpg",
+      "boxes": [
+        [
+          92.32132720947266,
+          115.94354248046875,
+          109.76042938232422,
+          168.19989013671875
+        ]
+      ],
+      "confidence": [
+        0.8841039538383484
+      ]
+    },
+    {
+      "image": "digit-2026-10-03T18-54-29-199Z_jpg.rf.1e0fa68763edfda3ff3412b8dd483c8a.jpg",
+      "boxes": [],
+      "confidence": []
+    },
+    {
+      "image": "digit-2026-10-03T18-54-36-556Z_jpg.rf.36f6574111e8438bee11595258a47f91.jpg",
+      "boxes": [],
+      "confidence": []
+    },
+    {
+      "image": "digit-2026-10-03T18-54-43-704Z_jpg.rf.86fa02abec1a6f5db27a64f7e5661762.jpg",
+      "boxes": [],
+      "confidence": []
+    },
+    {
+      "image": "digit-2026-10-03T18-55-51-308Z_jpg.rf.a244eb9f6f454073c71c35e1b71b7c3c.jpg",
+      "boxes": [],
+      "confidence": []
+    }
+  ]
+}

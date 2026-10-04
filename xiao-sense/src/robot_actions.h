@@ -16,7 +16,7 @@ class Guard {
 void begin();
 uint32_t generation();
 bool start(Command command, uint32_t expectedGeneration);
-void stop(const char* reason = "Stopped");
+void stop(const char* reason = "Stopped", bool smooth = false);
 void manualOverride();
 void poll();
 Status snapshot();

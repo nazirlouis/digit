@@ -26,6 +26,56 @@ void tick() {
 }
 int main() {
   robot_actions::begin();
+  resetDevice();
+  vision_service::state.enabled=true;
+  vision_service::state.batteryMode=true;
+  robot_actions::stop("Dashboard Stop");
+  assert(!vision_service::state.enabled && !vision_service::state.batteryMode);
+  resetDevice();
+  assert(robot_actions::start(Command::Follow,robot_actions::generation()));
+  vision_service::state.batteryMode=true;
+  const auto beforeBatteryFrame=zumo_link::motions;
+  robot_actions::poll();
+  assert(!robot_actions::snapshot().active);
+  assert(zumo_link::motions==beforeBatteryFrame);
+  std::cout << "PASS battery test cancels on Stop; battery boxes cannot drive person following\n";
+  resetDevice();
+  // A manual takeover cancels an actual wake reaction once. Every subsequent
+  // 100 ms hold refresh must preserve the motor target and its acceleration.
+  wake_word::reactionActive=true;
+  wake_word::hasReaction=true;
+  wake_word::lastReaction=nowMs;
+  assert(wake_word::snapshot().reacting);
+  const auto beforeTakeover=zumo_link::stops;
+  robot_actions::manualOverride();
+  assert(zumo_link::stops==beforeTakeover+1);
+  assert(!wake_word::snapshot().reacting);
+  assert(wake_word::hasReaction); // Detection cooldown remains in force.
+  zumo_link::state.left=zumo_link::state.right=4000;
+  zumo_link::state.manualDriving=true;
+  const auto afterTakeover=zumo_link::stops;
+  for(int i=0;i<30;++i) {
+    nowMs+=100;
+    robot_actions::manualOverride();
+    assert(!wake_word::snapshot().reacting);
+    assert(zumo_link::stops==afterTakeover);
+    assert(zumo_link::state.left==4000 && zumo_link::state.right==4000);
+  }
+  robot_actions::stop("Dashboard Stop");
+  assert(!zumo_link::state.left && !zumo_link::state.right);
+  std::cout << "PASS wake cancellation keeps cooldown without repeated motor Stops during held drive\n";
+  resetDevice();
+  assert(robot_actions::start(Command::Explore,robot_actions::generation()));
+  const auto brakeGeneration=robot_actions::generation();
+  robot_actions::stop("Dashboard Stop",true);
+  assert(zumo_link::lastStopSmooth);
+  assert(!robot_actions::snapshot().active);
+  assert(!robot_actions::start(Command::Explore,brakeGeneration));
+  for(int i=0;i<40;++i)tick();
+  assert(!robot_actions::snapshot().active && !zumo_link::state.left && !zumo_link::state.right);
+  robot_actions::stop();
+  assert(!zumo_link::lastStopSmooth);
+  std::cout << "PASS smooth dashboard stop cancels pending actions; safety stop remains immediate\n";
   for (int id=1;id<=6;++id) {
     for (int stopAt=0;stopAt<20000;stopAt+=125) {
       resetDevice();

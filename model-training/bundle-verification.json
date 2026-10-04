@@ -1,0 +1,23 @@
+{
+  "factory": {
+    "offset": "0x10000",
+    "bytes": 4558672,
+    "reserved_bytes": 4587520,
+    "free_bytes": 28848,
+    "sha256": "2242226cdc44c722c81d9773f82d4631d85b0d5edc0c56954982805a79c112f5"
+  },
+  "pedestrian_det": {
+    "offset": "0x470000",
+    "bytes": 935360,
+    "reserved_bytes": 937984,
+    "free_bytes": 2624,
+    "sha256": "f25d9132ff6aa7f4860070feacf12de24e561482e97019cd86f439b996cfdf4a"
+  },
+  "model": {
+    "offset": "0x555000",
+    "bytes": 2761093,
+    "reserved_bytes": 2797568,
+    "free_bytes": 36475,
+    "sha256": "ee88ff4b7ab3bf2cdbbf2ebb2aa4b707b33d5c7058d6b8ad15de79a20ea5b583"
+  }
+}

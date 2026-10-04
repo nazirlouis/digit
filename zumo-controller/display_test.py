@@ -1,44 +1,13 @@
-"""Run manually on the Zumo: selected screen and buttons; no motor commands."""
+"""Run manually on the Zumo: LCD screen and buttons; no motor commands."""
 
 import gc
 import time
-from digit_config import DISPLAY_TYPE
 from digit_display import Display
 from digit_face import DigitFace
 from zumo_2040_robot import robot
 
 
-def run_oled():
-    display = Display()
-    display.fill(0)
-    display.rect(0, 0, 128, 64, 1)
-    display.text("OLED 128x64", 16, 8, 1)
-    display.text("TOP", 2, 2, 1)
-    display.text("BOTTOM", 70, 54, 1)
-    display.show()
-    print("OLED TEST: check border and orientation; no motor commands")
-    time.sleep_ms(2000)
-    face = DigitFace(display=display)
-    button_a = robot.ButtonA()
-    button_b = robot.ButtonB()
-    button_c = robot.ButtonC()
-    print("OLED TEST: A=sad, B=happy, C=exit")
-    try:
-        while not button_c.check():
-            if button_a.check() is True:
-                face.play_sad()
-            if button_b.check() is True:
-                face.play_happy()
-            face.update()
-            time.sleep_ms(5)
-    finally:
-        display.fill(0)
-        display.show()
-
-
 def run():
-    if DISPLAY_TYPE == "oled":
-        return run_oled()
     display = Display(
         width=DigitFace.CANVAS_WIDTH,
         height=DigitFace.CANVAS_HEIGHT,

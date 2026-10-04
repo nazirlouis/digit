@@ -50,8 +50,8 @@ distance sensing. Gyro turns require the existing working IMU and motor sign.
    the XIAO USB-C port. The configured port is COM7; select the actual XIAO port
    if Windows assigned another one. Use normal PlatformIO **Upload**.
 3. The upload now includes the bootloader, partition table, application,
-   pedestrian model, and MultiNet model. **An application-only flash is not
-   sufficient for this upgrade.** Model offsets changed to make room for speech.
+   pedestrian and three-class object models, and MultiNet model. **An application-only flash
+   is not sufficient for this upgrade.** Model offsets changed to fit both vision models.
 4. Open the dashboard, confirm both boards are connected, calibrate on safe floor,
    then try each action button before testing the corresponding spoken command.
 
@@ -59,9 +59,9 @@ The build packs models automatically with `tools/model_bundle.py`. Layout:
 
 | Data | Flash offset | Reserved bytes |
 | --- | --- | --- |
-| Application | 0x10000 | 0x480000 |
-| Pedestrian model | 0x490000 | 0x70000 |
-| MultiNet model | 0x500000 | 0x300000 |
+| Application | 0x10000 | 0x460000 |
+| Pedestrian + object models | 0x470000 | 0xe5000 |
+| MultiNet model | 0x555000 | 0x2ab000 |
 
 From this project folder:
 

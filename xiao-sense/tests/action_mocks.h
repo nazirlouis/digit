@@ -14,6 +14,8 @@ inline auto xSemaphoreCreateRecursiveMutex() { return new std::recursive_mutex; 
 inline void xSemaphoreTakeRecursive(SemaphoreHandle_t m,int) { m->lock(); }
 inline void xSemaphoreGiveRecursive(SemaphoreHandle_t m) { m->unlock(); }
 #define configASSERT(x) assert(x)
+#define portENTER_CRITICAL(x) ((void)(x))
+#define portEXIT_CRITICAL(x) ((void)(x))
 struct AudioEngine {
   bool playing = false;
   bool playCue(AudioCue) { playing=true; return true; }
@@ -22,10 +24,14 @@ struct AudioEngine {
 };
 inline AudioEngine audioEngine;
 namespace wake_word {
-struct Status { bool reacting; };
-inline bool reacting=false;
-inline void cancel() { reacting=false; }
-inline Status snapshot() { return {reacting}; }
+struct Status { bool reacting=false,pausedForVision=false; };
+inline Status state;
+inline uint32_t epoch=0,lastReaction=0;
+inline bool reactionPending=false,turning=false,pendingBearing=false;
+inline bool hasReaction=false,reactionActive=false;
+inline int stateLock=0;
+constexpr uint32_t kReactionMs=2600;
+#include "wake_control.inc"
 }
 namespace speech_commands {
 struct Status { bool listening; };
@@ -46,7 +52,7 @@ inline bool failed() { return false; }
 namespace camera_service {}
 namespace vision_service {
 struct Status {
-  bool ready=true,enabled=false,hasResult=true,personDetected=true;
+  bool ready=true,enabled=false,hasResult=true,personDetected=true,batteryMode=false;
   uint32_t resultAgeMs=0,resultTimestampMs=1;
   struct Box { int x1=100,y1=40,x2=210,y2=200; } boxes[5];
   uint8_t boxCount=1;
@@ -54,7 +60,7 @@ struct Status {
 };
 inline Status state;
 inline Status snapshot() { return state; }
-inline bool setEnabled(bool enabled) { state.enabled=enabled; return state.ready; }
+inline bool setEnabled(bool enabled) { state.enabled=enabled; state.batteryMode=false; return state.ready; }
 }
 namespace zumo_link {
 struct Status {
@@ -66,9 +72,11 @@ struct Status {
 };
 inline Status state;
 inline unsigned motions=0;
+inline unsigned stops=0;
+inline bool lastStopSmooth=false;
 inline uint32_t turnAt=0;
 inline Status snapshot() { return state; }
-inline void stop() { state.left=state.right=0;state.lookActive=false;++state.controlGeneration; }
+inline void stop(bool smooth=false) { lastStopSmooth=smooth;++stops;state.left=state.right=0;state.lookActive=false;++state.controlGeneration; }
 inline bool safeDrive(int left,int right) { state.left=left;state.right=right;++motions;return true; }
 inline bool look(int,uint32_t) { state.lookActive=true;turnAt=nowMs;std::strcpy(state.lookResult,"TURNING");++motions;return true; }
 inline bool face(const char*) { return true; }

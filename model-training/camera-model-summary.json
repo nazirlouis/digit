@@ -1,0 +1,351 @@
+{
+  "valid": {
+    "true_positives": 13,
+    "false_positives": 0,
+    "false_negatives": 0,
+    "background_images": 8,
+    "background_images_with_false_detections": 0,
+    "predictions": [
+      {
+        "image": "digit-2026-10-03T18-49-17-488Z_jpg.rf.7ebdd3ff5f45ceb57b09206402a9c132.jpg",
+        "boxes": [
+          [
+            124.5,
+            103.0,
+            135.0,
+            130.5
+          ]
+        ],
+        "confidence": [
+          0.7310585379600525
+        ]
+      },
+      {
+        "image": "digit-2026-10-03T18-49-34-833Z_jpg.rf.5a57084bf9bdd41159b0710e887a5f4d.jpg",
+        "boxes": [
+          [
+            33.0,
+            116.0,
+            58.0,
+            174.0
+          ]
+        ],
+        "confidence": [
+          0.8807970285415649
+        ]
+      },
+      {
+        "image": "digit-2026-10-03T18-49-52-846Z_jpg.rf.342aba198c9ca46f71090599bc4d0b8f.jpg",
+        "boxes": [
+          [
+            79.0,
+            120.5,
+            106.0,
+            192.5
+          ]
+        ],
+        "confidence": [
+          0.8807970285415649
+        ]
+      },
+      {
+        "image": "digit-2026-10-03T18-49-59-075Z_jpg.rf.d2c1684def9f411ca45b6080efd26179.jpg",
+        "boxes": [
+          [
+            80.5,
+            108.5,
+            93.0,
+            140.0
+          ]
+        ],
+        "confidence": [
+          0.7310585379600525
+        ]
+      },
+      {
+        "image": "digit-2026-10-03T18-50-34-986Z_jpg.rf.0ba92a53679f38a233b7aae647716499.jpg",
+        "boxes": [
+          [
+            103.5,
+            115.0,
+            125.5,
+            176.0
+          ]
+        ],
+        "confidence": [
+          0.8807970285415649
+        ]
+      },
+      {
+        "image": "digit-2026-10-03T18-50-50-721Z_jpg.rf.39a8a38e27ca5a3db18f256813c95894.jpg",
+        "boxes": [
+          [
+            89.0,
+            102.5,
+            97.5,
+            123.5
+          ]
+        ],
+        "confidence": [
+          0.622459352016449
+        ]
+      },
+      {
+        "image": "digit-2026-10-03T18-50-53-064Z_jpg.rf.06f8c085f9b806e7b86b8bc86594819d.jpg",
+        "boxes": [
+          [
+            91.0,
+            102.0,
+            98.0,
+            120.5
+          ]
+        ],
+        "confidence": [
+          0.5
+        ]
+      },
+      {
+        "image": "digit-2026-10-03T18-51-18-302Z_jpg.rf.7f9d5cc6f0ddf54642c74ec23413fd7a.jpg",
+        "boxes": [
+          [
+            102.5,
+            105.0,
+            114.0,
+            133.5
+          ]
+        ],
+        "confidence": [
+          0.7310585379600525
+        ]
+      },
+      {
+        "image": "digit-2026-10-03T18-51-20-288Z_jpg.rf.17845565f3b5b4d871cdf0c8dedda6c1.jpg",
+        "boxes": [
+          [
+            73.5,
+            106.5,
+            85.0,
+            135.0
+          ]
+        ],
+        "confidence": [
+          0.3775406777858734
+        ]
+      },
+      {
+        "image": "digit-2026-10-03T18-51-22-274Z_jpg.rf.d961f23a1d37d0ba7d7f731119ccac89.jpg",
+        "boxes": [
+          [
+            70.0,
+            110.5,
+            84.0,
+            144.5
+          ]
+        ],
+        "confidence": [
+          0.8175744414329529
+        ]
+      },
+      {
+        "image": "digit-2026-10-03T18-51-24-073Z_jpg.rf.0bf04c83cb2f97767a2bbf9dc6b115bd.jpg",
+        "boxes": [
+          [
+            58.0,
+            115.0,
+            78.0,
+            166.0
+          ]
+        ],
+        "confidence": [
+          0.8175744414329529
+        ]
+      },
+      {
+        "image": "digit-2026-10-03T18-51-43-332Z_jpg.rf.398dc721a3ff1d2a4e84391dce55ae3c.jpg",
+        "boxes": [
+          [
+            122.5,
+            106.0,
+            134.0,
+            136.0
+          ]
+        ],
+        "confidence": [
+          0.7310585379600525
+        ]
+      },
+      {
+        "image": "digit-2026-10-03T18-53-40-502Z_jpg.rf.010bcf76afb58c65834eb9f47decc695.jpg",
+        "boxes": [
+          [
+            48.5,
+            118.5,
+            74.0,
+            174.5
+          ]
+        ],
+        "confidence": [
+          0.8175744414329529
+        ]
+      },
+      {
+        "image": "digit-2026-10-03T18-54-31-162Z_jpg.rf.6b6744d3e970ba721e2737c7479e142e.jpg",
+        "boxes": [],
+        "confidence": []
+      },
+      {
+        "image": "digit-2026-10-03T18-54-32-994Z_jpg.rf.f2456cd138be07175fe39904223e15b8.jpg",
+        "boxes": [],
+        "confidence": []
+      },
+      {
+        "image": "digit-2026-10-03T18-54-45-347Z_jpg.rf.9c60f7d024f995a3b66809f3c78106c3.jpg",
+        "boxes": [],
+        "confidence": []
+      },
+      {
+        "image": "digit-2026-10-03T18-54-50-109Z_jpg.rf.b663f70fb00a4d3aea457dc6d8d2c8ec.jpg",
+        "boxes": [],
+        "confidence": []
+      },
+      {
+        "image": "digit-2026-10-03T18-55-24-750Z_jpg.rf.81a348bd655293fc38c5e27d376ceda8.jpg",
+        "boxes": [],
+        "confidence": []
+      },
+      {
+        "image": "digit-2026-10-03T18-55-29-227Z_jpg.rf.305ebf95c5e138f027bd09a635af0809.jpg",
+        "boxes": [],
+        "confidence": []
+      },
+      {
+        "image": "digit-2026-10-03T18-55-31-568Z_jpg.rf.f138770c59fdd7e89403d7ea6e87f820.jpg",
+        "boxes": [],
+        "confidence": []
+      },
+      {
+        "image": "digit-2026-10-03T18-55-49-201Z_jpg.rf.6f644eb1dbea750afed968c3c54c2808.jpg",
+        "boxes": [],
+        "confidence": []
+      }
+    ]
+  },
+  "test": {
+    "true_positives": 6,
+    "false_positives": 0,
+    "false_negatives": 1,
+    "background_images": 4,
+    "background_images_with_false_detections": 0,
+    "predictions": [
+      {
+        "image": "digit-2026-10-03T18-49-20-060Z_jpg.rf.3c7fa24532309da05afb3d416f94377c.jpg",
+        "boxes": [
+          [
+            139.0,
+            109.0,
+            153.5,
+            143.5
+          ]
+        ],
+        "confidence": [
+          0.8175744414329529
+        ]
+      },
+      {
+        "image": "digit-2026-10-03T18-51-53-345Z_jpg.rf.c16a91a2f43a43a1f9c24af1f9f4f843.jpg",
+        "boxes": [],
+        "confidence": []
+      },
+      {
+        "image": "digit-2026-10-03T18-51-59-574Z_jpg.rf.a0d3387d45a1396d2461ef338ed87a1b.jpg",
+        "boxes": [
+          [
+            110.0,
+            110.5,
+            125.0,
+            152.0
+          ]
+        ],
+        "confidence": [
+          0.8175744414329529
+        ]
+      },
+      {
+        "image": "digit-2026-10-03T18-53-32-082Z_jpg.rf.dedb34adf86f106e34921624ae5ce692.jpg",
+        "boxes": [
+          [
+            91.5,
+            108.5,
+            105.0,
+            144.5
+          ]
+        ],
+        "confidence": [
+          0.8175744414329529
+        ]
+      },
+      {
+        "image": "digit-2026-10-03T18-53-43-959Z_jpg.rf.f975880c25d3e4eba595ff9ba5dd185b.jpg",
+        "boxes": [
+          [
+            111.5,
+            117.5,
+            131.0,
+            174.0
+          ]
+        ],
+        "confidence": [
+          0.8807970285415649
+        ]
+      },
+      {
+        "image": "digit-2026-10-03T18-53-50-739Z_jpg.rf.cd16815cb751c5ce3e0464203e82254b.jpg",
+        "boxes": [
+          [
+            149.5,
+            113.5,
+            169.0,
+            161.5
+          ]
+        ],
+        "confidence": [
+          0.8807970285415649
+        ]
+      },
+      {
+        "image": "digit-2026-10-03T18-54-13-838Z_jpg.rf.bd710f24e16247f8bfcc64161b64fd05.jpg",
+        "boxes": [
+          [
+            91.5,
+            116.5,
+            110.5,
+            169.5
+          ]
+        ],
+        "confidence": [
+          0.8175744414329529
+        ]
+      },
+      {
+        "image": "digit-2026-10-03T18-54-29-199Z_jpg.rf.1e0fa68763edfda3ff3412b8dd483c8a.jpg",
+        "boxes": [],
+        "confidence": []
+      },
+      {
+        "image": "digit-2026-10-03T18-54-36-556Z_jpg.rf.36f6574111e8438bee11595258a47f91.jpg",
+        "boxes": [],
+        "confidence": []
+      },
+      {
+        "image": "digit-2026-10-03T18-54-43-704Z_jpg.rf.86fa02abec1a6f5db27a64f7e5661762.jpg",
+        "boxes": [],
+        "confidence": []
+      },
+      {
+        "image": "digit-2026-10-03T18-55-51-308Z_jpg.rf.a244eb9f6f454073c71c35e1b71b7c3c.jpg",
+        "boxes": [],
+        "confidence": []
+      }
+    ]
+  }
+}

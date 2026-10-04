@@ -4,6 +4,9 @@ sdkconfig.*
 !sdkconfig.defaults
 dependencies.lock
 build.log
+build-battery.log
+build-objects-v3.log
+upload-objects-v3.log
 build-wake.log
 build-commands.log
 serial.log

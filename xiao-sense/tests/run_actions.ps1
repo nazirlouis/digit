@@ -7,9 +7,28 @@ foreach ($file in 'robot_actions.cpp','robot_actions.h','audio_cues.h') {
 }
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'action_mocks.h') -Destination (Join-Path $output 'action_mocks.h')
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'test_robot_actions.cpp') -Destination (Join-Path $output 'test_robot_actions.cpp')
+# Exercise the actual wake cancellation/status functions alongside the action
+# controller. The model/audio task remains mocked for these desktop tests.
+$wakeSource = Get-Content -Raw -LiteralPath (Join-Path $project 'src\wake_word.cpp')
+$cancelStart = $wakeSource.IndexOf('void cancel() {')
+$cancelEnd = $wakeSource.IndexOf('void poll() {', $cancelStart)
+$snapshotStart = $wakeSource.IndexOf('Status snapshot() {')
+$snapshotEnd = $wakeSource.IndexOf('}  // namespace wake_word', $snapshotStart)
+if ($cancelStart -lt 0 -or $cancelEnd -lt 0 -or $snapshotStart -lt 0 -or $snapshotEnd -lt 0) {
+    throw 'Wake control functions not found'
+}
+$wakeControl = $wakeSource.Substring($cancelStart, $cancelEnd - $cancelStart) + $wakeSource.Substring($snapshotStart, $snapshotEnd - $snapshotStart)
+Set-Content -LiteralPath (Join-Path $output 'wake_control.inc') -Value $wakeControl
 foreach ($header in 'Arduino.h','audio_engine.h','camera_service.h','person_follow.h','photo_store.h','speech_commands.h','vision_service.h','wake_word.h','zumo_link.h','freertos/semphr.h') {
     Set-Content -LiteralPath (Join-Path $output $header) -Value '#include "action_mocks.h"'
 }
+$linkOutput = Join-Path $output 'link'
+New-Item -ItemType Directory -Force $linkOutput | Out-Null
+foreach ($file in 'zumo_link.cpp','zumo_link.h') {
+    Copy-Item -LiteralPath (Join-Path $project "src\$file") -Destination (Join-Path $linkOutput $file)
+}
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'link_arduino_mock.h') -Destination (Join-Path $linkOutput 'Arduino.h')
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'test_zumo_link.cpp') -Destination (Join-Path $linkOutput 'test_zumo_link.cpp')
 $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
 $vs = & $vswhere -latest -products * -property installationPath
 & (Join-Path $vs 'Common7\Tools\Launch-VsDevShell.ps1') -Arch amd64 -HostArch amd64 -SkipAutomaticLocation
@@ -19,4 +38,8 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Controller test compilation failed' }
     & .\test_robot_actions.exe
     if ($LASTEXITCODE -ne 0) { throw 'Controller tests failed' }
+    & cl /nologo /std:c++17 /EHsc /W4 "/I$linkOutput" /D_CRT_SECURE_NO_WARNINGS "/Fe:$linkOutput\test_zumo_link.exe" "/Fo:$linkOutput\test_zumo_link.obj" "$linkOutput\test_zumo_link.cpp"
+    if ($LASTEXITCODE -ne 0) { throw 'UART bridge test compilation failed' }
+    & "$linkOutput\test_zumo_link.exe"
+    if ($LASTEXITCODE -ne 0) { throw 'UART bridge tests failed' }
 } finally { Pop-Location }

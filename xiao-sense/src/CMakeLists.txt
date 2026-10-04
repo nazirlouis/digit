@@ -9,7 +9,7 @@ endif()
 idf_component_register(SRCS "main.cpp" "idf_adapters.cpp" "audio_engine.cpp"
                             "audio_cues.cpp" "${cue_asm}"
                             "robot_actions.cpp" "photo_store.cpp" "speech_commands.cpp"
-                            "camera_service.cpp" "zumo_link.cpp" "vision_service.cpp"
+                            "camera_service.cpp" "zumo_link.cpp" "vision_service.cpp" "battery_detector.cpp"
                             "person_follow.cpp"
                             "wake_word.cpp" "voice_direction.cpp" "digit_model.S"
                             "web_server.cpp"

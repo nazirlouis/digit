@@ -1,6 +1,6 @@
-"""Choose the attached screen, then restart the Zumo."""
+"""Digit hardware configuration."""
 
-# "oled" = original Pololu SH1106; "lcd" = Waveshare 1.69-inch ST7789V2.
+# Informational compatibility value; active display and face imports use the LCD.
 DISPLAY_TYPE = "lcd"
 
 # Positive gyro Z should result from motors (-speed, +speed).

@@ -1,0 +1,36 @@
+{
+  "model": "ESPDet-Pico",
+  "class_names": [
+    "Battery"
+  ],
+  "target": "esp32s3",
+  "quantization_bits": 8,
+  "input_shape": [
+    1,
+    224,
+    224,
+    3
+  ],
+  "input_normalization": "RGB / 255",
+  "resize": "letterbox",
+  "padding_rgb": [
+    0,
+    0,
+    0
+  ],
+  "output_names": [
+    "box0",
+    "score0",
+    "box1",
+    "score1",
+    "box2",
+    "score2"
+  ],
+  "confidence_threshold": 0.35,
+  "checkpoint_sha256": "6ae5598cd2e2803192904ea2159a8865d2ad2147158e72c79cf81afda9fe921c",
+  "model_sha256": "3f7ff7269bdeff21be3a427041f1e54528ed8f4584b08faeb74638a96521e426",
+  "model_bytes": 499936,
+  "dataset": "Digit Roboflow version 2",
+  "calibration": "77 training images",
+  "equalization": false
+}

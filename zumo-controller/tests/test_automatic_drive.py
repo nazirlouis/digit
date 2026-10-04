@@ -80,10 +80,30 @@ class AutomaticDriveTests(unittest.TestCase):
         self.fixture.control.tof = None
         self.assertEqual(self.send("2 DRIVE 1000 1000"), "2 OK DRIVE")
         self.assertFalse(self.fixture.control.safe_motion)
-        self.assertEqual(self.fixture.motors.speeds, (1000, 1000))
+        self.assertEqual(self.fixture.motors.speeds, (0, 0))
+        self.fixture.advance(100)
+        self.assertEqual(self.fixture.motors.speeds, (300, 300))
 
     def test_status_advertises_updated_controller_and_distance(self):
         self.assertIn("DIST=900 RANGE=1 AUTO=1", self.send("2 STATUS"))
+
+    def test_front_distance_safety_remains_active_while_braking(self):
+        for failure in ("obstacle", "stale"):
+            with self.subTest(failure=failure):
+                self.setUp()
+                self.send("2 SAFE 1200 1200")
+                self.fixture.advance(410, "2 SAFE 1200 1200")
+                self.assertEqual(self.fixture.motors.speeds, (1200, 1200))
+                self.send("3 BRAKE")
+                self.assertTrue(self.fixture.control.safe_motion)
+                if failure == "obstacle":
+                    self.tof.distance_mm = 140
+                    self.advance(20)
+                else:
+                    self.tof.data_ready = False
+                    self.advance(260)
+                self.assertEqual(self.fixture.motors.speeds, (0, 0))
+                self.assertFalse(self.fixture.control.braking)
 
 
 if __name__ == "__main__":

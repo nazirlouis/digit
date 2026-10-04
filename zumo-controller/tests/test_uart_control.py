@@ -142,6 +142,16 @@ class UARTControlTests(unittest.TestCase):
         self.control.tick()
         return self.uart.outgoing[-1]
 
+    def advance(self, ms, refresh=None):
+        remaining = ms
+        while remaining:
+            delta = min(5, remaining)
+            self.clock.now += delta
+            remaining -= delta
+            if refresh and self.clock.now % 100 == 0:
+                self.uart.send(refresh)
+            self.control.tick()
+
     def calibrate(self):
         self.assertEqual(self.command("1 CALIBRATE"), "1 OK CALIBRATING")
         for _ in range(60):
@@ -190,6 +200,8 @@ class UARTControlTests(unittest.TestCase):
     def test_every_face_is_rejected_while_moving(self):
         self.calibrate()
         self.command("2 DRIVE 700 700")
+        self.assertEqual(self.motors.speeds, (0, 0))
+        self.advance(240)
         for name in EXPRESSIONS:
             self.assertEqual(self.command("3 FACE " + name.upper()), "3 ERR MOVING")
             self.assertEqual(self.motors.speeds, (700, 700))
@@ -204,6 +216,105 @@ class UARTControlTests(unittest.TestCase):
         self.calibrate()
         self.assertEqual(self.command("9 DRIVE 4000 4000"), "9 OK DRIVE")
 
+    def test_ramp_reaches_requested_speed_without_refresh_restarting_it(self):
+        self.calibrate()
+        self.clock.now += 60000  # An idle delay must not create a startup jump.
+        self.command("2 DRIVE 4000 -2000 3000")
+        self.assertEqual(self.motors.speeds, (0, 0))
+        self.advance(100, "2 DRIVE 4000 -2000 3000")
+        self.assertEqual(self.motors.speeds, (300, -300))
+        self.advance(900, "2 DRIVE 4000 -2000 3000")
+        self.assertEqual(self.motors.speeds, (3000, -2000))
+        self.advance(500, "2 DRIVE 4000 -2000 3000")
+        self.assertEqual(self.motors.speeds, (4000, -2000))
+        self.assertIn("L=4000 R=-2000", self.command("3 STATUS"))
+
+    def test_acceleration_validation_and_live_change(self):
+        self.calibrate()
+        for value in ("0", "499", "6001", "-500"):
+            self.assertEqual(self.command("2 DRIVE 4000 4000 " + value),
+                             "2 ERR ACCEL_RANGE")
+        for value in ("--500", "fast", "500 extra"):
+            self.assertEqual(self.command("2 DRIVE 4000 4000 " + value),
+                             "2 ERR ARGUMENT")
+        self.assertEqual(self.motors.speeds, (0, 0))
+        self.command("2 DRIVE 4000 4000 500")
+        self.advance(100)
+        self.assertEqual(self.motors.speeds, (50, 50))
+        self.command("3 DRIVE 4000 4000 6000")
+        self.advance(100)
+        self.assertEqual(self.motors.speeds, (650, 650))
+
+    def test_brake_reverse_and_stop_clear_the_ramp(self):
+        self.calibrate()
+        self.command("2 DRIVE 2000 2000")
+        self.advance(500, "2 DRIVE 2000 2000")
+        self.assertEqual(self.motors.speeds, (1500, 1500))
+        self.command("3 DRIVE 500 500")
+        self.assertEqual(self.motors.speeds, (1500, 1500))
+        self.advance(100)
+        self.assertEqual(self.motors.speeds, (500, 500))
+        self.command("4 DRIVE -2000 -2000")
+        self.assertEqual(self.motors.speeds, (500, 500))
+        self.advance(45)
+        self.assertEqual(self.motors.speeds, (0, 0))
+        self.advance(100)
+        self.assertEqual(self.motors.speeds, (-300, -300))
+        self.command("5 DRIVE 0 0")
+        self.assertEqual(self.motors.speeds, (-300, -300))
+        self.advance(25)
+        self.assertEqual(self.motors.speeds, (0, 0))
+        self.command("6 DRIVE 4000 4000")
+        self.advance(100)
+        self.command("7 STOP")
+        self.advance(1000)
+        self.assertEqual(self.motors.speeds, (0, 0))
+        self.assertEqual((self.control.target_left, self.control.target_right), (0, 0))
+        self.command("8 DRIVE 4000 4000")
+        self.assertEqual(self.motors.speeds, (0, 0))
+        self.advance(5)
+        self.assertEqual(self.motors.speeds, (15, 15))
+
+    def test_pending_ramp_is_busy_and_safety_cannot_restart_it(self):
+        for fault in ("EDGE", "BUTTON_C", "SENSOR", "TIMEOUT"):
+            with self.subTest(fault=fault):
+                self.setUp()
+                self.calibrate()
+                self.command("2 DRIVE 4000 4000 500")
+                self.assertEqual(self.command("3 CALIBRATE"), "3 ERR MOVING")
+                self.assertEqual(self.command("4 FACE HAPPY"), "4 ERR MOVING")
+                self.assertEqual(self.command("5 WAKE"), "5 ERR MOVING")
+                if fault == "EDGE":
+                    self.sensors.values[0] = 980
+                elif fault == "BUTTON_C":
+                    self.c.event = True
+                elif fault == "SENSOR":
+                    self.sensors.fail = True
+                self.advance(300 if fault == "TIMEOUT" else 20)
+                self.assertEqual(self.motors.speeds, (0, 0))
+                self.assertEqual((self.control.target_left, self.control.target_right), (0, 0))
+                self.advance(500)
+                self.assertEqual(self.motors.speeds, (0, 0))
+
+    def test_slow_loop_cannot_jump_to_target_speed(self):
+        self.calibrate()
+        self.command("2 DRIVE 6000 6000 6000")
+        self.clock.now += 200
+        self.control.tick()
+        self.assertEqual(self.motors.speeds, (120, 120))
+
+    def test_ramp_and_watchdog_across_clock_wrap(self):
+        self.calibrate()
+        self.clock.now = 65530
+        self.clock.ticks_ms = lambda: self.clock.now % 65536
+        self.clock.ticks_diff = lambda a, b: (a - b + 32768) % 65536 - 32768
+        self.command("2 DRIVE 4000 4000")
+        self.advance(100)
+        self.assertEqual(self.motors.speeds, (300, 300))
+        self.advance(200)
+        self.assertEqual(self.motors.speeds, (0, 0))
+        self.assertIn("0 EVENT TIMEOUT", self.uart.outgoing)
+
     def test_drive_limits_stop_and_timeout(self):
         self.calibrate()
         self.assertEqual(self.command("0 PING"), "0 ERR ID_RANGE")
@@ -211,8 +322,9 @@ class UARTControlTests(unittest.TestCase):
         self.assertEqual(self.command("2 DRIVE 6001 0"), "2 ERR SPEED_RANGE")
         self.assertEqual(self.motors.speeds, (0, 0))
         self.assertEqual(self.command("3 DRIVE 1000 -900"), "3 OK DRIVE")
-        self.assertEqual(self.motors.speeds, (1000, -900))
-        self.clock.now += 250
+        self.assertEqual(self.motors.speeds, (0, 0))
+        self.advance(250)
+        self.assertEqual(self.motors.speeds, (750, -750))
         self.assertEqual(self.command("4 PING"), "4 OK PONG")
         self.clock.now += 50
         self.control.tick()
@@ -231,17 +343,18 @@ class UARTControlTests(unittest.TestCase):
         self.assertEqual(self.command("5 TURN 4000 0"), "5 ERR ARGUMENT")
         self.assertEqual(self.motors.speeds, (0, 0))
         self.assertEqual(self.command("6 TURN -4000"), "6 OK TURN")
-        self.assertEqual(self.motors.speeds, (-4000, 4000))
-        self.clock.now += 299
+        self.assertEqual(self.motors.speeds, (0, 0))
+        self.advance(299)
         self.assertEqual(self.command("7 STATUS").split(" L=")[1][:15],
-                         "-4000 R=4000 BA")
+                         "-897 R=897 BAT=")
         self.clock.now += 1
         self.control.tick()
         self.assertEqual(self.motors.speeds, (0, 0))
         self.assertIn("0 EVENT TIMEOUT", self.uart.outgoing)
         self.assertEqual(self.command("8 TURN 4000"), "8 OK TURN")
-        self.assertEqual(self.motors.speeds, (4000, -4000))
-        self.sensors.values = [900, 100, 100, 100, 100]
+        self.advance(20)
+        self.assertEqual(self.motors.speeds, (60, -60))
+        self.sensors.values = [980, 100, 100, 100, 100]
         self.clock.now += 20
         self.control.tick()
         self.assertEqual(self.motors.speeds, (0, 0))
@@ -250,7 +363,7 @@ class UARTControlTests(unittest.TestCase):
     def test_refresh_keeps_drive_alive_and_face_waits_for_stop(self):
         self.calibrate()
         for index in range(4):
-            self.clock.now += 100
+            self.advance(100)
             self.assertEqual(self.command("{} DRIVE 700 700".format(index + 2)),
                              "{} OK DRIVE".format(index + 2))
         self.a.event = True
@@ -266,14 +379,14 @@ class UARTControlTests(unittest.TestCase):
     def test_edge_latches_until_recalibrated(self):
         self.calibrate()
         self.command("2 DRIVE 1000 1000")
-        self.sensors.values = [900, 100, 100, 100, 100]
+        self.sensors.values = [980, 100, 100, 100, 100]
         self.clock.now += 20
         self.control.tick()
         self.assertEqual(self.motors.speeds, (0, 0))
         self.assertEqual(self.control.fault, "EDGE")
         self.assertEqual(self.command("3 DRIVE -500 -500"), "3 ERR NOT_READY")
         self.assertIn("EDGE=1", self.command("4 STATUS"))
-        self.sensors.values = [600, 100, 100, 100, 100]
+        self.sensors.values = [650, 100, 100, 100, 100]
         self.command("5 CALIBRATE")
         for _ in range(60):
             self.clock.now += 10
@@ -340,8 +453,9 @@ class UARTControlTests(unittest.TestCase):
         self.command("3 STOP")
         self.calibrate()
         self.command("4 DRIVE 1000 1000")
+        self.advance(100)
         self.assertEqual(self.command("5 WAKE"), "5 ERR MOVING")
-        self.assertEqual(self.motors.speeds, (1000, 1000))
+        self.assertEqual(self.motors.speeds, (300, 300))
         self.command("6 STOP")
         self.c.pressed = True
         self.assertEqual(self.command("7 WAKE"), "7 ERR BUTTON_C")
@@ -372,7 +486,7 @@ class UARTControlTests(unittest.TestCase):
         self.assertFalse(self.control.ready)
         self.calibrate()
         self.command("3 WAKE")
-        self.sensors.values = [900, 100, 100, 100, 100]
+        self.sensors.values = [980, 100, 100, 100, 100]
         self.clock.now += 20
         self.control.tick()
         self.assertEqual(self.control.fault, "EDGE")

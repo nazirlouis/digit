@@ -1,0 +1,12 @@
+.venv/
+pip-cache/
+esp-detection/
+esp-ppq/
+runs/
+__pycache__/
+*.log
+ultralytics-settings/
+calibration/
+torch-cache/
+matplotlib-cache/
+artifacts/

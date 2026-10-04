@@ -45,11 +45,11 @@ display and LEDs simultaneously from interrupts or another core.
 In Thonny, stop the running program, then save these files to the MicroPython
 device root, keeping their names:
 
-- `digit_config.py` — selects `DISPLAY_TYPE = "lcd"` (change to `"oled"` to switch back).
-- `digit_display.py` and `digit_face.py` — select the matching screen and face.
+- `digit_config.py` records the LCD hardware configuration.
+- `digit_display.py` and `digit_face.py` route all active programs to the LCD.
 - `digit_face_engine.py` — shared expression shapes and animation timing; required for both screens.
 - `digit_display_lcd.py` and `digit_face_lcd.py` — LCD driver and face.
-- `digit_face_oled.py` — OLED face adapter, if using the original screen.
+- `digit_face_oled.py` is retained only as historical source; active programs do not import it.
 - `main_menu.py` — original six-second splash/program menu, adapted to the LCD.
 - `main.py` and `uart_control.py` — default face and UART manual control;
   A for sad, B for happy, C for local motor stop.
@@ -60,7 +60,25 @@ device root, keeping their names:
 - `display_test.py` — manual screen test, without motor commands.
 - `face_test.py` — all-expression gallery; stops the motors before starting.
 
-Keep the existing `/zumo_2040_robot` library on the device. As before, save
+For the button, encoder, IMU, motor, and full self-tests, also upload
+`button_test.py`, `encoder_test.py`, `imu_test.py`, `motor_test.py`, and
+`self_test.py` from this folder to the device root, replacing the old versions.
+They import `digit_display.Display` directly and use the LCD, including when
+launched directly in Thonny.
+
+Upload the remaining demos from this folder too: `proximity_demo.py`,
+`ir_sensor_demo.py`, `line_follower.py`, `face_opponent.py`, `face_uphill.py`,
+`gyro_turn.py`, `rotation_resist.py`, `i2c0_scan.py`, `rgb_demo.py`, `sys_info.py`,
+`error.py`, `music.py`, `siren.py`, and `blink.py`. Sensor and movement logic
+is unchanged; the siren retains its LED animation with audio disabled for GP7.
+
+Install `device-library/zumo_2040_robot/display.py` as
+`/zumo_2040_robot/display.py`, alongside `/digit_display_lcd.py` at the device
+root. This routes **all legacy `robot.Display()` and library display imports**
+to the LCD, including the factory splash/menu and older installed demos.
+Restart the Zumo to clear cached imports.
+
+Keep the rest of the existing `/zumo_2040_robot` library on the device. As before, save
 the silent `device-library/zumo_2040_robot/buzzer.py` inside that package (not
 the device root). Restart after installing it to clear the old buzzer/PWM state.
 Save
@@ -82,11 +100,15 @@ factory library's `Display` class to `digit_display.Display`, allowing the
 factory splash, menu, and debug scripts to draw on the new LCD.
 
 `factory-backup/` is the original restoration snapshot and remains unchanged.
+Use the updated test files in this folder, not the archived tests in that snapshot.
 Its factory demos still target the original OLED; do not copy that snapshot over
 the updated Digit programs. The XIAO project handles audio/camera/web controls
 and contains no physical SPI screen driver.
 
 ## Layout and configuration
+
+Active programs always use the LCD; changing `DISPLAY_TYPE` does not enable
+the archived OLED path. `factory-backup/` remains the original restoration copy.
 
 Normal factory screens retain their centered 128×64 canvas for compatibility.
 Digit's face uses a higher-resolution 136×112 canvas that expands to 272×224,
@@ -132,6 +154,11 @@ once a second to exercise the shared bus. Console logs include frame-transfer
 time and free memory. Inspect the image for clipping, swapped colors, flicker,
 and rotation. Driver startup logs confirm commands were sent, not that the
 write-only display responded.
+
+`motor_test.py` and `self_test.py` can move the motors: lift both tracks first.
+The factory `self_test.py` also drives GP28/GP29 during its pin checks; disconnect
+the external XIAO UART wiring before running it. The UART and motor-only
+diagnostics print to the serial console and do not initialize a screen.
 
 After the screen test, check distance readings with `tof_distance.py`. Validate
 movement programs with tracks lifted first: display transfers add latency, so
@@ -310,6 +337,7 @@ events and uncorrelated errors. Commands are uppercase.
 | `16 DRIVE -1000 1000` | Turn in place; sign and direction depend on the installed motor polarity patch |
 | `20 TURN -4000` | Rotate left with equal and opposite tracks; positive speed rotates right, range -6000 to 6000 |
 | `17 STOP` | Stop immediately; also cancels calibration |
+| `29 BRAKE` | Cancel motion and decelerate to zero at the fixed rate; safety stops retain priority |
 | `18 FACE HAPPY` or `19 FACE SAD` | Play an expression while stopped; all names listed above are supported in uppercase |
 | `24 FACE SLEEPING` / `25 FACE NEUTRAL` | Stay asleep / wake up and resume idle |
 | `21 LED ALL 255 0 0 5` | Set all six RGB LEDs red at brightness 5 (range 0-31) |
@@ -318,6 +346,42 @@ events and uncorrelated errors. Commands are uppercase.
 | `26 WAKE` | Happy face and LED effect while stationary; sound is played by XIAO |
 | `27 LOOK 90` | One measured left turn, then `27 OK LOOK_DONE`; requires floor calibration and gyro |
 | `28 KEEP 27` | Renew only active LOOK 27 for another 300 ms |
+
+Motion starts with a ramp on the Zumo itself. `DRIVE left right acceleration`
+optionally selects 500-6000 motor speed units per second (protocol fallback
+3000). The dashboard Acceleration slider starts at 6000; lower values give a
+gentler start. Repeated hold commands renew the watchdog without restarting
+the ramp. DRIVE, SAFE, and TURN use the ramp; gyro LOOK turns use a fixed 6000
+units/second to retain their stall deadline.
+
+Normal dashboard release, Stop, and STOP ALL cancel pending actions and send
+`BRAKE`. Both tracks then slow to zero at a fixed 12000 speed units per second,
+independent of the slider: about 0.33 seconds from 4000 or 0.5 seconds from 6000.
+Speed reductions and direction reversals use this same fixed braking rate;
+a reversed track passes through zero before accelerating the opposite way.
+`STATUS` advertises `BRAKE=1`. Until the updated Zumo file is installed, the
+XIAO uses the older peer's immediate STOP command for compatibility.
+
+`STOP` remains the immediate safety command. Button C, confirmed edges, sensor
+faults, lost drive keepalives, and loss of dashboard control immediately stop
+and clear pending motion. Braking retains edge and automatic ToF checks and
+has its own 750 ms completion deadline, so a stalled control loop cannot leave
+the tracks powered indefinitely. Repeated BRAKE commands do not extend that
+deadline or restart the deceleration. Slow loop acceleration/braking increments
+are capped at 20 ms rather than catching up in one jump.
+
+Floor-calibrated edge thresholds now have an extra 60 counts of margin.
+Marginal readings must stay above threshold on the same sensor for 20 ms
+before latching EDGE. A reading at least 950 (or the calibrated threshold,
+if higher) still stops immediately. Short marginal front-end lifts can clear
+without latching; persistent indications still stop and require recalibration.
+
+Copy the updated `uart_control.py` to the Zumo device root and reset it. Use
+the updated active XIAO `xiao-sense` firmware, refresh the dashboard, and
+recalibrate on safe floor. With tracks lifted, check acceleration, smooth
+release/Stop, and immediate Button C stopping. Then check small front lifts
+and actual edge detection at low speed on a safely supported surface before
+relying on the new threshold/filter settings.
 
 Calibrate with the robot stationary on safe floor. It samples the five downward
 sensors over about 600 ms and rejects an unsuitable baseline. `DRIVE` and

@@ -161,6 +161,22 @@ class DisplayTests(unittest.TestCase):
         self.display = self.module.Display()
         self.spi = self.display.spi
 
+    def test_legacy_and_digit_imports_use_lcd_even_with_stale_screen_config(self):
+        with patch.dict(sys.modules, {
+            "digit_display_lcd": self.module,
+            "digit_config": types.SimpleNamespace(DISPLAY_TYPE="oled"),
+        }):
+            active = load("active_display", ROOT / "digit_display.py")
+            legacy = load("legacy_display", ROOT / "device-library" /
+                          "zumo_2040_robot" / "display.py")
+            self.assertIs(active.Display, self.module.Display)
+            self.assertIs(legacy.Display, self.module.Display)
+            with patch.dict(sys.modules, {"digit_display": active}):
+                lcd_face = load("lcd_face_adapter", ROOT / "digit_face_lcd.py")
+                with patch.dict(sys.modules, {"digit_face_lcd": lcd_face}):
+                    face = load("active_face", ROOT / "digit_face.py")
+                self.assertIs(face.DigitFace, lcd_face.DigitFace)
+
     def assert_idle(self):
         self.assertEqual(Pin(7)(), 1)
         self.assertNotIn(28, Pin.pins)

@@ -1,0 +1,76 @@
+# Local datasets and generated annotation/review output.
+/training_data/
+/training-data/
+/datasets/
+/dataset-review/*
+!/dataset-review/review_v3.py
+/model-training/live-check*/
+
+# Photos, camera frames, prediction previews, and video captures.
+# Keep the authored robot face previews and firmware audio cues shareable.
+*.[jJ][pP][gG]
+*.[jJ][pP][eE][gG]
+*.[pP][nN][gG]
+*.[gG][iI][fF]
+*.[wW][eE][bB][pP]
+*.[bB][mM][pP]
+*.[hH][eE][iI][cC]
+*.[hH][eE][iI][fF]
+*.[tT][iI][fF]
+*.[tT][iI][fF][fF]
+*.[dD][nN][gG]
+*.[mM][pP]4
+*.[mM][oO][vV]
+*.[aA][vV][iI]
+*.[mM][kK][vV]
+*.[wW][eE][bB][mM]
+!/zumo-controller/previews/*.[pP][nN][gG]
+!/zumo-controller/previews/*.[gG][iI][fF]
+photos/
+captures/
+recordings/
+
+# Build output, environments, dependency caches, and local test results.
+.pio/
+managed_components/
+build/
+dist/
+test-artifacts/
+.venv/
+venv/
+node_modules/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.cache/
+*.egg-info/
+.coverage
+.coverage.*
+htmlcov/
+coverage/
+*.log
+*.tmp
+*.temp
+*.bak
+*.swp
+*.swo
+backups/
+/firmware-tools/respeaker-flex/official-repository.zip
+
+# Local credentials and machine-specific files.
+.env
+.env.*
+!.env.example
+!.env.*.example
+wifi_credentials.h
+**/.vscode/c_cpp_properties.json
+**/.vscode/ipch/
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Do not blanket-ignore model/firmware formats (.espdl, .tflite, .bin,
+# .pt, .onnx) or their metadata. Deployable models belong in xiao-sense/models/;
+# model-training/.gitignore excludes intermediate training runs and exports.

@@ -1,0 +1,61 @@
+// Render the real dashboard against mocked device endpoints; never contact Digit.
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const { chromium } = require('playwright');
+const source = fs.readFileSync(path.join(__dirname, '../src/web_server.cpp'), 'utf8');
+const html = source.split('R"HTML(')[1].split(')HTML"')[0];
+const artifacts = path.join(__dirname, '../test-artifacts/drive');
+
+(async () => {
+  fs.mkdirSync(artifacts, { recursive: true });
+  const browser = await chromium.launch({ headless: true, channel: process.env.DIGIT_TEST_BROWSER || 'msedge' });
+  try {
+    const page = await browser.newPage();
+    const errors = [];
+    page.on('pageerror', error => errors.push(error.message));
+    await page.route('**/*', async route => {
+      const url = new URL(route.request().url());
+      if (url.pathname === '/') return route.fulfill({ contentType: 'text/html', body: html });
+      if (url.pathname === '/stream') return route.abort();
+      return route.fulfill({ contentType: 'application/json', body: JSON.stringify({
+        generation: 1, active: false, action: 'Idle', phase: 'Stopped',
+        voice_ready: true, drive_ready: true, connected: true, ready: true,
+        fault: 'NONE', last_error: 'NONE', battery_mv: 7600, left: 0, right: 0,
+        audio_state: 'READY', camera_ready: true, vision_ready: true,
+        vision_enabled: false, follow_enabled: false, follow_state: 'Off',
+        captured_ms: 0, max_recording_ms: 10000, psram_free: 4000000,
+        ip: '10.0.0.127', volume: 70, available: true, state: 'Listening',
+      }) });
+    });
+    await page.goto('http://digit-preview.test/');
+    assert.equal(await page.locator('#driveAcceleration').inputValue(),'6000');
+    for (const width of [1280, 980, 390, 320]) {
+      await page.setViewportSize({ width, height: 1000 });
+      const rects = await page.evaluate(() => {
+        const rect = selector => {
+          const r = document.querySelector(selector).getBoundingClientRect();
+          return { x: r.x, y: r.y, right: r.right, bottom: r.bottom };
+        };
+        return { camera: rect('.video'), drive: rect('#zumoDrive'),
+          speed: rect('[for="driveSpeed"]'), acceleration: rect('[for="driveAcceleration"]'),
+          scrollWidth: document.documentElement.scrollWidth };
+      });
+      assert.ok(rects.scrollWidth <= width, `No horizontal overflow at ${width}px`);
+      assert.ok(rects.acceleration.y >= rects.speed.bottom, 'Acceleration is below Drive speed');
+      if (width > 900) {
+        assert.ok(rects.drive.x >= rects.camera.right, 'Drive is beside camera');
+        assert.equal(rects.drive.y, rects.camera.y);
+      } else {
+        assert.ok(rects.drive.y >= rects.camera.bottom, 'Drive follows camera on phones');
+      }
+      if (width === 1280 || width === 390) {
+        await page.screenshot({ path: path.join(artifacts, `dashboard-${width}.png`) });
+      }
+    }
+    assert.deepEqual(errors, [], 'Dashboard loads without script errors');
+    console.log('PASS: desktop and phone layouts at 1280, 980, 390, and 320px; acceleration position; no overflow');
+  } finally {
+    await browser.close();
+  }
+})().catch(error => { console.error(error); process.exitCode = 1; });

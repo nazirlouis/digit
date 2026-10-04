@@ -7,21 +7,23 @@ const html = source.split('R"HTML(')[1].split(')HTML"')[0];
 const script = html.split('<script>')[1].split('</script>')[0];
 const nodes = new Map([...html.matchAll(/\bid="([^"]+)"/g)].map(m=>[m[1],{
   textContent:'',className:'',disabled:false,value:'1000',hidden:false,
-  addEventListener(){},getContext:()=>({clearRect(){},strokeRect(){},fillText(){}}),
+  listeners:{},addEventListener(name,fn){this.listeners[name]=fn;},getContext:()=>({clearRect(){},strokeRect(){},fillText(){}}),
 }]));
 const buttons = Array.from({length:6},()=>({disabled:false}));
-let generation=1,active=false,deferNext=false,release,offline=false,photoRevision=0;
+const driveButtons=['forward','back','left','right'].map(drive=>({dataset:{drive},listeners:{},setPointerCapture(){},addEventListener(name,fn){this.listeners[name]=fn;}}));
+const windowListeners={},documentListeners={};
+let generation=1,active=false,deferNext=false,release,offline=false,photoRevision=0,deferStop=false,releaseStop;
 const calls=[];
 function reply(data,ok=true){return {ok,json:async()=>data};}
 const context = vm.createContext({
-  document:{getElementById:id=>nodes.get(id),querySelectorAll:s=>s==='[data-routine]'?buttons:[],addEventListener(){},hidden:false},
-  window:{addEventListener(){}},location:{hostname:'digit'},
+  document:{getElementById:id=>nodes.get(id),querySelectorAll:s=>s==='[data-routine]'?buttons:s==='[data-drive]'?driveButtons:[],addEventListener(name,fn){documentListeners[name]=fn;},hidden:false},
+  window:{addEventListener(name,fn){windowListeners[name]=fn;}},location:{hostname:'digit'},
   setInterval(){},clearInterval(){},setTimeout(){},clearTimeout(){},
   async fetch(url,options){
     calls.push({url,options});
     if(offline) throw Error('offline');
     if(url==='/api/actions')return reply({generation,active,action:active?'Explore':'Idle',phase:active?'Exploring':'Stopped',voice_ready:true,listening:false,drive_ready:true,photo_revision:photoRevision});
-    if(url==='/api/zumo/stop'){generation++;active=false;return reply({generation,message:'All actions cancelled; motor stop sent'});}
+    if(url.startsWith('/api/zumo/stop')){if(deferStop){deferStop=false;await new Promise(resolve=>releaseStop=resolve);}generation++;active=false;return reply({generation,message:'All actions cancelled; motor stop sent'});}
     if(url.startsWith('/api/actions?')||url.startsWith('/api/zumo/drive?')){
       const requestGeneration=Number(new URL(url,'http://digit').searchParams.get('generation'));
       if(deferNext){deferNext=false;await new Promise(resolve=>release=resolve);}
@@ -33,9 +35,46 @@ const context = vm.createContext({
     return reply({camera_ready:true,vision_ready:true,audio_state:'READY',max_recording_ms:10000,captured_ms:0});
   },
 });
+const testTimeout=setTimeout(()=>{console.error('FAIL: dashboard test did not complete');process.exit(1);},5000);
 (async()=>{
   vm.runInContext(script,context);
   await new Promise(resolve=>setImmediate(resolve));
+  nodes.get('driveSpeed').value='4000';
+  nodes.get('driveAcceleration').value='500';
+  nodes.get('driveAcceleration').listeners.input({target:{value:'500'}});
+  assert.equal(nodes.get('driveAccelerationValue').textContent,'500');
+  vm.runInContext("heldDirection='forward'",context);
+  await context.sendDrive();
+  let params=new URL(calls.findLast(c=>c.url.startsWith('/api/zumo/drive?')).url,'http://digit').searchParams;
+  assert.equal(params.get('left'),'4000');assert.equal(params.get('right'),'4000');
+  assert.equal(params.get('acceleration'),'500');
+  nodes.get('driveAcceleration').value='6000';
+  await context.sendDrive();
+  params=new URL(calls.findLast(c=>c.url.startsWith('/api/zumo/drive?')).url,'http://digit').searchParams;
+  assert.equal(params.get('acceleration'),'6000','Changing acceleration must affect the next held-drive request');
+  await context.stopZumo();
+  const stopCalls=()=>calls.filter(c=>c.url.startsWith('/api/zumo/stop'));
+  await driveButtons[0].listeners.pointerup({type:'pointerup'});
+  assert.equal(stopCalls().at(-1).url,'/api/zumo/stop','Normal release requests fixed deceleration');
+  await nodes.get('zumoStop').listeners.click({type:'click'});
+  assert.equal(stopCalls().at(-1).url,'/api/zumo/stop','Drive Stop requests fixed deceleration');
+  await driveButtons[0].listeners.pointercancel();
+  assert.equal(stopCalls().at(-1).url,'/api/zumo/stop?hard=1');
+  await windowListeners.blur();
+  assert.equal(stopCalls().at(-1).url,'/api/zumo/stop?hard=1');
+  vm.runInContext("heldDirection='forward'",context);
+  await driveButtons[0].listeners.lostpointercapture();
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(stopCalls().at(-1).url,'/api/zumo/stop?hard=1');
+  deferStop=true;
+  const pendingBrake=context.stopZumo();
+  await new Promise(resolve=>setImmediate(resolve));
+  await context.stopZumo(true);
+  assert.equal(stopCalls().at(-1).url,'/api/zumo/stop?hard=1','Safety abort overrides a pending normal stop');
+  assert.equal(vm.runInContext('stopPending',context),true);
+  releaseStop();await pendingBrake;
+  assert.equal(vm.runInContext('stopPending',context),false);
+  assert.equal(vm.runInContext('Number.isFinite(controlGeneration)',context),true);
   for(let id=1;id<=6;id++){
     await context.refreshActions();
     await context.startRoutine(id);
@@ -64,5 +103,5 @@ const context = vm.createContext({
   offline=true;await context.refreshActions();
   assert.ok(buttons.every(b=>b.disabled));
   assert.equal(nodes.get('zumoStop').disabled,false);
-  console.log('PASS: six actions, Stop during pending start and drive, photo preview, offline controls');
-})().catch(error=>{console.error(error);process.exitCode=1;});
+  console.log('PASS: acceleration slider and live drive updates, six actions, Stop during pending start and drive, photo preview, offline controls');
+})().catch(error=>{console.error(error);process.exitCode=1;}).finally(()=>clearTimeout(testTimeout));

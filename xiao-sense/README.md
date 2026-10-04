@@ -16,6 +16,44 @@ Detection starts off. After floor calibration, press **Start person detection**
 and then **Turn with person** to let the Zumo rotate toward the largest person
 box. The second button is a separate, visible motor enable.
 
+## Object model test
+
+The locally trained ESPDet-Pico object model is included in the upload bundle.
+It uses 224 × 224 RGB input with black letterbox padding, INT8 quantization, and
+a 35% confidence threshold. Its classes are Battery, Marker, and Screwdriver.
+Both vision models are stored in flash; the camera
+task loads one at a time when its dashboard button is pressed.
+
+1. Open this **xiao-sense** project and select **xiao_esp32s3_sense_idf** in
+   PlatformIO. Check the XIAO USB port (configured as COM7).
+2. Use normal PlatformIO **Upload**. This includes the new partition table,
+   firmware, both vision models, and speech models. The model offsets changed;
+   uploading only firmware.bin will not install this version correctly.
+3. Open the dashboard and press **Test object model**. Battery (yellow), Marker
+   (cyan), and Screwdriver (pink) boxes show their names, confidence, and inference
+   time on the camera view. Use **Stop object test** or the dashboard's global
+   **Stop** to end it. Person detection can be
+   selected again with its existing button.
+
+Starting the object test cancels existing routines and person turning. Object
+boxes do not enable following or movement. Global Stop also invalidates a delayed
+object start request. The object test starts off after reboot.
+
+Local GPU training and the final firmware build have passed. INT8 simulation with
+RGB565 color loss detected 16/16 test batteries, 12/12 test markers, and 14/17 test
+screwdrivers, with no false detections on the 12 empty validation/test images. These are small,
+related-image splits for a first test. This version was flashed to the XIAO and
+checked against three visible objects: Battery and Screwdriver appeared in 12/12
+samples, Marker in 6/12. Median model inference was 305 ms (about 2.3 result
+updates per second), and global Stop/restart passed. Marker detection remains
+intermittent. See
+[training details](../model-training/README.md) and
+[prediction preview](../model-training/objects-v3-test-preview.jpg).
+
+The 8 MB flash is nearly full: application ~4.56 MB, combined vision ~0.94 MB,
+speech ~2.76 MB. The build checks each partition's size. Size optimization is
+enabled in sdkconfig.defaults.
+
 The target is centered when its box center is within 10% of the image width
 from the middle (32 pixels in the 320-pixel inference frame). Outside that
 band, the XIAO requests a 180 ms turn at motor speed 4000, then stops and

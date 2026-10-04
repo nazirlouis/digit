@@ -72,7 +72,7 @@ bool setEnabled(bool enabled) {
   if (!enabled) { disable("Off"); return true; }
   const auto vision = vision_service::snapshot();
   const auto zumo = zumo_link::snapshot();
-  if (!vision.ready || !vision.enabled || !zumo.connected || !zumo.ready ||
+  if (!vision.ready || !vision.enabled || vision.batteryMode || !zumo.connected || !zumo.ready ||
       zumo.calibrating || zumo.edge || strcmp(zumo.fault, "NONE") != 0) return false;
   zumo_link::stop();
   const uint32_t now = millis();
@@ -124,7 +124,7 @@ void poll() {
   if (!zumo.connected || !zumo.ready || zumo.calibrating || zumo.edge ||
       strcmp(zumo.fault, "NONE") != 0) { disable("Zumo stopped or locked"); return; }
   const auto vision = vision_service::snapshot();
-  if (!vision.ready || !vision.enabled) { disable("Person detection stopped"); return; }
+  if (!vision.ready || !vision.enabled || vision.batteryMode) { disable("Person detection stopped"); return; }
 
   if (direction && static_cast<int32_t>(now - turnUntil) >= 0) {
     stopPulse("Waiting for next person frame");

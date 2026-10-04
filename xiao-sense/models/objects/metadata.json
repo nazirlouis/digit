@@ -1,0 +1,39 @@
+{
+  "model": "ESPDet-Pico",
+  "class_names": [
+    "Battery",
+    "Marker",
+    "Screwdriver"
+  ],
+  "target": "esp32s3",
+  "quantization_bits": 8,
+  "input_shape": [
+    1,
+    224,
+    224,
+    3
+  ],
+  "input_normalization": "RGB / 255",
+  "resize": "letterbox",
+  "padding_rgb": [
+    0,
+    0,
+    0
+  ],
+  "output_names": [
+    "box0",
+    "score0",
+    "box1",
+    "score1",
+    "box2",
+    "score2"
+  ],
+  "confidence_threshold": 0.35,
+  "nms_threshold": 0.45,
+  "equalization": false,
+  "checkpoint_sha256": "eabed7770d3b7acc1be3b45d80e8755f2426319e0c2faa2d26ee62c80b5cf0ff",
+  "model_sha256": "b0ce10ab3d5f74686ca10260672d05fd08b6792a460e38ed2b95b585cb17cd14",
+  "model_bytes": 502560,
+  "dataset": "Digit Roboflow version 3",
+  "calibration_images": 237
+}
