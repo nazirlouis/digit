@@ -27,6 +27,8 @@ struct Status {
   int distanceMm;
   uint32_t safetyEvents;
   bool brakeCapable;
+  bool rampedLookCapable;
+  bool wiggleCapable;
 };
 
 void begin();
@@ -41,6 +43,9 @@ bool isFaceName(const char* name);
 bool face(const char* name);
 bool wake();
 bool look(int degrees, uint32_t expectedControlGeneration);
+bool wiggle(uint32_t expectedControlGeneration);
+bool setAcceleration(int acceleration);
+int acceleration();
 void cancelLook();
 bool led(int target, uint8_t red, uint8_t green, uint8_t blue,
          uint8_t brightness);

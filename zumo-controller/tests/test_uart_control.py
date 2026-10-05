@@ -78,6 +78,9 @@ class Face:
     def play_happy(self):
         self.actions.append("happy")
 
+    def show_happy(self):
+        self.actions.append("show_happy")
+
     def play(self, expression, hold_ms=None):
         self.actions.append(expression)
 

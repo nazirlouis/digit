@@ -272,19 +272,49 @@ silent buzzer library with factory files.
 
 The XIAO dashboard provides **Set front**, **Set left**, and **Enable voice
 turning**. See `../xiao-sense/README.md` for mounting and setup. Direction setup
-does not move motors and resets when the XIAO restarts. Floor calibration is
+does not move motors and is saved on the XIAO across restarts. Voice turning
+defaults on, but waits for valid direction and floor calibration; an explicit
+off choice is also saved. Floor calibration is
 still required. Wake listening remains on unless vision is enabled.
 
-`ID LOOK angle` accepts integer degrees -180 through 180, positive toward the
+`ID LOOK angle [acceleration]` accepts integer degrees -180 through 180, positive toward the
 robot's left. It replies `ID OK LOOKING`, then `ID OK LOOK_DONE` only after
 stopping and settling. While active the XIAO sends `NEW_ID KEEP ID` every
 100 ms; a KEEP for another/completed turn cannot start or extend motion.
 The 300 ms lease covers gyro calibration as well as movement. LOOK is never
 automatically retried; a duplicate active LOOK is rejected as busy.
 
+`ID WIGGLE` uses the same acknowledgements, KEEP lease, calibration gates,
+cancellation, and fault handling as LOOK. STATUS advertises `WIGGLE=2`.
+The hello gesture measures gyro bias once, then swings toward +15 and -15
+degrees relative to its original heading and returns to zero. Swing targets
+are 6000 with dedicated acceleration and deceleration of 30000 units/second,
+using the regular 20 ms-capped ramp engine and reversal through zero. There
+is no settling delay at the side endpoints. Gyro rate and actual output
+predict braking; small centering corrections use 3200. Only the final center
+settles for 100 ms, with an overall 4500 ms deadline and a 60-degree excursion
+guard. Ordinary driving and LOOK retain their existing ramp settings. Actual
+speed, angle, and feel require physical testing; a short swing can reverse
+before reaching its full speed target.
+
+After gyro preparation, WIGGLE draws the complete happy pose with the tracks
+still off, then sends `ID OK WIGGLE_START` to start the XIAO's Happy chirp.
+The following control tick rechecks the lease, edge sensors, and stop button
+before starting the motor ramp. The LCD is not redrawn while the gesture moves.
+`ID OK WIGGLE_CENTER` starts the closing chirp during the return to center;
+completion or cancellation releases the held face to neutral. The XIAO uses
+these events instead of estimated delays, and does not replay sound afterward.
+
 `voice_turn.py` samples the stationary gyro bias for at least 400 ms (80
-samples), then uses gyro Z feedback at speeds up to 1800. It stops within an
-8-degree band, settles for 150 ms, and has an overall 6-second limit. Missing
+samples), then uses gyro Z feedback with nonzero targets of 2400–3200.
+All track output passes through the same acceleration ramp and fixed braking
+as manual driving; the optional LOOK acceleration is 500–6000, default 6000.
+The XIAO sends the dashboard setting. Lower output values occur only as ramp
+transients or while braking; 2400 is an initial breakaway target based on the
+reported dead zone, pending physical tuning. It stops within 3 degrees for
+turns of 30 degrees or less, or 8 degrees for larger turns, and settles for
+150 ms. The total timeout is 6000 ms plus twice the ramp time to 2400; stall
+detection waits until actual output reaches 2400. STATUS advertises LOOKRAMP=1. Missing
 or invalid gyro data, movement during bias measurement, reversed yaw,
 or no heading progress stops the motors and reports a `LOOK_*` error followed
 by `0 EVENT TURN_FAULT`. Reposition and recalibrate the floor before trying
@@ -293,7 +323,7 @@ calibration, so they cannot delay motor control.
 
 STOP and valid manual DRIVE/TURN commands cancel the voice turn. Edge sensors,
 Button C, sensor faults, and the UART watchdog retain priority. After a normal
-completion, the XIAO sends WAKE and plays its speaker chime. On cancellation or
+completion, the XIAO sends WAKE and plays its Curious robot voice. On cancellation or
 failure it drops that pending completion reaction.
 
 The gyro convention matches Pololu's example: `(-speed, +speed)` produces
@@ -350,14 +380,16 @@ events and uncorrelated errors. Commands are uppercase.
 | `23 LED ALL 0 0 0 0` | Turn all RGB LEDs off |
 | `26 WAKE` | Happy face and LED effect while stationary; sound is played by XIAO |
 | `27 LOOK 90` | One measured left turn, then `27 OK LOOK_DONE`; requires floor calibration and gyro |
+| `29 WIGGLE` | One quick left/right/center greeting, then `29 OK LOOK_DONE`; renew with `KEEP 29` |
 | `28 KEEP 27` | Renew only active LOOK 27 for another 300 ms |
 
 Motion starts with a ramp on the Zumo itself. `DRIVE left right acceleration`
 optionally selects 500-6000 motor speed units per second (protocol fallback
 3000). The dashboard Acceleration slider starts at 6000; lower values give a
 gentler start. Repeated hold commands renew the watchdog without restarting
-the ramp. DRIVE, SAFE, and TURN use the ramp; gyro LOOK turns use a fixed 6000
-units/second to retain their stall deadline.
+the ramp. DRIVE, SAFE, and TURN use the ramp; gyro LOOK turns accept a
+500–6000 acceleration argument (default 6000), with a matching bounded timeout.
+WIGGLE uses its own fast ramp profile through the same motor ramp implementation.
 
 Normal dashboard release, Stop, and STOP ALL cancel pending actions and send
 `BRAKE`. Both tracks then slow to zero at a fixed 12000 speed units per second,

@@ -11,6 +11,7 @@
 #include "wake_word.h"
 #include "speech_commands.h"
 #include "cue_adpcm.h"
+#include "emotion_voice.h"
 #include "xvf_read.h"
 
 namespace {
@@ -51,7 +52,6 @@ constexpr uint32_t kTestToneFrequencyHz = 440;
 constexpr uint32_t kTestToneDurationMs = 2000;
 constexpr int32_t kTestToneAmplitude = 0x08000000;
 constexpr size_t kStreamFrames = wake_word::kFrameSamples;
-constexpr uint32_t kChimeFrames = app_config::kAudioSampleRate * 400 / 1000;
 int32_t gInput[kStreamFrames * 2] = {};
 int32_t gOutput[kStreamFrames * 2] = {};
 
@@ -62,11 +62,6 @@ int32_t toneSample(uint32_t frame, uint32_t total, uint32_t frequency) {
   const float phase = 6.28318530718f * ((frame * frequency) % app_config::kAudioSampleRate) /
                       app_config::kAudioSampleRate;
   return static_cast<int32_t>(sinf(phase) * envelope * kTestToneAmplitude);
-}
-
-int32_t chimeSample(uint32_t frame) {
-  const uint32_t noteFrames = kChimeFrames / 2;
-  return toneSample(frame % noteFrames, noteFrames, frame < noteFrames ? 660 : 990);
 }
 
 uint8_t volumePercentToCodecValue(uint8_t percent) {
@@ -197,7 +192,7 @@ AudioActionResult AudioEngine::startRecording() {
     xSemaphoreGive(mutex_);
     return AudioActionResult::Unavailable;
   }
-  if (state_ != AudioState::Ready) {
+  if (state_ != AudioState::Ready || cuePlaying_) {
     xSemaphoreGive(mutex_);
     return AudioActionResult::Conflict;
   }
@@ -252,7 +247,7 @@ AudioActionResult AudioEngine::playLatest() {
     xSemaphoreGive(mutex_);
     return AudioActionResult::Unavailable;
   }
-  if (state_ != AudioState::Ready) {
+  if (state_ != AudioState::Ready || cuePlaying_) {
     xSemaphoreGive(mutex_);
     return AudioActionResult::Conflict;
   }
@@ -284,7 +279,7 @@ AudioActionResult AudioEngine::playTestTone() {
     xSemaphoreGive(mutex_);
     return AudioActionResult::Unavailable;
   }
-  if (state_ != AudioState::Ready) {
+  if (state_ != AudioState::Ready || cuePlaying_) {
     xSemaphoreGive(mutex_);
     return AudioActionResult::Conflict;
   }
@@ -377,6 +372,7 @@ AudioStatus AudioEngine::snapshot() {
   }
   status.speakerVolumePercent = speakerVolumePercent_;
   status.wakeChimePlaying = wakeChimePlaying_;
+  status.cuePlaying = cuePlaying_;
   snprintf(status.error, sizeof(status.error), "%s", error_);
   xSemaphoreGive(mutex_);
   return status;
@@ -418,15 +414,22 @@ void AudioEngine::taskEntry(void* context) {
   static_cast<AudioEngine*>(context)->taskLoop();
 }
 
-bool AudioEngine::playWakeChime() {
+bool AudioEngine::playWakeVoice() {
   if (!snapshot().available) return false;
+  xSemaphoreTake(mutex_, portMAX_DELAY);
+  cuePlaying_ = wakeChimePlaying_ = true;
   xEventGroupSetBits(stopEvents_, kWakeChimeBit);
+  xSemaphoreGive(mutex_);
   return true;
 }
 
 bool AudioEngine::playCue(AudioCue cue) {
   if (!snapshot().available) return false;
   xSemaphoreTake(mutex_, portMAX_DELAY);
+  if (isEmotionCue(cue) && state_ != AudioState::Ready) {
+    xSemaphoreGive(mutex_);
+    return false;
+  }
   pendingCue_ = cue;
   cuePlaying_ = cue != AudioCue::None;
   xSemaphoreGive(mutex_);
@@ -456,19 +459,22 @@ void AudioEngine::taskLoop() {
   Mode mode = Mode::Idle;
   size_t recordOffset = 0, playOffset = 0;
   uint32_t recordingPeak = 0, playbackGain = 1, toneFrame = 0;
-  uint32_t chimeFrame = kChimeFrames;
+  bool wakeVoice = false;
   uint32_t emptyReads = 0;
   AudioCue activeCue = AudioCue::None;
   CueSamples cue = {nullptr, 0};
   CueDecoder cueDecoder;
+  EmotionVoice emotionVoice;
   size_t cueFrame = 0;
   uint32_t cueGeneration = 0;
   for (;;) {
     xSemaphoreTake(mutex_, portMAX_DELAY);
-    if (cueGeneration != outputGeneration_) { activeCue = AudioCue::None; cueGeneration = outputGeneration_; }
+    if (cueGeneration != outputGeneration_) { activeCue = AudioCue::None; wakeVoice = false; cueGeneration = outputGeneration_; }
     if (pendingCue_ != AudioCue::None) {
       activeCue = pendingCue_; pendingCue_ = AudioCue::None;
+      wakeVoice = false;
       cue = cueSamples(activeCue); cueFrame = 0; cueDecoder = CueDecoder{};
+      emotionVoice.start(activeCue, app_config::kAudioSampleRate);
     }
     xSemaphoreGive(mutex_);
     Command command;
@@ -486,9 +492,17 @@ void AudioEngine::taskLoop() {
       }
     }
     const EventBits_t events = xEventGroupClearBits(stopEvents_, kWakeChimeBit | kStopPlaybackBit);
-    if (events & kWakeChimeBit) chimeFrame = 0;
+    if (events & kWakeChimeBit) {
+      activeCue = AudioCue::Curious;
+      emotionVoice.start(activeCue, app_config::kAudioSampleRate);
+      wakeVoice = true;
+      if (mode == Mode::Play || mode == Mode::Tone) {
+        mode = Mode::Idle;
+        setState(AudioState::Ready);
+      }
+    }
     if (events & kStopPlaybackBit) {
-      chimeFrame = kChimeFrames;
+      if (!(events & kWakeChimeBit)) wakeVoice = false;
       if (mode == Mode::Play || mode == Mode::Tone || mode == Mode::Record) {
         mode = Mode::Idle;
         setState(AudioState::Ready);
@@ -544,9 +558,11 @@ void AudioEngine::taskLoop() {
 
     const size_t recordedBytes = snapshot().capturedBytes;
     for (size_t frame = 0; frame < frames; ++frame) {
-      const int32_t chime = chimeFrame < kChimeFrames ? chimeSample(chimeFrame++) : 0;
       int32_t cueSample = 0;
-      if (activeCue == AudioCue::Dance) {
+      if (isEmotionCue(activeCue)) {
+        cueSample = emotionVoice.next();
+        if (!emotionVoice.playing()) activeCue = AudioCue::None;
+      } else if (activeCue == AudioCue::Dance) {
         static const uint16_t notes[] = {523,659,784,659,587,698,880,698,523,784,1047,784};
         const uint32_t noteFrames = app_config::kAudioSampleRate / 4;
         if (cueFrame < noteFrames * 12) cueSample = toneSample(cueFrame % noteFrames, noteFrames, notes[cueFrame / noteFrames]);
@@ -569,9 +585,9 @@ void AudioEngine::taskLoop() {
           sample = static_cast<int64_t>(original) * playbackGain;
           playOffset += sizeof(original);
         }
-        // Mix the wake chime over playback without stopping microphone capture.
+        // Voice synthesis shares the speaker stream; microphone capture continues.
         gOutput[frame * 2 + channel] = static_cast<int32_t>(
-            constrain(sample + chime + cueSample, static_cast<int64_t>(INT32_MIN), static_cast<int64_t>(INT32_MAX)));
+            constrain(sample + cueSample, static_cast<int64_t>(INT32_MIN), static_cast<int64_t>(INT32_MAX)));
       }
       if (mode == Mode::Play && playOffset >= recordedBytes) {
         mode = Mode::Idle;
@@ -579,8 +595,9 @@ void AudioEngine::taskLoop() {
       }
     }
     xSemaphoreTake(mutex_, portMAX_DELAY);
-    wakeChimePlaying_ = chimeFrame < kChimeFrames;
-    cuePlaying_ = activeCue != AudioCue::None || pendingCue_ != AudioCue::None;
+    const bool wakePending = (xEventGroupGetBits(stopEvents_) & kWakeChimeBit) != 0;
+    wakeChimePlaying_ = wakePending || (wakeVoice && activeCue != AudioCue::None);
+    cuePlaying_ = wakePending || activeCue != AudioCue::None || pendingCue_ != AudioCue::None;
     xSemaphoreGive(mutex_);
     if (i2s_.write(reinterpret_cast<const uint8_t*>(gOutput), received) != received) {
       endI2s();

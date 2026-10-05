@@ -46,6 +46,8 @@ const testTimeout=setTimeout(()=>{console.error('FAIL: dashboard test did not co
   nodes.get('driveAcceleration').value='500';
   nodes.get('driveAcceleration').listeners.input({target:{value:'500'}});
   assert.equal(nodes.get('driveAccelerationValue').textContent,'500');
+  await nodes.get('driveAcceleration').listeners.change();
+  assert.ok(calls.some(c=>c.url==='/api/zumo/acceleration?value=500'&&c.options.method==='POST'));
   vm.runInContext("heldDirection='forward'",context);
   await context.sendDrive();
   let params=new URL(calls.findLast(c=>c.url.startsWith('/api/zumo/drive?')).url,'http://digit').searchParams;

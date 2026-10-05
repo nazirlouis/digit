@@ -18,7 +18,11 @@ inline void xSemaphoreGiveRecursive(SemaphoreHandle_t m) { m->unlock(); }
 #define portEXIT_CRITICAL(x) ((void)(x))
 struct AudioEngine {
   bool playing = false;
-  bool playCue(AudioCue) { playing=true; return true; }
+  bool available = true;
+  unsigned plays = 0;
+  AudioCue lastCue = AudioCue::None;
+  uint32_t playUntil = 0;
+  bool playCue(AudioCue cue) { if(!available)return false;playing=true;++plays;lastCue=cue;playUntil=nowMs+(cue==AudioCue::Happy?555:270);return true; }
   bool cuePlaying() { return playing; }
   void cancelOutput() { playing=false; }
 };
@@ -65,7 +69,8 @@ inline bool setEnabled(bool enabled) { state.enabled=enabled; state.batteryMode=
 namespace zumo_link {
 struct Status {
   bool connected=true,ready=true,calibrating=false,edge=false,actionCapable=true;
-  bool voiceCapable=true,rangeValid=true,lookActive=false,manualDriving=false;
+  bool voiceCapable=true,rangeValid=true,lookActive=false,manualDriving=false,rampedLookCapable=true;
+  bool wiggleCapable=true;
   int left=0,right=0,distanceMm=900;
   uint32_t controlGeneration=0,replyAgeMs=0,safetyEvents=0;
   char fault[24]="NONE",lookResult[24]="NONE";
@@ -79,5 +84,6 @@ inline Status snapshot() { return state; }
 inline void stop(bool smooth=false) { lastStopSmooth=smooth;++stops;state.left=state.right=0;state.lookActive=false;++state.controlGeneration; }
 inline bool safeDrive(int left,int right) { state.left=left;state.right=right;++motions;return true; }
 inline bool look(int,uint32_t) { state.lookActive=true;turnAt=nowMs;std::strcpy(state.lookResult,"TURNING");++motions;return true; }
+inline bool wiggle(uint32_t generation) { look(15,generation);std::strcpy(state.lookResult,"PREPARING");return true; }
 inline bool face(const char*) { return true; }
 }

@@ -10,7 +10,15 @@ struct esp_mn_results_t { int num; int command_id[5]; float prob[5]; char string
 speech_commands::Status state{};
 speech_commands::AudioTestStatus testState{};
 uint32_t session = 1, controlGeneration = 0, opensAt = 0, pendingGeneration = 0, nowMs = 0;
-constexpr uint32_t kChimeDelayMs = 500, kStallMs = 10000;
+constexpr uint32_t kVoiceTailMs = 120, kVoiceWaitTimeoutMs = 2500, kStallMs = 10000;
+bool waitingForVoice = false;
+enum class AudioState { Ready, Playing };
+struct AudioMock {
+  bool cuePlaying=false, wakeChimePlaying=false;
+  AudioState state=AudioState::Ready;
+  AudioMock snapshot(){ return *this; }
+  void cancelOutput(){ cuePlaying=wakeChimePlaying=false; state=AudioState::Ready; }
+} audioEngine;
 int pendingCommand = 0;
 #define portENTER_CRITICAL(x) ((void)0)
 #define portEXIT_CRITICAL(x) ((void)0)
@@ -32,10 +40,22 @@ namespace speech_commands {
 int main() {
   using namespace speech_commands;
   state.ready = true;
+  audioEngine.cuePlaying = audioEngine.wakeChimePlaying = true;
+  listen(42); poll();
+  nowMs += 800; poll();
+  assert(waitingForVoice && state.listening && !strcmp(state.result, "Wake voice"));
+  audioEngine.cancelOutput(); poll();
+  assert(!waitingForVoice && opensAt == nowMs + 120 && state.listening);
+  cancel();
+  audioEngine.cuePlaying = true; listen(42);
+  nowMs += 2500; poll();
+  assert(!state.listening && !audioEngine.cuePlaying && !strcmp(state.result, "Wake voice interrupted"));
+  audioEngine.cuePlaying = true; listen(42); cancel(); audioEngine.cancelOutput();
+  nowMs += 1000; poll(); assert(!state.listening);
   testState.busy = true;
-  listen(42); assert(!snapshot().listening && pendingCommand == 0);
+  listen(42); poll(); assert(!snapshot().listening && pendingCommand == 0);
   testState.busy = false;
-  listen(42);
+  listen(42); poll();
   nowMs = opensAt;
   speech_pipeline::Tag tag{session, nowMs};
   esp_mn_results_t result{};
@@ -49,17 +69,17 @@ int main() {
   poll(); assert(robot_actions::dispatched == 1);
   poll(); assert(robot_actions::dispatched == 1);
 
-  listen(42); tag = {session, opensAt}; nowMs = opensAt;
+  listen(42); poll(); tag = {session, opensAt}; nowMs = opensAt;
   cancel();
   publishResult(tag, ESP_MN_STATE_DETECTED, &result, 11000, 12000);
   poll(); assert(robot_actions::dispatched == 1 && snapshot().recognized == 1);
 
-  listen(42); tag = {session, opensAt}; nowMs = opensAt;
+  listen(42); poll(); tag = {session, opensAt}; nowMs = opensAt;
   publishResult(tag, ESP_MN_STATE_DETECTED, &result, 11000, 12000);
   cancel(); poll(); assert(robot_actions::dispatched == 1); // Stop after inference, before dispatch.
 
-  listen(42); tag = {session, opensAt};
-  listen(43); nowMs = opensAt;
+  listen(42); poll(); tag = {session, opensAt};
+  listen(43); poll(); nowMs = opensAt;
   publishResult(tag, ESP_MN_STATE_DETECTED, &result, 11000, 12000);
   assert(snapshot().listening && pendingCommand == 0); // New wake invalidates old results.
   tag = {session, nowMs};
@@ -67,7 +87,7 @@ int main() {
   assert(!snapshot().listening && pendingCommand == 0);
   assert(!strcmp(snapshot().result, "No command recognized")); // Timeout partial text is diagnostic only.
 
-  listen(42); tag = {session, opensAt}; nowMs = opensAt;
+  listen(42); poll(); tag = {session, opensAt}; nowMs = opensAt;
   result.string[0] = '\0';
   publishResult(tag, ESP_MN_STATE_DETECTED, &result, 11000, 12000);
   assert(snapshot().listening && pendingCommand == 0);

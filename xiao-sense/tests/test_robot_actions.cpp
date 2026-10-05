@@ -10,17 +10,22 @@ void resetDevice() {
   zumo_link::state = {};
   vision_service::state = {};
   audioEngine.playing = false;
+  audioEngine.available = true;
   photo_store::pending = false;
   nowMs += 1000;
 }
 void tick() {
   nowMs += 25;
-  if (zumo_link::state.lookActive && nowMs-zumo_link::turnAt>200) {
-    zumo_link::state.lookActive=false;
-    std::strcpy(zumo_link::state.lookResult,"DONE");
+  if (zumo_link::state.lookActive) {
+    const auto elapsed=nowMs-zumo_link::turnAt;
+    if(elapsed>1400) {
+      zumo_link::state.lookActive=false;
+      std::strcpy(zumo_link::state.lookResult,"DONE");
+    } else if(elapsed>1000) std::strcpy(zumo_link::state.lookResult,"CENTERING");
+    else if(elapsed>450) std::strcpy(zumo_link::state.lookResult,"WIGGLING");
   }
   if (nowMs%100==0) ++vision_service::state.resultTimestampMs;
-  audioEngine.playing=false;
+  if(nowMs>=audioEngine.playUntil)audioEngine.playing=false;
   photo_store::pending=false;
   robot_actions::poll();
 }
@@ -76,16 +81,48 @@ int main() {
       for (int t=0;t<stopAt;t+=25) tick();
       const auto old=robot_actions::generation();
       robot_actions::stop("Dashboard Stop");
-      const auto sent=zumo_link::motions, photos=photo_store::captures;
+      const auto sent=zumo_link::motions, photos=photo_store::captures, sounds=audioEngine.plays;
       assert(!robot_actions::start(static_cast<Command>(id),old));
       for(int t=0;t<1000;t+=25) tick();
       assert(!robot_actions::snapshot().active);
       assert(!zumo_link::state.left && !zumo_link::state.right && !zumo_link::state.lookActive);
       assert(zumo_link::motions==sent && photo_store::captures==photos);
+      assert(audioEngine.plays==sounds);
       assert(!audioEngine.playing && !speech_commands::listening && !person_follow::enabled);
     }
     std::cout << "PASS stop at 160 points: " << robot_actions::name(static_cast<Command>(id)) << '\n';
   }
+  resetDevice();
+  auto sounds=audioEngine.plays;
+  assert(robot_actions::start(Command::Hello,robot_actions::generation()));
+  while(!zumo_link::state.lookActive)tick();
+  for(int i=0;i<18;++i)tick();
+  assert(audioEngine.plays==sounds); // Silent during variable gyro preparation.
+  tick();
+  assert(audioEngine.plays==sounds+1 && audioEngine.lastCue==AudioCue::Happy);
+  assert(zumo_link::state.lookActive && audioEngine.playing);
+  while(strcmp(zumo_link::state.lookResult,"CENTERING"))tick();
+  assert(audioEngine.plays==sounds+2 && audioEngine.lastCue==AudioCue::Neutral);
+  assert(zumo_link::state.lookActive && audioEngine.playing);
+  while(robot_actions::snapshot().active)tick();
+  assert(audioEngine.plays==sounds+2 && !audioEngine.playing);
+  // A lost start event must not replay Happy after the center chirp.
+  resetDevice();
+  assert(robot_actions::start(Command::Hello,robot_actions::generation()));
+  while(!zumo_link::state.lookActive)tick();
+  sounds=audioEngine.plays;
+  std::strcpy(zumo_link::state.lookResult,"CENTERING");robot_actions::poll();
+  assert(audioEngine.plays==sounds+1 && audioEngine.lastCue==AudioCue::Neutral);
+  std::strcpy(zumo_link::state.lookResult,"WIGGLING");robot_actions::poll();
+  assert(audioEngine.plays==sounds+1);
+  // Failed playback cancels the motion instead of leaving an unsynchronized greeting.
+  resetDevice();
+  assert(robot_actions::start(Command::Hello,robot_actions::generation()));
+  while(!zumo_link::state.lookActive)tick();
+  audioEngine.available=false;
+  std::strcpy(zumo_link::state.lookResult,"WIGGLING");robot_actions::poll();
+  assert(!robot_actions::snapshot().active && !zumo_link::state.lookActive);
+  std::cout << "PASS greeting sounds follow actual wiggle phases, play once, overlap motion, and never replay after it\n";
   // Retired wire IDs must fail without cancelling or disturbing an active Hello.
   resetDevice();
   assert(robot_actions::start(Command::Hello,robot_actions::generation()));
@@ -98,10 +135,16 @@ int main() {
   const auto turns=zumo_link::motions;
   for (int i=0;i<1200 && robot_actions::snapshot().active;++i) tick();
   assert(!robot_actions::snapshot().active);
-  assert(zumo_link::motions==turns+3);
+  assert(zumo_link::motions==turns+1); // One continuous gesture on the Zumo.
   assert(!strcmp(robot_actions::snapshot().phase,"Routine complete"));
   resetDevice();
   zumo_link::state.voiceCapable=false;
+  assert(!robot_actions::start(Command::Hello,robot_actions::generation()));
+  resetDevice();
+  zumo_link::state.rampedLookCapable=false;
+  assert(!robot_actions::start(Command::Hello,robot_actions::generation()));
+  resetDevice();
+  zumo_link::state.wiggleCapable=false;
   assert(!robot_actions::start(Command::Hello,robot_actions::generation()));
   resetDevice();
   zumo_link::state.rangeValid=false;
@@ -119,5 +162,5 @@ int main() {
   assert(!robot_actions::snapshot().active);
   zumo_link::state.ready=false;
   assert(robot_actions::start(Command::Stop,robot_actions::generation()));
-  std::cout << "PASS retired IDs rejected, Hello completes three turns, gyro/edge/link safety, Stop without ready hardware\n";
+  std::cout << "PASS retired IDs rejected, Hello completes one continuous wiggle, gyro/edge/link safety, Stop without ready hardware\n";
 }

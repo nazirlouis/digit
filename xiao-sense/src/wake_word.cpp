@@ -254,9 +254,9 @@ void task(void*) {
 }
 
 bool react() {
-  const bool chime = audioEngine.playWakeChime();
+  const bool chime = audioEngine.playWakeVoice();
   const bool zumo = zumo_link::wake();
-  Serial.printf("Wake reaction: chime=%s Zumo=%s\n", chime ? "queued" : "unavailable",
+  Serial.printf("Wake reaction: Digit voice=%s Zumo=%s\n", chime ? "queued" : "unavailable",
                 zumo ? "queued" : "busy/disconnected");
   return chime || zumo;
 }

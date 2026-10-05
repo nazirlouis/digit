@@ -1,6 +1,6 @@
 # Digit voice commands and dashboard Stop
 
-Say **Digit**, wait for the chime, then speak one command within six seconds.
+Say **Digit**, wait for his answering voice, then speak one command within six seconds.
 The existing custom wake model opens English MultiNet 6. Recognition runs on
 the XIAO; no network speech service is used. **Say hello** is the only routine
 available by voice or in the dashboard's **Digit actions** panel. The other
@@ -54,7 +54,9 @@ prove a selected channel uses every processor: the XVF ASR branch bypasses the
 post-processor, including its noise suppression and AGC. Reading this endpoint
 does not change the microphone configuration or hold the I2C bus during driving.
 
-After the 500 ms chime guard, MultiNet owns the six-second recognition timeout.
+After the Curious wake voice finishes and a 120 ms echo tail passes, MultiNet
+owns the six-second recognition timeout. A stuck voice prompt aborts after
+2.5 seconds; Stop during the prompt prevents later listening from starting.
 A ten-second wall-clock watchdog only cancels stalled listening. Capture/session
 metadata follows every complete model frame, so mixed wake/Stop frames, stale sound,
 and results from cancelled sessions cannot start actions. Queue loss cancels
@@ -68,7 +70,7 @@ of memory needed by the dashboard or Wi-Fi.
 
 | Command | Behavior |
 | --- | --- |
-| Say hello | Spoken greeting, happy eyes, three small gyro-controlled turns, happy finish. |
+| Say hello | One quick left/right/center wiggle with happy eyes and synchronized chirps. The Happy voice begins with motion; the soft closing chirp plays during the return to center. Full 6000 swing targets use a dedicated fast ramp and gyro centering. Requires Zumo `WIGGLE=2` support. |
 
 **Stop moving** and **Stop** are additional voice controls after the wake word.
 The drive pad's **STOP** and the new **STOP ALL** button use the same cancellation
@@ -153,7 +155,7 @@ For voice diagnosis, `GET /api/actions` reports `voice_ready`, `listening`,
 is a lifetime count. Other audio/chunk/peak measurements reset for each wake window.
 Serial logs include window opening, all candidate scores, decoder text at detection
 or timeout, timeout measurements,
-and audio-queue overflow. Say **Digit**, wait for the chime to finish, then
+and audio-queue overflow. Say **Digit**, wait for his answering voice to finish, then
 **Stop** for a stationary test: `recognized` must increase and the dashboard
 must show **Heard: Stop**, even if the robot was already stopped. A ready model
 and complete audio processing alone do not establish command recognition.

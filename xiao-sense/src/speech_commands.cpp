@@ -3,6 +3,7 @@
 #include "speech_phrases.h"
 #include "robot_actions.h"
 #include "wake_word.h"
+#include "audio_engine.h"
 #include "Arduino.h"
 #include <cstring>
 #include <esp_mn_models.h>
@@ -13,7 +14,7 @@
 #include <freertos/semphr.h>
 
 namespace {
-constexpr uint32_t kChimeDelayMs = 500;
+constexpr uint32_t kVoiceTailMs = 120, kVoiceWaitTimeoutMs = 2500;
 constexpr uint32_t kRecognitionMs = 6000; // Same model-controlled timeout as the demo.
 constexpr uint32_t kStallMs = 10000; // Fault watchdog, not the recognition window.
 portMUX_TYPE lock = portMUX_INITIALIZER_UNLOCKED;
@@ -25,6 +26,7 @@ struct Chunk { speech_pipeline::Tag tag; int16_t samples[kModelSamples]; };
 QueueHandle_t inputQueue = nullptr, outputQueue = nullptr;
 int16_t feedSamples[kModelSamples]{};
 uint32_t session = 1, stream = 1, controlGeneration = 0, opensAt = 0;
+bool waitingForVoice = false;
 int pendingCommand = 0;
 uint32_t pendingGeneration = 0;
 constexpr size_t kCaptureSamples = 16000 * 7;
@@ -292,21 +294,21 @@ void listen(uint32_t generation) {
   portENTER_CRITICAL(&lock);
   if (state.ready && !testState.busy) {
     ++session; controlGeneration = generation; pendingCommand = 0;
-    opensAt = millis() + kChimeDelayMs; state.listening = true;
+    opensAt = millis(); waitingForVoice = true; state.listening = true;
     state.samples = state.chunks = state.inferenceUs = 0; state.micPeak = 0;
     state.feedChunks = state.fetchChunks = 0; state.modelPeak = 0;
     state.candidateCommand = 0; state.candidateScore = 0; state.decoderText[0] = '\0';
-    snprintf(state.result, sizeof(state.result), "Listening");
+    snprintf(state.result, sizeof(state.result), "Wake voice");
     opened = true;
   }
   portEXIT_CRITICAL(&lock);
-  if (opened) Serial.println("MultiNet: command window opened (500 ms chime delay; model timeout 6 seconds)");
+  if (opened) Serial.println("MultiNet: waiting for Digit voice, then 120 ms echo tail; model timeout 6 seconds");
 }
 
 void cancel() {
   portENTER_CRITICAL(&lock);
   if (state.listening) snprintf(state.result, sizeof(state.result), "Cancelled");
-  ++session; state.listening = false; pendingCommand = 0;
+  ++session; state.listening = false; waitingForVoice = false; pendingCommand = 0;
   portEXIT_CRITICAL(&lock);
 }
 
@@ -315,7 +317,7 @@ void submit(const int32_t* stereo, size_t count) {
   speech_pipeline::Frame frame{};
   portENTER_CRITICAL(&lock);
   const bool ready = state.ready;
-  const bool active = ready && state.listening && static_cast<int32_t>(millis() - opensAt) >= 0;
+  const bool active = ready && state.listening && !waitingForVoice && static_cast<int32_t>(millis() - opensAt) >= 0;
   frame.session = active ? session : 0;
   frame.stream = stream;
   portEXIT_CRITICAL(&lock);
@@ -373,8 +375,20 @@ AudioTestStatus audioTestStatus() {
 void audioFault() { fail("Microphone unavailable; check audio status"); }
 
 void poll() {
+  const auto audio = audioEngine.snapshot();
+  bool cancelVoice = false;
   portENTER_CRITICAL(&lock);
-  if (state.listening && static_cast<int32_t>(millis() - opensAt) >= static_cast<int32_t>(kStallMs)) {
+  if (state.listening && waitingForVoice) {
+    if (!audio.cuePlaying && !audio.wakeChimePlaying && audio.state != AudioState::Playing) {
+      waitingForVoice = false;
+      opensAt = millis() + kVoiceTailMs;
+      snprintf(state.result, sizeof(state.result), "Listening");
+    } else if (millis() - opensAt >= kVoiceWaitTimeoutMs) {
+      waitingForVoice = state.listening = false; ++session; cancelVoice = true;
+      snprintf(state.result, sizeof(state.result), "Wake voice interrupted");
+    }
+  }
+  if (state.listening && !waitingForVoice && static_cast<int32_t>(millis() - opensAt) >= static_cast<int32_t>(kStallMs)) {
     state.listening = false; ++session;
     snprintf(state.result, sizeof(state.result), "Audio interrupted");
   }
@@ -382,6 +396,7 @@ void poll() {
   const uint32_t generation = pendingGeneration;
   pendingCommand = 0;
   portEXIT_CRITICAL(&lock);
+  if (cancelVoice) audioEngine.cancelOutput();
   if (command) {
     const bool accepted = robot_actions::start(static_cast<robot_actions::Command>(command), generation);
     Serial.printf("MultiNet command %d: %s\n", command, accepted ? "accepted" : "cancelled or unavailable");

@@ -2,6 +2,8 @@
 #include "audio_engine.h"
 #include "wake_word.h"
 #include "zumo_link.h"
+#include "voice_settings.h"
+#include <nvs.h>
 #include <cmath>
 #include <cstring>
 
@@ -13,6 +15,34 @@ float front = 0;
 int orientation = 1;
 uint32_t sampledAt = 0;
 bool hasSample = false;
+
+void loadSettings() {
+  VoiceSettings saved{};
+  nvs_handle_t handle;
+  if (nvs_open("digit_voice", NVS_READONLY, &handle) == ESP_OK) {
+    size_t size = sizeof(saved);
+    if (nvs_get_blob(handle, "setup", &saved, &size) != ESP_OK || size != sizeof(saved) || !saved.valid())
+      saved = VoiceSettings{};
+    nvs_close(handle);
+  }
+  front = saved.front; orientation = saved.orientation;
+  state.frontSet = saved.frontSet; state.calibrated = saved.calibrated; state.enabled = saved.enabled;
+}
+void saveSettings() {
+  VoiceSettings saved{};
+  portENTER_CRITICAL(&lock);
+  saved.front = front; saved.orientation = orientation;
+  saved.frontSet = state.frontSet; saved.calibrated = state.calibrated; saved.enabled = state.enabled;
+  portEXIT_CRITICAL(&lock);
+  nvs_handle_t handle;
+  esp_err_t result = nvs_open("digit_voice", NVS_READWRITE, &handle);
+  if (result == ESP_OK) {
+    result = nvs_set_blob(handle, "setup", &saved, sizeof(saved));
+    if (result == ESP_OK) result = nvs_commit(handle);
+    nvs_close(handle);
+  }
+  if (result != ESP_OK) Serial.printf("Voice direction: could not save setup (%d)\n", result);
+}
 
 float wrap(float value) {
   while (value >= 180) value -= 360;
@@ -61,7 +91,7 @@ void task(void*) {
   for (;;) {
     const auto audio = audioEngine.snapshot();
     const auto zumo = zumo_link::snapshot();
-    const bool quiet = audio.available && audio.state != AudioState::Playing && !audio.wakeChimePlaying &&
+    const bool quiet = audio.available && audio.state != AudioState::Playing && !audio.wakeChimePlaying && !audio.cuePlaying &&
                        !zumo.left && !zumo.right && !zumo.manualDriving && !zumo.lookActive &&
                        !wake_word::snapshot().pausedForVision;
     float degrees = 0;
@@ -124,6 +154,7 @@ void task(void*) {
 
 namespace voice_direction {
 void begin() {
+  loadSettings();
   if (xTaskCreatePinnedToCore(task, "voice-direction", 4096, nullptr, 1, nullptr, 1) != pdPASS) {
     portENTER_CRITICAL(&lock);
     snprintf(state.error, sizeof(state.error), "Could not start direction reader");
@@ -143,42 +174,44 @@ bool configure(const char* action) {
   const auto zumo = zumo_link::snapshot();
   const auto audio = audioEngine.snapshot();
   const bool quiet = !zumo.left && !zumo.right && !zumo.manualDriving && !zumo.lookActive && !zumo.calibrating &&
-                     !wake_word::snapshot().pausedForVision && audio.state != AudioState::Playing && !audio.wakeChimePlaying;
+                     !wake_word::snapshot().pausedForVision && audio.state != AudioState::Playing && !audio.wakeChimePlaying && !audio.cuePlaying;
   bool accepted = false;
   portENTER_CRITICAL(&lock);
   const bool fresh = quiet && state.available && state.stable && hasSample && millis() - sampledAt <= 300;
-  if (!strcmp(action, "off") || !strcmp(action, "reset")) {
+  if (!strcmp(action, "off")) {
     state.enabled = false;
-    if (!strcmp(action, "reset")) state.frontSet = state.calibrated = false;
+    accepted = true;
+  } else if (!strcmp(action, "reset")) {
+    state.frontSet = state.calibrated = false;
     accepted = true;
   } else if (!strcmp(action, "front") && fresh) {
     front = state.degrees;
     state.frontSet = true;
-    state.calibrated = state.enabled = false;
+    state.calibrated = false;
     accepted = true;
   } else if (!strcmp(action, "left") && fresh && state.frontSet) {
     const float difference = wrap(state.degrees - front);
     if (std::fabs(difference) >= 45 && std::fabs(difference) <= 135) {
       orientation = difference > 0 ? 1 : -1;
       state.calibrated = true;
-      state.enabled = false;
       accepted = true;
     }
-  } else if (!strcmp(action, "on") && quiet && state.calibrated && state.available &&
-             zumo.connected && zumo.ready && zumo.voiceCapable) {
+  } else if (!strcmp(action, "on")) {
     state.enabled = true;
     accepted = true;
   }
   if (accepted) ++state.generation;
   portEXIT_CRITICAL(&lock);
-  if (accepted) zumo_link::cancelLook();
+  if (accepted) { zumo_link::cancelLook(); saveSettings(); }
   return accepted;
 }
 bool target(int& degrees, uint32_t& generation) {
   const auto s = snapshot();
   const auto audio = audioEngine.snapshot();
   const auto zumo = zumo_link::snapshot();
-  if (!audio.available || audio.state == AudioState::Playing || audio.wakeChimePlaying ||
+  if (!audio.available || audio.state == AudioState::Playing || audio.wakeChimePlaying || audio.cuePlaying ||
+      !zumo.connected || !zumo.ready || !zumo.voiceCapable || !zumo.rampedLookCapable ||
+      zumo.calibrating || zumo.edge || strcmp(zumo.fault, "NONE") ||
       zumo.manualDriving || zumo.lookActive || zumo.left || zumo.right) return false;
   if (!s.enabled || !s.calibrated || !s.available || !s.stable) return false;
   degrees = static_cast<int>(std::lround(s.relative));

@@ -51,5 +51,59 @@ int main() {
   assertCommand("STOP","BRAKE");
   reply(false); // A restarted older peer must remove previously advertised support.
   assert(!zumo_link::snapshot().brakeCapable);
+  assert(!zumo_link::look(15,zumo_link::snapshot().controlGeneration));
+  handleLine("1 OK READY=1 FAULT=NONE L=0 R=0 BAT=5800 EDGE=0 VOICE=1 DIST=900 RANGE=1 AUTO=1 BRAKE=1 LOOKRAMP=1",nowMs);
+  assert(zumo_link::snapshot().rampedLookCapable);
+  assert(!zumo_link::setAcceleration(499)&&!zumo_link::setAcceleration(6001));
+  assert(zumo_link::setAcceleration(500));
+  assert(zumo_link::look(15,zumo_link::snapshot().controlGeneration));
+  zumoUart.outgoing.clear();zumo_link::poll();
+  assert(zumoUart.outgoing.find(" LOOK 15 500\n")!=std::string::npos);
+  handleLine((std::to_string(lookId)+" OK LOOKING").c_str(),nowMs);
+  assert(zumo_link::setAcceleration(6000)); // In-progress turn retains its request's ramp.
+  assert(lookAcceleration==500);
+  nowMs+=7000;
+  handleLine("1 OK READY=1 FAULT=NONE L=-2400 R=2400 BAT=5800 EDGE=0 VOICE=1 LOOKRAMP=1",nowMs);
+  zumo_link::poll();assert(zumo_link::snapshot().lookActive);
+  zumo_link::stop();zumo_link::poll();assert(!zumo_link::snapshot().lookActive);
+  reply(false);assert(!zumo_link::snapshot().rampedLookCapable);
+  assert(!zumo_link::wiggle(zumo_link::snapshot().controlGeneration));
+  handleLine("1 OK READY=1 FAULT=NONE L=0 R=0 BAT=5800 EDGE=0 VOICE=1 DIST=900 RANGE=1 AUTO=1 BRAKE=1 LOOKRAMP=1 WIGGLE=2",nowMs);
+  assert(zumo_link::snapshot().wiggleCapable);
+  const auto gestureGeneration=zumo_link::snapshot().controlGeneration;
+  assert(!zumo_link::wiggle(gestureGeneration-1));
+  assert(zumo_link::wiggle(gestureGeneration));
+  zumoUart.outgoing.clear();zumo_link::poll();
+  assertCommand("WIGGLE","LOOK 15 6000");
+  const auto gestureId=lookId;
+  handleLine((std::to_string(gestureId)+" OK LOOKING").c_str(),nowMs);
+  assert(!strcmp(zumo_link::snapshot().lookResult,"PREPARING"));
+  handleLine((std::to_string(gestureId)+" OK WIGGLE_START").c_str(),nowMs);
+  assert(zumo_link::snapshot().lookActive && !strcmp(zumo_link::snapshot().lookResult,"WIGGLING"));
+  assert(!zumo_link::wiggle(gestureGeneration));
+  nowMs+=100;zumo_link::poll();
+  assert(zumoUart.outgoing.find(" KEEP "+std::to_string(gestureId)+"\n")!=std::string::npos);
+  handleLine((std::to_string(gestureId)+" OK WIGGLE_CENTER").c_str(),nowMs);
+  assert(zumo_link::snapshot().lookActive && !strcmp(zumo_link::snapshot().lookResult,"CENTERING"));
+  handleLine((std::to_string(gestureId)+" OK LOOK_DONE").c_str(),nowMs);
+  assert(!zumo_link::snapshot().lookActive && !strcmp(zumo_link::snapshot().lookResult,"DONE"));
+  assert(zumo_link::wiggle(gestureGeneration));
+  zumo_link::stop();zumoUart.outgoing.clear();zumo_link::poll();
+  assertCommand("STOP","WIGGLE"); // Cancel before transmission.
+  handleLine((std::to_string(gestureId)+" OK WIGGLE_START").c_str(),nowMs);
+  assert(!zumo_link::snapshot().lookActive);
+  assert(zumo_link::wiggle(zumo_link::snapshot().controlGeneration));
+  zumo_link::poll();
+  handleLine((std::to_string(lookId)+" OK LOOKING").c_str(),nowMs);
+  nowMs+=5001;
+  handleLine("1 OK READY=1 FAULT=NONE L=0 R=0 BAT=5800 EDGE=0 VOICE=1 LOOKRAMP=1 WIGGLE=2",nowMs);
+  zumoUart.outgoing.clear();zumo_link::poll();
+  assert(!zumo_link::snapshot().lookActive);
+  assertCommand("STOP","WIGGLE");
+  reply();assert(!zumo_link::snapshot().wiggleCapable);
+  assert(!zumo_link::wiggle(zumo_link::snapshot().controlGeneration));
+  handleLine("1 OK READY=1 FAULT=NONE L=0 R=0 BAT=5800 EDGE=0 VOICE=1 LOOKRAMP=1 WIGGLE=1",nowMs);
+  assert(!zumo_link::snapshot().wiggleCapable); // Older wiggle has no phase synchronization.
+  std::cout<<"PASS quick wiggle negotiation, generation, single command, heartbeat, completion and cancellation\n";
   std::cout<<"PASS production UART bridge: default 6000, BRAKE support, older peer fallback, edge and lease priority\n";
 }

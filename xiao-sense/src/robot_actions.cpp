@@ -18,15 +18,13 @@ std::atomic<uint32_t> controlEpoch{1};
 Command command = Command::None;
 const char* phase = "Idle";
 bool active = false, entered = false, turnIssued = false;
+bool greetingVoiceStarted = false, centerVoiceStarted = false;
 uint32_t stepAt = 0, safetyEvents = 0;
 unsigned step = 0;
-struct Step { uint32_t ms; int angle; const char* face; AudioCue cue; const char* phase; };
+struct Step { uint32_t ms; bool wiggle; const char* face; AudioCue cue; const char* phase; };
 const Step hello[] = {
-  {2700,0,"HAPPY",AudioCue::Hello,"Saying hello"},
-  {0,15,nullptr,AudioCue::None,"Hello wiggle"},
-  {0,-30,nullptr,AudioCue::None,"Hello wiggle"},
-  {0,15,nullptr,AudioCue::None,"Turning back"},
-  {900,0,"HAPPY",AudioCue::None,"Hello!"},
+  {0,true,nullptr,AudioCue::None,"Preparing hello"},
+  {260,false,"NEUTRAL",AudioCue::None,"Settling"},
 };
 
 void finish(const char* reason, bool smooth = false) {
@@ -35,17 +33,33 @@ void finish(const char* reason, bool smooth = false) {
   zumo_link::stop(smooth);
 }
 void advance(uint32_t now) {
-  zumo_link::stop(); ++step; entered = turnIssued = false; stepAt = now + 150;
+  // The completed gesture already stops. Extra STOP commands reset the happy face.
+  ++step; entered = turnIssued = false; stepAt = now + 100;
 }
-bool turn(int degrees, uint32_t now) {
+bool wiggle(uint32_t now) {
   const auto z = zumo_link::snapshot();
   if (!turnIssued) {
-    if (zumo_link::look(degrees, z.controlGeneration)) { turnIssued = true; stepAt = now; }
+    if (zumo_link::wiggle(z.controlGeneration)) { turnIssued = true; stepAt = now; }
     else if (static_cast<int32_t>(now - stepAt) > 1500) finish("Turn could not start");
     return false;
   }
-  if (z.lookActive) return false;
+  if (z.lookActive) {
+    // Zumo renders happy eyes and announces the end of stationary gyro setup.
+    // Cue timing follows the real gesture, not an estimate of its duration.
+    if (!greetingVoiceStarted && !strcmp(z.lookResult, "WIGGLING")) {
+      greetingVoiceStarted = true;
+      phase = "Saying hello";
+      if (!audioEngine.playCue(AudioCue::Happy)) finish("Greeting audio unavailable");
+    }
+    if (!centerVoiceStarted && !strcmp(z.lookResult, "CENTERING")) {
+      centerVoiceStarted = greetingVoiceStarted = true;
+      phase = "Hello: back to center";
+      if (!audioEngine.playCue(AudioCue::Neutral)) finish("Greeting audio unavailable");
+    }
+    return false;
+  }
   if (strcmp(z.lookResult, "DONE")) { finish("Turn interrupted or failed"); return false; }
+  audioEngine.cancelOutput(); // No separate sound or face replay after the wiggle.
   turnIssued = false;
   return true;
 }
@@ -63,7 +77,7 @@ void sequence(const Step* steps, unsigned count, uint32_t now) {
     if (s.face) zumo_link::face(s.face);
     if (s.cue != AudioCue::None) audioEngine.playCue(s.cue);
   }
-  if (s.angle) { if (turn(s.angle, now)) advance(now); return; }
+  if (s.wiggle) { if (wiggle(now)) advance(now); return; }
   if (now - stepAt >= s.ms) { advance(now); return; }
 }
 }
@@ -108,11 +122,15 @@ bool start(Command value, uint32_t expected) {
   if (!z.voiceCapable) {
     phase = "Gyroscope unavailable"; return false;
   }
+  if (!z.rampedLookCapable || !z.wiggleCapable) {
+    phase = "Update Zumo turn files for synchronized greetings"; return false;
+  }
   stop("Starting routine");
   command = value; active = true; stepAt = millis() + 200;
   safetyEvents = z.safetyEvents;
   step = 0;
   entered = turnIssued = false;
+  greetingVoiceStarted = centerVoiceStarted = false;
   phase = name(value);
   return true;
 }

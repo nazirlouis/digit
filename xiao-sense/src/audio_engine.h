@@ -31,6 +31,7 @@ struct AudioStatus {
   uint32_t recordingElapsedMilliseconds;
   uint8_t speakerVolumePercent;
   bool wakeChimePlaying;
+  bool cuePlaying;
   char error[96];
 };
 
@@ -51,7 +52,7 @@ class AudioEngine {
   AudioActionResult stopRecording();
   AudioActionResult playLatest();
   AudioActionResult playTestTone();
-  bool playWakeChime();
+  bool playWakeVoice();
   bool playCue(AudioCue cue);
   void cancelOutput();
   bool cuePlaying();

@@ -22,7 +22,7 @@ const artifacts = path.join(__dirname, '../test-artifacts/drive');
         generation: 1, active: false, action: 'Idle', phase: 'Stopped',
         voice_ready: true, drive_ready: true, connected: true, ready: true,
         fault: 'NONE', last_error: 'NONE', battery_mv: 7600, left: 0, right: 0,
-        audio_state: 'READY', camera_ready: true, vision_ready: true,
+        audio_state: 'READY', audio_available: true, camera_ready: true, vision_ready: true,
         vision_enabled: false, follow_enabled: false, follow_state: 'Off',
         captured_ms: 0, max_recording_ms: 10000, psram_free: 4000000,
         ip: '10.0.0.127', volume: 70, available: true, state: 'Listening',
@@ -51,10 +51,14 @@ const artifacts = path.join(__dirname, '../test-artifacts/drive');
       }
       if (width === 1280 || width === 390) {
         await page.screenshot({ path: path.join(artifacts, `dashboard-${width}.png`) });
+        const facePanel = page.locator('.zumo').filter({has:page.locator('#facePreviewTitle')});
+        assert.equal(await facePanel.locator('[data-face]').count(),13);
+        assert.equal(await page.locator('#faceVoice').isChecked(),true);
+        await facePanel.screenshot({path:path.join(artifacts, `face-voice-${width}.png`)});
       }
     }
     assert.deepEqual(errors, [], 'Dashboard loads without script errors');
-    console.log('PASS: desktop and phone layouts at 1280, 980, 390, and 320px; acceleration position; no overflow');
+    console.log('PASS: desktop and phone layouts at 1280, 980, 390, and 320px; 13 face/voice cards; acceleration position; no overflow');
   } finally {
     await browser.close();
   }

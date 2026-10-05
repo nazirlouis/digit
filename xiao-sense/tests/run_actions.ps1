@@ -43,10 +43,24 @@ foreach ($file in 'zumo_link.cpp','zumo_link.h') {
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'link_arduino_mock.h') -Destination (Join-Path $linkOutput 'Arduino.h')
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'test_zumo_link.cpp') -Destination (Join-Path $linkOutput 'test_zumo_link.cpp')
 $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+$directionOutput = Join-Path $output 'direction'
+New-Item -ItemType Directory -Force $directionOutput | Out-Null
+foreach ($file in 'voice_direction.cpp','voice_direction.h','voice_settings.h') {
+    Copy-Item -LiteralPath (Join-Path $project "src\$file") -Destination (Join-Path $directionOutput $file)
+}
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'voice_direction_mocks.h') -Destination $directionOutput
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'test_voice_direction.cpp') -Destination $directionOutput
+foreach ($header in 'audio_engine.h','wake_word.h','zumo_link.h','nvs.h') {
+    Set-Content -LiteralPath (Join-Path $directionOutput $header) -Value '#include "voice_direction_mocks.h"'
+}
 $vs = & $vswhere -latest -products * -property installationPath
 & (Join-Path $vs 'Common7\Tools\Launch-VsDevShell.ps1') -Arch amd64 -HostArch amd64 -SkipAutomaticLocation
 Push-Location $output
 try {
+    & cl /nologo /std:c++17 /EHsc /W4 /D_CRT_SECURE_NO_WARNINGS "/I$directionOutput" "/Fe:$directionOutput\test_voice_direction.exe" "/Fo:$directionOutput\test_voice_direction.obj" "$directionOutput\test_voice_direction.cpp"
+    if ($LASTEXITCODE -ne 0) { throw 'Voice direction compilation failed' }
+    & "$directionOutput\test_voice_direction.exe"
+    if ($LASTEXITCODE -ne 0) { throw 'Voice direction tests failed' }
     & cl /nologo /std:c++17 /EHsc /W4 /I. /D_CRT_SECURE_NO_WARNINGS /Fe:test_robot_actions.exe /Fo:test_robot_actions.obj test_robot_actions.cpp
     if ($LASTEXITCODE -ne 0) { throw 'Controller test compilation failed' }
     & .\test_robot_actions.exe

@@ -74,14 +74,36 @@ volume control, and UART Zumo controls. Hardware validation must cover those
 features separately; a successful build only checks compilation. During this
 port's initial hardware check, use Zumo PING/STATUS and FACE commands only.
 
-The dashboard's Digit face section offers neutral/wake up, happy, sad, mad,
-serious, curious, surprised, sleeping, confused, sleepy, excited, crying, and
-love/heart eyes. Update the Zumo's face engine and UART controller as described
-in `../zumo-controller/README.md` before trying the new expressions. Sleeping
-persists until another face is chosen; other reactions return to idle. Controls
-are unavailable during movement, calibration, or person turning. `POST
-/api/zumo/face?value=NAME` accepts the uppercase expression names, including
-`NEUTRAL`, `SLEEPING`, and `LOVE`. Dizzy is no longer supported.
+The dashboard's **Digit face & voice** section previews all 13 expressions:
+neutral, happy, sad, mad, serious, curious, surprised, sleeping, confused, sleepy,
+excited, crying, and love/heart eyes. **Play voice with face** starts checked;
+each button sends the face over UART and plays a matching synthesized phrase
+through the ReSpeaker speaker after a 90 ms lead-in. This is approximate timing,
+not a display acknowledgement. Use the existing **Speaker volume** slider.
+Uncheck the switch to compare faces without sound. A new preview replaces the
+previous voice; **Stop preview / wake up** cancels actions/audio and requests
+neutral eyes. **STOP ALL** also cancels audio and pending previews.
+
+Each phrase plays once, lasts 0.27–1.41 seconds including the lead-in, and uses
+the same rounded voice with different pitch contours, rhythm, and vibrato.
+Sleeping keeps its face until replaced, but its voice never loops. No preview
+requests track movement or needs floor calibration. Controls are unavailable
+during movement, calibration, person turning, or an active routine. Voice
+previews also require audio ready (finish recording/playback first).
+
+Update the Zumo's face engine and UART controller as described in
+`../zumo-controller/README.md` if its installed version does not already support
+these faces. This preview feature only changes XIAO firmware. The original
+`POST /api/zumo/face?value=NAME` remains face-only. Dashboard previews use
+`POST /api/zumo/face?value=NAME&voice=1&generation=N` (or `voice=0`); obtain the
+current generation from `/api/actions`. Stale preview requests are rejected
+after Stop or another control action. `POST /api/zumo/face/stop` stops previews
+and requests neutral. Names are uppercase; Dizzy is not supported.
+
+Voice definitions are in `src/emotion_voice.cpp`; no new audio assets or models
+are required. Run `tests/run_emotions.ps1` for synthesis, HTTP-handler and
+dashboard checks. Hardware listening and face timing still need an on-device
+audition; desktop tests do not establish acoustic quality or LCD behavior.
 The Zumo RGB controls can set all six LEDs or one LED, choose a color and
 brightness, and turn the selection off. They work while driving remains locked.
 The dashboard shows when the Zumo acknowledges the LED command.
@@ -92,20 +114,21 @@ The six-command MultiNet integration is described in [VOICE_ACTIONS.md](VOICE_AC
 including installation, the revised model partitions, and dashboard Stop behavior.
 
 Wake listening starts automatically and stays on during camera streaming,
-recording, playback, and the wake chime. Wake and vision inference share a lock
-and buffered audio. Vision briefly yields during the five-second MultiNet
-command window. Routine speech clips suppress wake detection to avoid
+recording and playback. Wake and vision inference share a lock
+and buffered audio. Vision briefly yields during the six-second MultiNet
+command window. Digit's answering voice and routine cues suppress wake detection to avoid
 self-triggering; the dashboard Stop button remains available throughout.
 
-Saying **Digit** queues a 400 ms rising chime through the ReSpeaker speaker and
+Saying **Digit** queues the 690 ms Curious robot voice through the ReSpeaker speaker and
 a `WAKE` command over the existing UART. The Zumo shows a happy expression and
 a blue/cyan/purple sweep followed by a soft pulse. After 2.2 seconds it restores
 each LED's previous color/brightness and the face returns to idle. Reactions
-have a 2.6-second cooldown; microphone capture and inference continue during
-that cooldown. Manual LED/face controls override the effect. The reaction does
-not arm motors or enable following. With voice turning disabled (the boot default),
+have a 2.6-second cooldown; microphone capture continues throughout. MultiNet
+waits for the answering voice to finish plus a 120 ms echo tail before accepting
+command audio. A stuck prompt is cancelled after 2.5 seconds. Manual LED/face controls override the effect. The reaction does
+not arm motors or enable following. With voice turning disabled,
 it does not move the robot. A busy/moving/calibrating
-Zumo skips its reaction while the XIAO can still chime.
+Zumo skips its reaction while the XIAO can still answer.
 
 The dashboard shows listening/error status, the last detection's
 age and score, and the Zumo acknowledgement. **Test wake reaction** (or
@@ -118,7 +141,8 @@ The exact existing `wake_word_digit/digit.tflite` and manifest are embedded in
 the application, using ESP-IDF TensorFlow Lite Micro plus the pinned speech
 frontend from the earlier listener. I2S runs full duplex at 16 kHz with GPIO43
 as input and GPIO44 as output. A single audio task feeds microphone samples to
-both recording and a bounded wake queue; a chime mixes into speaker playback.
+both recording and a bounded wake queue. The answering voice replaces speaker
+playback when a wake is detected; microphone capture continues.
 Queued audio is discarded across Stop, command windows, routine speech, and
 overflow, then the streaming model and frontend reset. The flash layout now
 includes separate pedestrian and MultiNet model partitions.
@@ -132,14 +156,14 @@ Bench acceptance after both boards are updated:
 
 1. Leave driving locked. Confirm model allocation, full-duplex audio, and
    listening in serial/dashboard, then use **Test wake reaction**. Physically
-   check all six LEDs, the happy transition, audible chime, and restoration.
+   check all six LEDs, the happy transition, audible robot voice, and restoration.
 2. Say Digit repeatedly with pauses, then try other words and background speech.
    Adjust model sensitivity only after measuring misses and false detections.
 3. Enable person detection and check wake responsiveness and dropped-frame
    counters. Say Digit: vision must briefly yield while MultiNet listens.
    Repeat while streaming video and check actual recognition performance.
 4. Say Digit during recording, replay, and the speaker test. Confirm microphone
-   capture continues and the chime overlays playback. Verify the chime does not
+   capture continues and the answering voice replaces playback. Verify the voice does not
    trigger repeated reactions on the actual speaker/microphone arrangement.
 5. Override the LEDs/face during an effect, disconnect the Zumo, and reconnect.
    Check acknowledgement/error reporting and that manual choices persist.
@@ -149,13 +173,17 @@ display output, full-duplex signal quality, or wake accuracy on the device.
 
 ## Turn once toward the speaker
 
-Voice turning starts **off** after every XIAO restart. Mount the circular array
+Voice turning defaults **on**. Front/left direction calibration and an explicit
+on/off choice are saved in XIAO nonvolatile storage. With no saved direction
+setup, turning waits for calibration; it also requires floor readiness, updated
+Zumo turn support, and a fresh stable bearing. Reset direction setup clears the
+mounting calibration but keeps the on/off preference. Mount the circular array
 rigidly to Digit so it rotates with the chassis. A microphone sitting separately
 on a desk cannot supply a robot-relative heading for this implementation.
 
 1. Upload the active XIAO ESP-IDF application and copy the five Zumo files listed
    above. This does not require reinstalling the Zumo's MicroPython firmware.
-2. With turning off, vision off, and Digit stationary, check **Turn toward my
+2. With vision off and Digit stationary, check **Turn toward my
    voice** in the dashboard. Speak from different sides and confirm the displayed
    array angle changes. Unsupported/busy direction commands report an error;
    they must never be interpreted as a valid zero-degree heading.
@@ -165,16 +193,17 @@ on a desk cannot supply a robot-relative heading for this implementation.
    must be fresh and stable. This calibrates mounting offset and angle sign.
 4. Speak from front, left, right, and behind. Check the displayed relative
    directions before enabling motion. Redo setup after remounting the array.
-5. Place Digit on a clear, level floor, calibrate the floor, then **Enable voice
-   turning**. Start with a small left or right angle and say “Digit”. Check the
+5. Place Digit on a clear, level floor and calibrate the floor. Voice turning is
+   already enabled unless you switched it off; use **Enable voice turning** if needed. Start with a small left or right angle and say “Digit”. Check the
    physical rotation with STOP/Button C available, then test other headings.
 6. During a turn, verify STOP, manual driving, disabling voice turning, starting
    vision, and a UART disconnect each stop it. Button C/edge/gyro faults lock
    motion until floor recalibration. Verify no spontaneous retry or turn loop.
 
-At wake detection, the XIAO freezes a recent speech bearing **before** the chime.
+At wake detection, the XIAO freezes a recent speech bearing **before** the answering voice.
 The Zumo takes stationary gyro-bias samples, turns to that relative heading,
-and stops within an 8-degree band. The face, LEDs, and chime start after its
+and stops within a 3-degree band for small turns (up to 30 degrees), or 8 degrees
+for larger turns. The face, LEDs, and answering voice start after its
 completion reply. Unavailable or uncertain direction, missing gyro support,
 or an unarmed/busy robot falls back to the ordinary stationary wake reaction.
 An interrupted or failed turn does not play a delayed completion reaction.
@@ -254,3 +283,46 @@ by Git because the image contains device configuration.
   person, losing the person, dashboard STOP, and button C. Then calibrate on
   safe floor and try low-speed open-space turning. The first physical turning
   test is for the user to run.
+
+## Hello voice and ramped wiggle
+
+MultiNet **Say hello** and the dashboard **Say hello** use the same sequence:
+one continuous left/right/center gyro wiggle with happy eyes and robot chirps
+timed to the motion. After stationary gyro preparation, the Zumo draws the
+complete happy pose before the tracks start and sends `OK WIGGLE_START`;
+the XIAO starts the Happy voice on that event. The pose stays visible while
+LCD updates yield to motor control. `OK WIGGLE_CENTER` triggers the soft Neutral
+chirp during the return to center. Completion restores neutral eyes and cancels
+remaining audio; there is no separate face or sound replay afterward.
+STOP ALL, manual takeover, link loss, and safety faults cancel the
+sequence. Delayed audio or motion cannot resume it.
+
+The dashboard **Acceleration** slider applies to driving and wake turns.
+It sends `POST /api/zumo/acceleration?value=500..6000`; the
+selected value lasts until XIAO reboot (default 6000). Each turn snapshots it,
+so an in-progress turn is not changed by a later slider update. Turns use the
+Zumo's existing ramp and fixed braking rate. Nonzero turn targets are 2400–3200
+to address the reported motor dead zone below 2000; actual ramp output still
+passes through lower values when starting and stopping. This is an initial
+hardware tuning choice, not a measured universal torque threshold.
+
+Hello uses `WIGGLE`: one stationary gyro preparation, targets near 15 degrees
+left and right of the original heading, then a return to that heading. Swing
+targets are full 6000, with a dedicated 30000 units/second acceleration and
+braking profile through the same ramp engine (200 ms from zero to full target).
+Reversals pass through zero without an intermediate settling pause. Gyro rate
+and actual motor effort predict braking before each endpoint; small final
+centering corrections use 3200. It settles only at center and has a 4500 ms
+absolute deadline. These gesture settings do not change the driving slider
+or ordinary braking. Full target speed is not necessarily reached in each
+short swing. Physical amplitude and timing still require a robot test.
+
+Copy both `voice_turn.py` and `uart_control.py` to the Zumo and restart it.
+The XIAO requires `LOOKRAMP=1` before wake turns, plus `WIGGLE=2` for synchronized hello,
+preventing an older Zumo controller from silently using its old turn speeds. Slow ramps
+receive additional bounded startup time; stall checks use actual motor effort.
+Desktop tests cover the reported motor dead zone, continuous wiggle and centering,
+acceleration settings, face-before-motion ordering, phase-triggered audio,
+cancellation, saved direction settings, and command
+listening after playback. Physical heading, torque, sound, and display timing
+must still be checked on the robot.

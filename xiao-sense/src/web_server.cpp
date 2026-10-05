@@ -7,6 +7,7 @@
 
 #include "app_config.h"
 #include "audio_engine.h"
+#include "emotion_voice.h"
 #include "camera_service.h"
 #include "person_follow.h"
 #include "vision_service.h"
@@ -58,6 +59,7 @@ const char kIndexHtml[] PROGMEM = R"HTML(
     .drive-pad{display:grid;grid-template-columns:repeat(3,minmax(0,110px));gap:8px;justify-content:center;touch-action:none;user-select:none}
     .drive-pad button{min-height:64px;touch-action:none}.drive-pad .forward{grid-column:2}.drive-pad .left{grid-column:1}.drive-pad .stop{grid-column:2}.drive-pad .right{grid-column:3}.drive-pad .back{grid-column:2}
     .zumo-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px}.zumo-actions button{flex:1 1 120px}
+    .face-previews{display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:10px;margin:16px 0}.face-previews button{text-align:left;padding:16px;min-height:85px}.face-previews small{display:block;color:#b7cbd3;font-weight:400;margin-top:6px}.face-options{display:flex;align-items:center;flex-wrap:wrap;gap:18px}.face-options label{display:flex;align-items:center;gap:8px}.face-options input{accent-color:var(--cyan);width:18px;height:18px}#faceMessage{margin-top:12px;color:var(--muted)}
     .speed{display:flex;align-items:center;gap:12px;margin:14px 0}.speed input{flex:1;min-width:0;accent-color:var(--cyan)}.speed b{min-width:48px;text-align:right}.acceleration-hint{font-size:13px}
     .led-controls{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-top:16px;padding:14px;background:#0a151a;border-radius:14px}.led-controls label{display:flex;align-items:center;gap:8px}.led-controls select,.led-controls input[type=color]{background:#233740;color:#fff;border:1px solid #35515d;border-radius:9px;padding:5px}.led-controls input[type=range]{width:110px;accent-color:var(--cyan)}.led-controls button{padding:10px 16px}
     #message{min-height:24px;padding:0 18px 18px;color:var(--muted)}#message.error{color:var(--red)}
@@ -83,7 +85,7 @@ const char kIndexHtml[] PROGMEM = R"HTML(
       </div>
       <label class="speed" for="driveSpeed">Drive speed <input id="driveSpeed" type="range" min="500" max="6000" step="100" value="4000"><b id="driveSpeedValue">4000</b></label>
       <label class="speed" for="driveAcceleration">Acceleration <input id="driveAcceleration" type="range" min="500" max="6000" step="100" value="6000" aria-describedby="accelerationHint"><b id="driveAccelerationValue">6000</b></label>
-      <p class="acceleration-hint" id="accelerationHint">Speed units per second. Lower is gentler; higher reaches drive speed sooner. Normal stops use a fixed deceleration rate.</p>
+      <p class="acceleration-hint" id="accelerationHint">Applies to driving and voice turns. Lower is gentler; higher reaches speed sooner. Say hello uses its own quick, ramped wiggle. Normal stops use a fixed deceleration rate.</p>
       <div class="zumo-actions"><button id="zumoCalibrate">Calibrate floor</button></div>
       <div id="zumoMessage" role="status">Connecting to Zumo...</div>
     </aside>
@@ -111,7 +113,7 @@ const char kIndexHtml[] PROGMEM = R"HTML(
     </div>
     <div class="zumo">
       <h2>Digit wake word</h2>
-      <p>Say “Digit”, wait for the chime, then give a command within six seconds. Person detection briefly yields while listening for a command.</p>
+      <p>Say “Digit”, wait for his answering voice, then give a command within six seconds. Person detection briefly yields while listening for a command.</p>
       <p><strong id="wakeState">Starting...</strong> <span id="wakeLast"></span></p>
       <p id="wakeResult"></p>
       <button id="wakeTest" onclick="action('/api/wake/test')" disabled>Test wake reaction</button>
@@ -124,9 +126,9 @@ const char kIndexHtml[] PROGMEM = R"HTML(
         <button id="voiceToggle" onclick="voiceAction(voiceEnabled?'off':'on')" disabled>Enable voice turning</button>
         <button onclick="voiceAction('reset')">Reset direction setup</button>
       </div>
-      <p id="voiceMessage">Turning starts off after every XIAO restart. Calibrate the floor before enabling it. Setup does not move the tracks.</p>
+      <p id="voiceMessage">Voice turning starts on by default. Direction setup and your on/off choice are saved. Calibrate the floor before movement; direction setup does not move the tracks.</p>
       <p id="voiceResult"></p>
-      <p>Once enabled, “Digit” requests one turn, then the lights, face and chime. If the direction is unclear, Digit only reacts. The reaction test above never turns the tracks.</p>
+      <p>Once enabled, “Digit” requests one turn, then the lights, face and answering voice. If the direction is unclear, Digit only reacts. The reaction test above never turns the tracks.</p>
     </div>
     <div id="message">Waiting for device status...</div>
     <div class="zumo">
@@ -142,17 +144,22 @@ const char kIndexHtml[] PROGMEM = R"HTML(
     </div>
     <div class="zumo" id="followPanel">Person turning: <strong id="followState">Off</strong><p>Tracks rotate in place toward the largest person box. Stops when centered or the person is lost.</p></div>
     <div class="zumo">
-      <h2>Digit face</h2><p>Choose an expression while stopped. Sleeping stays on until you choose another face.</p>
-      <div class="zumo-actions" id="faceButtons">
-        <button data-face="NEUTRAL" disabled>Neutral / wake up</button>
-        <button data-face="HAPPY" disabled>Happy</button><button data-face="SAD" disabled>Sad</button>
-        <button data-face="MAD" disabled>Mad</button><button data-face="SERIOUS" disabled>Serious</button>
-        <button data-face="CURIOUS" disabled>Curious</button><button data-face="SURPRISED" disabled>Surprised</button>
-        <button data-face="SLEEPING" disabled>Sleeping</button><button data-face="CONFUSED" disabled>Confused</button>
-        <button data-face="SLEEPY" disabled>Sleepy</button><button data-face="EXCITED" disabled>Excited</button>
-        <button data-face="CRYING" disabled>Crying</button><button data-face="LOVE" disabled>Love / heart eyes</button>
+      <h2 id="facePreviewTitle">Digit face &amp; voice</h2><p>Tap an emotion to preview Digit's eyes and voice while stopped. Each phrase plays once through his speaker. Try another to replace it.</p>
+      <div class="face-options">
+        <label><input id="faceVoice" type="checkbox" checked>Play voice with face</label>
+        <button class="danger" id="faceStop" onclick="stopFacePreview()">Stop preview / wake up</button>
       </div>
-      <div id="faceMessage" role="status">Expressions are available when Digit is connected and stopped.</div>
+      <div class="face-previews" id="faceButtons">
+        <button data-face="NEUTRAL" disabled>Neutral<small>Soft acknowledgment</small></button>
+        <button data-face="HAPPY" disabled>Happy<small>Two rising chirps</small></button><button data-face="SAD" disabled>Sad<small>A gentle falling sigh</small></button>
+        <button data-face="MAD" disabled>Mad<small>Two low grumbles</small></button><button data-face="SERIOUS" disabled>Serious<small>One firm note</small></button>
+        <button data-face="CURIOUS" disabled>Curious<small>A questioning whistle</small></button><button data-face="SURPRISED" disabled>Surprised<small>A quick startled chirp</small></button>
+        <button data-face="SLEEPING" disabled>Sleeping<small>A soft settling hum</small></button><button data-face="CONFUSED" disabled>Confused<small>An uncertain wobble</small></button>
+        <button data-face="SLEEPY" disabled>Sleepy<small>A slow electronic yawn</small></button><button data-face="EXCITED" disabled>Excited<small>A bubbling rising trill</small></button>
+        <button data-face="CRYING" disabled>Crying<small>Three wavering sighs</small></button><button data-face="LOVE" disabled>Love<small>A warm two-note coo</small></button>
+      </div>
+      <p>Use Speaker volume above to adjust loudness. Sleeping keeps the eyes closed until another face is chosen; its sound does not loop.</p>
+      <div id="faceMessage" role="status">Connect Digit and stop movement to preview. Floor calibration is not required.</div>
       <div class="led-controls">
         <strong>RGB LEDs</strong>
         <label for="ledTarget">LED <select id="ledTarget"><option value="ALL">All six</option><option value="0">1</option><option value="1">2</option><option value="2">3</option><option value="3">4</option><option value="4">5</option><option value="5">6</option></select></label>
@@ -170,15 +177,38 @@ let heldDirection=null,driveTimer=null,driveInFlight=false,zumoReady=false,camer
 let voiceEnabled=false,voicePending=false,batteryEnabled=false,batteryPending=false,batteryNotice='';
 let controlGeneration=0,routinePending=false,stopPending=false,hardStopPending=false,stopRequests=0,actionActive=false;
 const routineButtons=[...document.querySelectorAll('[data-routine]')];
-async function refreshActions(){try{const response=await fetch('/api/actions',{cache:'no-store'});if(!response.ok)throw Error('Action status unavailable');const s=await response.json();controlGeneration=Math.max(controlGeneration,s.generation);actionActive=s.active;$('routineState').textContent=s.action+' · '+s.phase;$('commandState').textContent=s.listening?'Listening for your command…':s.voice_ready?(s.voice_result==='No command recognized'?'No command heard. Say Digit and try again.':(s.voice_result==='Audio queue overflow'||s.voice_result==='Audio interrupted')?'Listening interrupted. Say Digit and try again.':s.voice_result==='Recognized'?'Heard: '+(({1:'Say hello',7:'Stop'}[s.last_command])||'command'):'Say Digit, then a command'):s.voice_error||'Voice commands unavailable';for(const b of routineButtons)b.disabled=!s.drive_ready||routinePending||stopPending;}catch(error){$('commandState').textContent=error.message;for(const b of routineButtons)b.disabled=true}}
-async function startRoutine(id){if(id!==1||routinePending||stopPending||!controlGeneration)return;routinePending=true;try{const response=await fetch('/api/actions?command='+id+'&generation='+controlGeneration,{method:'POST'});const s=await response.json();if(!response.ok)throw Error(s.message);controlGeneration=Math.max(controlGeneration,s.generation);$('routineMessage').textContent=s.message}catch(error){$('routineMessage').textContent=error.message}finally{routinePending=false;await refreshActions()}}
+async function refreshActions(){try{const response=await fetch('/api/actions',{cache:'no-store'});if(!response.ok)throw Error('Action status unavailable');const s=await response.json();controlGeneration=Math.max(controlGeneration,s.generation);actionActive=s.active;$('routineState').textContent=s.action+' · '+s.phase;$('commandState').textContent=s.listening?(s.voice_result==='Wake voice'?'Digit is answering…':'Listening for your command…'):s.voice_ready?(s.voice_result==='No command recognized'?'No command heard. Say Digit and try again.':(s.voice_result==='Audio queue overflow'||s.voice_result==='Audio interrupted')?'Listening interrupted. Say Digit and try again.':s.voice_result==='Recognized'?'Heard: '+(({1:'Say hello',7:'Stop'}[s.last_command])||'command'):'Say Digit, then a command'):s.voice_error||'Voice commands unavailable';for(const b of routineButtons)b.disabled=!s.drive_ready||routinePending||stopPending;}catch(error){$('commandState').textContent=error.message;for(const b of routineButtons)b.disabled=true}}
+async function startRoutine(id){if(id!==1||routinePending||stopPending||!controlGeneration)return;routinePending=true;try{const response=await fetch('/api/actions?command='+id+'&generation='+controlGeneration+'&acceleration='+Number($('driveAcceleration').value),{method:'POST'});const s=await response.json();if(!response.ok)throw Error(s.message);controlGeneration=Math.max(controlGeneration,s.generation);$('routineMessage').textContent=s.message}catch(error){$('routineMessage').textContent=error.message}finally{routinePending=false;await refreshActions()}}
 async function voiceAction(value){if(voicePending)return;voicePending=true;try{const response=await fetch('/api/voice/setup?action='+value,{method:'POST'});const data=await response.json();if(!response.ok)throw Error(data.message);$('voiceMessage').textContent=data.message}catch(error){$('voiceMessage').textContent=error.message}finally{voicePending=false;await refreshVoice()}}
-async function refreshVoice(){try{const response=await fetch('/api/voice/status',{cache:'no-store'});if(!response.ok)throw Error('Unavailable');const s=await response.json();voiceEnabled=s.enabled;$('voiceState').textContent=s.turning?'Turning toward saved voice direction':s.paused?'Paused for vision':s.error||(!s.available?'Direction unavailable':!s.front_set?'Set the front direction':!s.calibrated?'Now set Digit’s left side':s.enabled?'Voice turning enabled':'Direction ready · turning off');$('voiceAngle').textContent=s.stable?` · ${Math.round(s.degrees)}° at array`+(s.calibrated?` · ${Math.round(Math.abs(s.relative))}° ${s.relative>=0?'left':'right'}`:''):' · waiting for clear speech';const setup=s.stable&&!s.paused&&!s.turning&&!voicePending;$('voiceFront').disabled=!setup;$('voiceLeft').disabled=!setup||!s.front_set;$('voiceToggle').textContent=s.enabled?'Disable voice turning':'Enable voice turning';$('voiceToggle').disabled=voicePending||(!s.enabled&&(!s.calibrated||!s.available||!s.drive_ready||!s.gyro_ready||s.paused));$('voiceResult').textContent=s.result==='NONE'?'':s.result==='DONE'?'Last turn completed':`Last turn: ${s.result}`;if(!s.gyro_ready)$('voiceResult').textContent+=' · Zumo turn support unavailable; check updated files and gyro'}catch(error){$('voiceState').textContent='Direction unavailable';$('voiceFront').disabled=$('voiceLeft').disabled=$('voiceToggle').disabled=true}}
+async function refreshVoice(){try{const response=await fetch('/api/voice/status',{cache:'no-store'});if(!response.ok)throw Error('Unavailable');const s=await response.json();voiceEnabled=s.enabled;$('voiceState').textContent=s.turning?'Turning toward saved voice direction':s.paused?'Paused for vision':s.error||(!s.available?'Direction unavailable':!s.front_set?'Set the front direction':!s.calibrated?'Now set Digit’s left side':s.enabled?(!s.gyro_ready?'Voice turning on · update Zumo turn files':!s.drive_ready?'Voice turning on · calibrate the floor':'Voice turning enabled'):'Direction ready · turning off');$('voiceAngle').textContent=s.stable?` · ${Math.round(s.degrees)}° at array`+(s.calibrated?` · ${Math.round(Math.abs(s.relative))}° ${s.relative>=0?'left':'right'}`:''):' · waiting for clear speech';const setup=s.stable&&!s.paused&&!s.turning&&!voicePending;$('voiceFront').disabled=!setup;$('voiceLeft').disabled=!setup||!s.front_set;$('voiceToggle').textContent=s.enabled?'Disable voice turning':'Enable voice turning';$('voiceToggle').disabled=voicePending;$('voiceResult').textContent=s.result==='NONE'?'':s.result==='DONE'?'Last turn completed':`Last turn: ${s.result}`;if(!s.gyro_ready)$('voiceResult').textContent+=' · Check Zumo connection, updated turn files, and gyro'}catch(error){$('voiceState').textContent='Direction unavailable';$('voiceFront').disabled=$('voiceLeft').disabled=$('voiceToggle').disabled=true}}
 const driveButtons=[...document.querySelectorAll('[data-drive]')];
 const faceButtons=[...document.querySelectorAll('[data-face]')];
+let accelerationDirty=false,accelerationSending=false;
+async function saveAcceleration(){
+  accelerationDirty=true;if(accelerationSending)return;accelerationSending=true;
+  try{while(accelerationDirty){accelerationDirty=false;await postZumo('/api/zumo/acceleration?value='+Number($('driveAcceleration').value));}$('zumoMessage').textContent='Acceleration saved for driving and voice turns';}
+  catch(error){$('zumoMessage').textContent=error.message;}
+  finally{accelerationSending=false;}
+}
+let facePending=false,faceStopping=false,faceAvailable=false,faceAudioReady=false,faceRequest=0;
+function updateFaceControls(){for(const button of faceButtons)button.disabled=!faceAvailable||facePending||faceStopping||stopPending||!controlGeneration||($('faceVoice').checked&&!faceAudioReady);$('faceStop').disabled=faceStopping||stopPending;$('faceVoice').disabled=facePending||faceStopping;}
+async function previewFace(name){
+  if(facePending||faceStopping||stopPending||!faceAvailable||!controlGeneration||($('faceVoice').checked&&!faceAudioReady))return;
+  const request=++faceRequest;facePending=true;updateFaceControls();
+  try{const data=await postZumo('/api/zumo/face?value='+encodeURIComponent(name)+'&voice='+($('faceVoice').checked?'1':'0')+'&generation='+controlGeneration);if(Number.isFinite(data.generation))controlGeneration=Math.max(controlGeneration,data.generation);if(request===faceRequest)$('faceMessage').textContent=name.charAt(0)+name.slice(1).toLowerCase()+': '+data.message;}
+  catch(error){if(request===faceRequest)$('faceMessage').textContent=error.message;}
+  finally{facePending=false;await refreshActions();updateFaceControls();}
+}
+async function stopFacePreview(){
+  if(faceStopping)return;++faceRequest;faceStopping=true;updateFaceControls();
+  try{const data=await postZumo('/api/zumo/face/stop');if(Number.isFinite(data.generation))controlGeneration=Math.max(controlGeneration,data.generation);$('faceMessage').textContent=data.message;}
+  catch(error){$('faceMessage').textContent=error.message;}
+  finally{faceStopping=false;await refreshActions();await refreshZumo();updateFaceControls();}
+}
+$('faceVoice').addEventListener('change',updateFaceControls);
 function speeds(direction){const value=Number($('driveSpeed').value);return {forward:[value,value],back:[-value,-value],left:[-value,value],right:[value,-value]}[direction]||[0,0]}
 async function postZumo(path){const response=await fetch(path,{method:'POST',cache:'no-store'});const data=await response.json();if(!response.ok)throw Error(data.message||'Zumo command failed');return data}
-async function stopZumo(hard=false){hard=hard===true;heldDirection=null;if(driveTimer!==null){clearInterval(driveTimer);driveTimer=null}if((stopPending&&!hard)||hardStopPending)return;stopPending=true;if(hard)hardStopPending=true;++stopRequests;try{const s=await postZumo('/api/zumo/stop'+(hard?'?hard=1':''));controlGeneration=Math.max(controlGeneration,s.generation);$('routineMessage').textContent=s.message}catch(error){$('zumoMessage').textContent=error.message}finally{--stopRequests;stopPending=stopRequests>0;if(hard)hardStopPending=false;await refreshActions()}}
+async function stopZumo(hard=false){hard=hard===true;++faceRequest;heldDirection=null;if(driveTimer!==null){clearInterval(driveTimer);driveTimer=null}if((stopPending&&!hard)||hardStopPending)return;stopPending=true;if(hard)hardStopPending=true;++stopRequests;try{const s=await postZumo('/api/zumo/stop'+(hard?'?hard=1':''));controlGeneration=Math.max(controlGeneration,s.generation);$('routineMessage').textContent=s.message}catch(error){$('zumoMessage').textContent=error.message}finally{--stopRequests;stopPending=stopRequests>0;if(hard)hardStopPending=false;await refreshActions()}}
 async function sendDrive(){if(!heldDirection||driveInFlight||stopPending)return;driveInFlight=true;const [left,right]=speeds(heldDirection);try{const s=await postZumo(`/api/zumo/drive?left=${left}&right=${right}&acceleration=${Number($('driveAcceleration').value)}&generation=${controlGeneration}`);if(s.generation)controlGeneration=Math.max(controlGeneration,s.generation)}catch(error){$('zumoMessage').textContent=error.message;await stopZumo(true)}finally{driveInFlight=false}}
 function beginDrive(direction,event){if(!zumoReady||heldDirection||stopPending||!controlGeneration)return;event.preventDefault();event.currentTarget.setPointerCapture(event.pointerId);heldDirection=direction;sendDrive();driveTimer=setInterval(sendDrive,100)}
 for(const button of driveButtons){button.addEventListener('pointerdown',event=>beginDrive(button.dataset.drive,event));button.addEventListener('pointerup',stopZumo);button.addEventListener('pointercancel',()=>stopZumo(true));button.addEventListener('lostpointercapture',()=>{if(heldDirection)stopZumo(true)})}
@@ -190,14 +220,15 @@ async function toggleFollow(){if(followPending)return;followPending=true;$('foll
 async function followHeartbeat(){if(!followEnabled||followHeartbeatPending||document.hidden)return;followHeartbeatPending=true;try{const response=await fetch('/api/follow/heartbeat',{method:'POST',cache:'no-store'});if(!response.ok)followEnabled=false}catch(error){followEnabled=false}finally{followHeartbeatPending=false}}
 setInterval(followHeartbeat,500);
 $('driveSpeed').addEventListener('input',event=>{$('driveSpeedValue').textContent=event.target.value});
-$('driveAcceleration').addEventListener('input',event=>{$('driveAccelerationValue').textContent=event.target.value});
+$('driveAcceleration').addEventListener('input',event=>{$('driveAccelerationValue').textContent=event.target.value;accelerationDirty=true;});
+$('driveAcceleration').addEventListener('change',saveAcceleration);
 $('zumoCalibrate').addEventListener('click',async()=>{try{await postZumo('/api/zumo/calibrate');$('zumoMessage').textContent='Calibrating floor...'}catch(error){$('zumoMessage').textContent=error.message}});
-for(const button of faceButtons){button.addEventListener('click',async()=>{try{await postZumo('/api/zumo/face?value='+encodeURIComponent(button.dataset.face));$('faceMessage').textContent=button.textContent+' requested'}catch(error){$('faceMessage').textContent=error.message}})}
+for(const button of faceButtons){button.addEventListener('click',()=>previewFace(button.dataset.face))}
 function ledPath(off){const hex=off?'000000':$('ledColor').value.slice(1);const target=$('ledTarget').value;const brightness=off?0:$('ledBrightness').value;return `/api/zumo/led?target=${target}&r=${parseInt(hex.slice(0,2),16)}&g=${parseInt(hex.slice(2,4),16)}&b=${parseInt(hex.slice(4,6),16)}&brightness=${brightness}`}
 $('ledBrightness').addEventListener('input',event=>{$('ledBrightnessValue').textContent=event.target.value});
 for(const [id,off] of [['ledApply',false],['ledOff',true]]){$(id).addEventListener('click',async()=>{try{await postZumo(ledPath(off));$('ledResult').textContent='Sending...'}catch(error){$('ledResult').textContent=error.message}})}
 window.addEventListener('blur',()=>stopZumo(true));document.addEventListener('visibilitychange',()=>{if(document.hidden)stopZumo(true)});
-async function refreshZumo(){try{const response=await fetch('/api/zumo/status',{cache:'no-store'});if(!response.ok)throw Error('Status unavailable');const s=await response.json();zumoReady=s.connected&&s.ready&&!s.calibrating;$('zumoLink').textContent=s.connected?'Zumo: connected':'Zumo: disconnected';$('zumoReady').textContent=s.calibrating?'Drive: calibrating':zumoReady?'Drive: ready':'Drive: locked';$('zumoBattery').textContent=s.battery_mv>=0?`Battery: ${(s.battery_mv/1000).toFixed(2)} V`:'Battery: --';$('zumoFault').textContent='Fault: '+s.fault;$('ledApply').disabled=$('ledOff').disabled=!s.connected;$('ledResult').textContent=s.connected?(s.led_result==='APPLIED'?'Zumo acknowledged':s.led_result==='SENDING'?'Sending...':s.led_result==='NONE'?'--':s.led_result):'Disconnected';for(const button of driveButtons)button.disabled=!zumoReady||followEnabled;$('zumoCalibrate').disabled=!s.connected||s.calibrating||!!heldDirection||followEnabled;for(const button of faceButtons)button.disabled=!s.connected||s.calibrating||!!s.left||!!s.right||!!heldDirection||followEnabled;if(!zumoReady&&heldDirection)stopZumo(true);let message='Waiting for Zumo connection...';if(s.connected){if(s.calibrating)message='Calibrating floor...';else if(s.fault!=='NONE')message='Zumo fault: '+s.fault;else if(s.last_error!=='NONE')message=s.last_error;else if(zumoReady)message='Hold a direction to drive.';else message='Connected. Calibrate floor on a safe surface to enable driving.'}$('zumoMessage').textContent=message}catch(error){zumoReady=false;for(const button of [...driveButtons,...faceButtons])button.disabled=true;$('ledApply').disabled=$('ledOff').disabled=true;$('ledResult').textContent='Unavailable';$('zumoLink').textContent='Zumo: unavailable';$('zumoMessage').textContent='Zumo status unavailable';if(heldDirection)stopZumo(true)}}
+async function refreshZumo(){try{const response=await fetch('/api/zumo/status',{cache:'no-store'});if(!response.ok)throw Error('Status unavailable');const s=await response.json();zumoReady=s.connected&&s.ready&&!s.calibrating;if(Number.isFinite(s.acceleration)&&!accelerationDirty&&!accelerationSending){$('driveAcceleration').value=s.acceleration;$('driveAccelerationValue').textContent=s.acceleration;}$('zumoLink').textContent=s.connected?'Zumo: connected':'Zumo: disconnected';$('zumoReady').textContent=s.calibrating?'Drive: calibrating':zumoReady?'Drive: ready':'Drive: locked';$('zumoBattery').textContent=s.battery_mv>=0?`Battery: ${(s.battery_mv/1000).toFixed(2)} V`:'Battery: --';$('zumoFault').textContent='Fault: '+s.fault;$('ledApply').disabled=$('ledOff').disabled=!s.connected;$('ledResult').textContent=s.connected?(s.led_result==='APPLIED'?'Zumo acknowledged':s.led_result==='SENDING'?'Sending...':s.led_result==='NONE'?'--':s.led_result):'Disconnected';for(const button of driveButtons)button.disabled=!zumoReady||followEnabled;$('zumoCalibrate').disabled=!s.connected||s.calibrating||!!heldDirection||followEnabled;faceAvailable=s.connected&&!s.calibrating&&!s.left&&!s.right&&!s.look_active&&!s.manual_driving&&!heldDirection&&!followEnabled&&!actionActive;updateFaceControls();if(!zumoReady&&heldDirection)stopZumo(true);let message='Waiting for Zumo connection...';if(s.connected){if(s.calibrating)message='Calibrating floor...';else if(s.fault!=='NONE')message='Zumo fault: '+s.fault;else if(s.last_error!=='NONE')message=s.last_error;else if(zumoReady)message='Hold a direction to drive.';else message='Connected. Calibrate floor on a safe surface to enable driving.'}$('zumoMessage').textContent=message}catch(error){zumoReady=false;faceAvailable=false;updateFaceControls();for(const button of [...driveButtons,...faceButtons])button.disabled=true;$('ledApply').disabled=$('ledOff').disabled=true;$('ledResult').textContent='Unavailable';$('zumoLink').textContent='Zumo: unavailable';$('zumoMessage').textContent='Zumo status unavailable';if(heldDirection)stopZumo(true)}}
 refreshZumo();setInterval(refreshZumo,500);
 async function action(path){
   try{const response=await fetch(path,{method:'POST'});const data=await response.json();$('message').textContent=data.message||'';$('message').className=response.ok?'':'error';await refresh();}
@@ -234,11 +265,11 @@ async function refresh(){
     $('memory').textContent=formatBytes(s.psram_free);$('network').textContent=s.wifi_ip;
     if(volumeTimer===null&&!volumeSending){$('volume').value=s.speaker_volume;$('volumeValue').textContent=s.speaker_volume;}
     $('volume').disabled=!s.audio_available;
-    $('record').disabled=s.audio_state!=='READY';$('stopRecord').disabled=s.audio_state!=='RECORDING';
-    $('replay').disabled=s.audio_state!=='READY'||s.captured_ms===0;$('tone').disabled=s.audio_state!=='READY';$('stopPlay').disabled=s.audio_state!=='PLAYING'&&!s.wake_chime;
+    faceAudioReady=s.audio_available&&s.audio_state==='READY';updateFaceControls();$('record').disabled=s.audio_state!=='READY'||!!s.cue_playing;$('stopRecord').disabled=s.audio_state!=='RECORDING';
+    $('replay').disabled=s.audio_state!=='READY'||s.captured_ms===0||!!s.cue_playing;$('tone').disabled=s.audio_state!=='READY'||!!s.cue_playing;$('stopPlay').disabled=s.audio_state!=='PLAYING'&&!s.wake_chime&&!s.cue_playing;
     if(s.audio_error){$('message').textContent=s.audio_error;$('message').className='error';}
     else if($('message').className==='error'||$('message').textContent==='Waiting for device status...'){$('message').textContent='Ready';$('message').className='';}
-  }catch(error){$('wakeState').textContent='Unavailable';$('wakeTest').disabled=true;cameraReady=false;$('takePhoto').disabled=true;$('visionToggle').disabled=true;$('batteryToggle').disabled=true;$('batteryState').textContent='Object test unavailable · device offline';$('personBadge').hidden=true;$('state').textContent='OFFLINE';$('message').textContent='Device status unavailable';$('message').className='error';}
+  }catch(error){faceAudioReady=false;updateFaceControls();$('wakeState').textContent='Unavailable';$('wakeTest').disabled=true;cameraReady=false;$('takePhoto').disabled=true;$('visionToggle').disabled=true;$('batteryToggle').disabled=true;$('batteryState').textContent='Object test unavailable · device offline';$('personBadge').hidden=true;$('state').textContent='OFFLINE';$('message').textContent='Device status unavailable';$('message').className='error';}
   finally{refreshPending=false;}
 }
 refresh();setInterval(refresh,250);
@@ -317,7 +348,7 @@ esp_err_t statusHandler(httpd_req_t* request) {
       "{\"audio_state\":\"%s\",\"audio_available\":%s,"
       "\"audio_error\":\"%s\",\"captured_ms\":%lu,"
       "\"recording_elapsed_ms\":%lu,\"max_recording_ms\":%lu,"
-      "\"speaker_volume\":%u,"
+      "\"speaker_volume\":%u,\"cue_playing\":%s,"
       "\"camera_ready\":%s,\"camera_error\":\"%s\","
       "\"vision_ready\":%s,\"vision_enabled\":%s,\"person_detected\":%s,"
       "\"person_score_percent\":%u,\"vision_age_ms\":%lu,"
@@ -330,7 +361,7 @@ esp_err_t statusHandler(httpd_req_t* request) {
       audioError, static_cast<unsigned long>(audio.capturedMilliseconds),
       static_cast<unsigned long>(audio.recordingElapsedMilliseconds),
       static_cast<unsigned long>(app_config::kMaximumRecordingSeconds * 1000UL),
-      audio.speakerVolumePercent,
+      audio.speakerVolumePercent, audio.cuePlaying ? "true" : "false",
       camera_service::ready() ? "true" : "false", cameraError,
       vision.ready ? "true" : "false",
       vision.enabled ? "true" : "false",
@@ -403,6 +434,17 @@ bool currentGeneration(httpd_req_t* request) {
     if (parsed > UINT32_MAX) return false;
   }
   return parsed == robot_actions::generation();
+}
+bool readAcceleration(httpd_req_t* request, const char* key, int& value) {
+  char text[8];
+  if (!queryValue(request, key, text, sizeof(text)) || !text[0]) return false;
+  value = 0;
+  for (const char* p = text; *p; ++p) {
+    if (*p < '0' || *p > '9') return false;
+    value = value * 10 + *p - '0';
+    if (value > 6000) return false;
+  }
+  return value >= 500;
 }
 esp_err_t controlReply(httpd_req_t* request, const char* message) {
   char escaped[240], json[320];
@@ -522,6 +564,15 @@ esp_err_t actionsHandler(httpd_req_t* request) {
     httpd_resp_set_status(request,"409 Conflict");
     return controlReply(request,"This request was cancelled by Stop or another action. Try again.");
   }
+  char accelerationText[8];
+  int acceleration = 6000;
+  if (value[0] == '1' && queryValue(request, "acceleration", accelerationText, sizeof(accelerationText))) {
+    if (!readAcceleration(request, "acceleration", acceleration)) {
+      httpd_resp_set_status(request, "400 Bad Request");
+      return controlReply(request, "Use acceleration from 500 to 6000");
+    }
+    zumo_link::setAcceleration(acceleration);
+  }
   if (!robot_actions::start(static_cast<robot_actions::Command>(value[0]-'0'),robot_actions::generation())) {
     httpd_resp_set_status(request,"409 Conflict");
     return controlReply(request,robot_actions::snapshot().phase);
@@ -558,7 +609,7 @@ esp_err_t voiceStatusHandler(httpd_req_t* request) {
            direction.readResource, direction.readCommand, direction.readStatus, error,
            zumo.lookActive ? "true" : "false", result,
            zumo.connected && zumo.ready && !zumo.calibrating ? "true" : "false",
-           zumo.connected && zumo.voiceCapable ? "true" : "false",
+           zumo.connected && zumo.voiceCapable && zumo.rampedLookCapable ? "true" : "false",
            wake.pausedForVision ? "true" : "false");
   return sendJson(request, json);
 }
@@ -574,12 +625,12 @@ esp_err_t voiceSetupHandler(httpd_req_t* request) {
   }
   if (!voice_direction::configure(action)) {
     httpd_resp_set_status(request, "409 Conflict");
-    return sendJson(request, "{\"message\":\"Keep Digit still with vision off. Setup needs fresh clear speech from the chosen side; left must be about 90 degrees from front. Enabling also needs floor calibration and the updated Zumo gyro controller.\"}");
+    return sendJson(request, "{\"message\":\"Keep Digit still with vision off. Setup needs fresh clear speech from the chosen side; left must be about 90 degrees from front. Turning waits for floor calibration and the updated Zumo gyro controller.\"}");
   }
   const char* message = !strcmp(action, "front") ? "Front saved. Now speak from Digit's left and press Set left." :
-      !strcmp(action, "left") ? "Left saved. Verify the displayed directions, calibrate the floor, then enable voice turning." :
-      !strcmp(action, "on") ? "Voice turning enabled. Say Digit for one turn toward your voice." :
-      !strcmp(action, "off") ? "Voice turning disabled. Wake reactions still work." : "Direction setup reset; turning is off.";
+      !strcmp(action, "left") ? "Left saved. Voice turning follows your saved on/off choice once the floor is calibrated." :
+      !strcmp(action, "on") ? "Voice turning enabled and saved. Calibrate direction and floor; then say Digit for one turn." :
+      !strcmp(action, "off") ? "Voice turning disabled and saved. Wake reactions still work." : "Direction setup reset; turning waits for fresh front and left calibration.";
   char json[240];
   snprintf(json, sizeof(json), "{\"message\":\"%s\"}", message);
   return sendJson(request, json);
@@ -686,16 +737,19 @@ esp_err_t zumoStatusHandler(httpd_req_t* request) {
   char fault[48], lastError[64];
   escapeJsonString(zumo.fault, fault, sizeof(fault));
   escapeJsonString(zumo.lastError, lastError, sizeof(lastError));
-  char json[420];
+  char json[640];
   snprintf(json, sizeof(json),
            "{\"connected\":%s,\"ready\":%s,\"calibrating\":%s,"
            "\"edge\":%s,\"left\":%d,\"right\":%d,\"battery_mv\":%d,"
-           "\"reply_age_ms\":%lu,\"fault\":\"%s\",\"last_error\":\"%s\",\"led_result\":\"%s\",\"brake_supported\":%s}",
+           "\"reply_age_ms\":%lu,\"fault\":\"%s\",\"last_error\":\"%s\",\"led_result\":\"%s\",\"brake_supported\":%s,"
+           "\"look_active\":%s,\"manual_driving\":%s,\"turn_ramp_supported\":%s,\"wiggle_supported\":%s,\"acceleration\":%d}",
            zumo.connected ? "true" : "false", zumo.ready ? "true" : "false",
            zumo.calibrating ? "true" : "false", zumo.edge ? "true" : "false",
            zumo.left, zumo.right, zumo.batteryMillivolts,
            static_cast<unsigned long>(zumo.replyAgeMs), fault, lastError,
-           zumo.ledResult, zumo.brakeCapable ? "true" : "false");
+           zumo.ledResult, zumo.brakeCapable ? "true" : "false",
+           zumo.lookActive ? "true" : "false", zumo.manualDriving ? "true" : "false",
+           zumo.rampedLookCapable ? "true" : "false", zumo.wiggleCapable ? "true" : "false", zumo_link::acceleration());
   return sendJson(request, json);
 }
 
@@ -725,6 +779,16 @@ esp_err_t zumoDriveHandler(httpd_req_t* request) {
     return sendJson(request, "{\"message\":\"Zumo is disconnected or not calibrated\"}");
   }
   return controlReply(request, "Drive command accepted");
+}
+
+esp_err_t accelerationHandler(httpd_req_t* request) {
+  robot_actions::Guard control;
+  int value;
+  if (!readAcceleration(request, "value", value) || !zumo_link::setAcceleration(value)) {
+    httpd_resp_set_status(request, "400 Bad Request");
+    return controlReply(request, "Use acceleration from 500 to 6000");
+  }
+  return controlReply(request, "Acceleration saved for driving and voice turns");
 }
 
 esp_err_t zumoStopHandler(httpd_req_t* request) {
@@ -763,13 +827,52 @@ esp_err_t zumoFaceHandler(httpd_req_t* request) {
     httpd_resp_set_status(request, "400 Bad Request");
     return sendJson(request, "{\"message\":\"Unknown face expression\"}");
   }
+  char voiceText[8];
+  const bool preview = queryValue(request, "voice", voiceText, sizeof(voiceText));
+  if (preview && strcmp(voiceText, "0") && strcmp(voiceText, "1")) {
+    httpd_resp_set_status(request, "400 Bad Request");
+    return controlReply(request, "Use voice=0 or voice=1");
+  }
+  if (preview && !currentGeneration(request)) {
+    httpd_resp_set_status(request, "409 Conflict");
+    return controlReply(request, "Preview cancelled by Stop or another action. Try again.");
+  }
+  const bool withVoice = preview && !strcmp(voiceText, "1");
+  const auto audio = audioEngine.snapshot();
+  const auto z = zumo_link::snapshot();
+  if (preview && (!z.connected || z.calibrating || z.left || z.right || z.manualDriving ||
+                  z.lookActive || person_follow::snapshot().enabled || robot_actions::snapshot().active)) {
+    httpd_resp_set_status(request, "409 Conflict");
+    return controlReply(request, "Stop movement and actions before previewing an emotion");
+  }
+  if (withVoice && (!audio.available || audio.state != AudioState::Ready)) {
+    httpd_resp_set_status(request, "409 Conflict");
+    return controlReply(request, "Voice needs the speaker ready. Stop recording or playback, or turn off Play voice with face.");
+  }
   person_follow::setEnabled(false);
   robot_actions::manualOverride();
   if (!zumo_link::face(value)) {
     httpd_resp_set_status(request, "409 Conflict");
-    return sendJson(request, "{\"message\":\"Zumo must be connected and stopped\"}");
+    return controlReply(request, "Zumo must be connected and stopped");
   }
-  return sendJson(request, "{\"message\":\"Face command accepted\"}");
+  if (preview) {
+    if (audio.cuePlaying) audioEngine.cancelOutput();
+    zumo_link::poll(); // Dispatch the face before the voice's short lead-in.
+    if (withVoice && !audioEngine.playCue(emotionCueForFace(value))) {
+      httpd_resp_set_status(request, "409 Conflict");
+      return controlReply(request, "Face requested, but the speaker became unavailable");
+    }
+  }
+  return controlReply(request, withVoice ? "Face requested; voice playing once" : "Face command accepted");
+}
+
+esp_err_t zumoFaceStopHandler(httpd_req_t* request) {
+  robot_actions::Guard control;
+  robot_actions::stop("Expression preview stopped");
+  zumo_link::poll();
+  const bool reset = zumo_link::face("NEUTRAL");
+  return controlReply(request, reset ? "Preview stopped; neutral face requested" :
+                                     "Audio stopped; neutral face needs Digit connected and stopped");
 }
 
 bool parseLedValue(httpd_req_t* request, const char* key, int maximum,
@@ -996,7 +1099,7 @@ bool begin() {
   httpd_config_t controlConfig = HTTPD_DEFAULT_CONFIG();
   controlConfig.server_port = app_config::kControlServerPort;
   controlConfig.ctrl_port = 32768;
-  controlConfig.max_uri_handlers = 32;
+  controlConfig.max_uri_handlers = 36;
   controlConfig.stack_size = 8192;
   controlConfig.lru_purge_enable = true;
 
@@ -1037,12 +1140,16 @@ bool begin() {
                   zumoStatusHandler) &&
       registerUri(controlServer, "/api/zumo/drive", HTTP_POST,
                   zumoDriveHandler) &&
+      registerUri(controlServer, "/api/zumo/acceleration", HTTP_POST,
+                  accelerationHandler) &&
       registerUri(controlServer, "/api/zumo/stop", HTTP_POST,
                   zumoStopHandler) &&
       registerUri(controlServer, "/api/zumo/calibrate", HTTP_POST,
                   zumoCalibrateHandler) &&
       registerUri(controlServer, "/api/zumo/face", HTTP_POST,
                   zumoFaceHandler) &&
+      registerUri(controlServer, "/api/zumo/face/stop", HTTP_POST,
+                  zumoFaceStopHandler) &&
       registerUri(controlServer, "/api/zumo/led", HTTP_POST,
                   zumoLedHandler);
   if (!controlRoutesReady) {
