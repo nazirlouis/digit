@@ -34,6 +34,15 @@ struct AudioStatus {
   char error[96];
 };
 
+// Cached read-only XVF audit, collected at startup outside audio capture.
+// Unknown or unsupported values stay -1 rather than being treated as enabled.
+struct AudioProcessingStatus {
+  int leftCategory = -1, leftSource = -1, rightCategory = -1, rightSource = -1;
+  int packedLeft = -1, packedRight = -1, asrOutput = -1, aecBypass = -1;
+  int agc = -1, limiter = -1, echoSuppression = -1, nonlinearEcho = -1;
+  float asrGain = -1, agcGain = -1, stationaryNoiseFloor = -1, speechNoiseFloor = -1;
+};
+
 class AudioEngine {
  public:
   bool begin();
@@ -50,6 +59,7 @@ class AudioEngine {
   bool setSpeakerVolume(uint8_t percent);
 
   AudioStatus snapshot();
+  const AudioProcessingStatus& processing() const { return processing_; }
   void logDiagnostics();
   // Shared I2C access with bounded retries of status 0x40. Bool is transport
   // success; payload changes only on status 0. Never call from audio capture.
@@ -80,6 +90,7 @@ class AudioEngine {
   bool writeXvfGpo(uint8_t pin, uint8_t value);
   bool readXvfGpoValues(uint8_t values[5], uint8_t* responseStatus);
   bool readXvfVersion();
+  void readProcessingStatus();
   void logCodecDiagnostics();
   bool writeCodecRegister(uint8_t reg, uint8_t value);
   bool probeI2cAddress(uint8_t address);
@@ -89,6 +100,7 @@ class AudioEngine {
   void updateCapturedBytes(size_t bytes);
 
   SemaphoreHandle_t mutex_ = nullptr;
+  AudioProcessingStatus processing_{};
   QueueHandle_t commandQueue_ = nullptr;
   EventGroupHandle_t stopEvents_ = nullptr;
   TaskHandle_t task_ = nullptr;

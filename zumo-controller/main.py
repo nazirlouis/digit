@@ -46,7 +46,8 @@ try:
         gyro, getattr(digit_config, "VOICE_TURN_MOTOR_SIGN", 1), tof,
     )
     print("UART CONTROL: GP28 TX, GP29 RX, 115200 8N1")
-    print("UART CONTROL: motors stopped; send CALIBRATE on safe floor")
+    print("UART CONTROL: motors stopped; startup floor calibration")
+    controller.start_calibration()
     while True:
         controller.tick()
         time.sleep_ms(5)

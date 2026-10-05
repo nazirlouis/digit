@@ -1,6 +1,6 @@
 # Name, Type, SubType, Offset, Size
 nvs, data, nvs, 0x9000, 0x6000
 phy_init, data, phy, 0xf000, 0x1000
-factory, app, factory, 0x10000, 0x460000
-pedestrian_det, data, 0x40, 0x470000, 0xe5000
-model, data, spiffs, 0x555000, 0x2ab000
+factory, app, factory, 0x10000, 0x36b000
+pedestrian_det, data, 0x40, 0x37b000, 0xe5000
+model, data, spiffs, 0x460000, 0x3a0000

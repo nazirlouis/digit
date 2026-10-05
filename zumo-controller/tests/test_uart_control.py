@@ -170,6 +170,69 @@ class UARTControlTests(unittest.TestCase):
         self.assertEqual(self.face.actions, ["happy"])
         self.assertEqual(self.command("6 FACE SAD"), "6 OK FACE")
 
+    def test_startup_calibration_is_stationary_and_accepts_late_xiao(self):
+        self.control.start_calibration()
+        self.assertEqual(self.uart.outgoing[-1], "0 OK CALIBRATING")
+        self.assertEqual(self.command("2 DRIVE 1000 1000"), "2 ERR NOT_READY")
+        self.advance(580)
+        self.assertFalse(self.control.ready)
+        self.assertEqual(self.motors.speeds, (0, 0))
+        self.advance(20)
+        self.assertTrue(self.control.ready)
+        self.assertEqual(self.uart.outgoing[-1], "0 EVENT READY")
+        self.advance(60000)
+        self.assertIn("READY=1 FAULT=NONE", self.command("3 STATUS"))
+        self.assertEqual(self.motors.speeds, (0, 0))
+
+    def test_startup_calibration_failure_stays_locked_until_manual_retry(self):
+        for failure in ("baseline", "sensor"):
+            with self.subTest(failure=failure):
+                self.setUp()
+                self.sensors.values = [900] * 5 if failure == "baseline" else [100] * 5
+                self.sensors.fail = failure == "sensor"
+                self.control.start_calibration()
+                self.advance(600)
+                self.assertEqual(self.control.fault, "CAL_FAILED" if failure == "baseline" else "SENSOR")
+                self.sensors.values = [100] * 5
+                self.sensors.fail = False
+                self.advance(1000)
+                self.assertFalse(self.control.ready)
+                self.assertIsNone(self.control.calibration)
+                self.assertEqual(self.command("2 DRIVE 500 500"), "2 ERR NOT_READY")
+                self.assertEqual(self.motors.speeds, (0, 0))
+                self.calibrate()
+
+    def test_stop_cancels_startup_calibration_without_automatic_retry(self):
+        self.control.start_calibration()
+        self.advance(200)
+        self.assertEqual(self.command("2 STOP"), "2 OK STOPPED")
+        self.advance(1000)
+        self.assertFalse(self.control.ready)
+        self.assertIsNone(self.control.calibration)
+        self.assertEqual(self.command("3 DRIVE 500 500"), "3 ERR NOT_READY")
+        self.assertEqual(self.motors.speeds, (0, 0))
+        self.calibrate()
+
+    def test_button_c_blocks_or_cancels_startup_calibration(self):
+        for held_at_start in (True, False):
+            with self.subTest(held_at_start=held_at_start):
+                self.setUp()
+                self.c.pressed = held_at_start
+                self.control.start_calibration()
+                if held_at_start:
+                    self.assertEqual(self.uart.outgoing[-1], "0 ERR BUTTON_C")
+                else:
+                    self.advance(200)
+                    self.c.event = True
+                    self.control.tick()
+                    self.assertEqual(self.control.fault, "BUTTON_C")
+                self.c.pressed = False
+                self.advance(1000)
+                self.assertFalse(self.control.ready)
+                self.assertIsNone(self.control.calibration)
+                self.assertEqual(self.motors.speeds, (0, 0))
+                self.calibrate()
+
     def test_led_control_works_without_arming_motors(self):
         self.assertEqual(self.command("2 LED ALL 12 34 56 5"), "2 OK LED")
         self.assertEqual(self.leds.colors, [[12, 34, 56]] * 6)

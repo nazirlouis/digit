@@ -63,6 +63,10 @@ extern "C" void app_main() {
     nvs = nvs_flash_init();
   }
   ESP_ERROR_CHECK(nvs);
+  // Keep normal model/work buffers in PSRAM rather than spending the scarce
+  // internal heap on allocations up to IDF's default 16 KB threshold. DMA,
+  // task stacks and explicitly internal allocations keep their required caps.
+  heap_caps_malloc_extmem_enable(1024);
   ESP_LOGI(kTag, "Digit ESP-IDF 5.5 starting; PSRAM=%u bytes", (unsigned)ESP.getFreePsram());
   wake_word::begin();
   speech_commands::begin();

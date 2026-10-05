@@ -1,10 +1,20 @@
 set(cue_asm "${CMAKE_CURRENT_BINARY_DIR}/audio_cues.S")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+             "${CMAKE_CURRENT_LIST_DIR}/idf_component.yml")
 if(NOT CMAKE_BUILD_EARLY_EXPANSION)
+execute_process(COMMAND "${PYTHON}" "${CMAKE_CURRENT_LIST_DIR}/../tools/pack_cues.py"
+                "${CMAKE_CURRENT_LIST_DIR}/../audio_cues" "${CMAKE_CURRENT_BINARY_DIR}/packed_cues"
+                RESULT_VARIABLE cue_pack_result)
+if(NOT cue_pack_result EQUAL 0)
+    message(FATAL_ERROR "Audio cue packing failed")
+endif()
 file(WRITE "${cue_asm}" ".section .rodata\n")
 foreach(cue hello following lost countdown photo clear obstacle person explore)
-    file(APPEND "${cue_asm}" ".balign 4\n.global cue_${cue}_start\ncue_${cue}_start:\n.incbin \"${CMAKE_CURRENT_LIST_DIR}/../audio_cues/${cue}.wav\"\n.global cue_${cue}_end\ncue_${cue}_end:\n")
+    file(APPEND "${cue_asm}" ".balign 4\n.global cue_${cue}_start\ncue_${cue}_start:\n.incbin \"${CMAKE_CURRENT_BINARY_DIR}/packed_cues/${cue}.adpcm\"\n.global cue_${cue}_end\ncue_${cue}_end:\n")
     list(APPEND cue_files "${CMAKE_CURRENT_LIST_DIR}/../audio_cues/${cue}.wav")
 endforeach()
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+             "${CMAKE_CURRENT_LIST_DIR}/../tools/pack_cues.py" ${cue_files})
 endif()
 idf_component_register(SRCS "main.cpp" "idf_adapters.cpp" "audio_engine.cpp"
                             "audio_cues.cpp" "${cue_asm}"

@@ -12,11 +12,10 @@ CueSamples cueSamples(AudioCue cue) {
   const unsigned index = static_cast<unsigned>(cue);
   if (!index || index >= sizeof(waves)/sizeof(waves[0])) return {nullptr,0};
   const auto& w = waves[index];
-  for (const uint8_t* p = w.begin + 12; p + 8 <= w.end;) {
-    uint32_t bytes; memcpy(&bytes, p + 4, 4);
-    if (bytes > static_cast<size_t>(w.end - p - 8)) break;
-    if (!memcmp(p, "data", 4)) return {reinterpret_cast<const int16_t*>(p + 8), bytes/2};
-    p += 8 + bytes + (bytes & 1);
-  }
-  return {nullptr,0};
+  if (w.end - w.begin < 4) return {nullptr,0};
+  uint32_t count; memcpy(&count, w.begin, 4);
+  const size_t full = count / 64, remaining = count % 64;
+  const size_t bytes = full * 36 + (remaining ? 4 + remaining / 2 : 0);
+  if (bytes > static_cast<size_t>(w.end - w.begin - 4)) return {nullptr,0};
+  return {w.begin + 4, count};
 }

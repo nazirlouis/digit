@@ -19,6 +19,19 @@ if ($cancelStart -lt 0 -or $cancelEnd -lt 0 -or $snapshotStart -lt 0 -or $snapsh
 }
 $wakeControl = $wakeSource.Substring($cancelStart, $cancelEnd - $cancelStart) + $wakeSource.Substring($snapshotStart, $snapshotEnd - $snapshotStart)
 Set-Content -LiteralPath (Join-Path $output 'wake_control.inc') -Value $wakeControl
+$speechSource = Get-Content -Raw -LiteralPath (Join-Path $project 'src\speech_commands.cpp')
+$publishStart = $speechSource.IndexOf('void publishResult(')
+$publishEnd = $speechSource.IndexOf('void detectTask(', $publishStart)
+$listenStart = $speechSource.IndexOf('void listen(')
+$submitStart = $speechSource.IndexOf('void submit(', $listenStart)
+$pollStart = $speechSource.IndexOf('void poll()', $submitStart)
+$controlEnd = $speechSource.IndexOf('} // namespace speech_commands', $pollStart)
+if (@($publishStart,$publishEnd,$listenStart,$submitStart,$pollStart,$controlEnd) | Where-Object { $_ -lt 0 }) {
+    throw 'Speech control functions not found'
+}
+Set-Content -LiteralPath (Join-Path $output 'speech_result.inc') -Value $speechSource.Substring($publishStart, $publishEnd - $publishStart)
+$speechControl = $speechSource.Substring($listenStart, $submitStart - $listenStart) + $speechSource.Substring($pollStart, $controlEnd - $pollStart)
+Set-Content -LiteralPath (Join-Path $output 'speech_control.inc') -Value $speechControl
 foreach ($header in 'Arduino.h','audio_engine.h','camera_service.h','person_follow.h','photo_store.h','speech_commands.h','vision_service.h','wake_word.h','zumo_link.h','freertos/semphr.h') {
     Set-Content -LiteralPath (Join-Path $output $header) -Value '#include "action_mocks.h"'
 }
@@ -38,6 +51,20 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Controller test compilation failed' }
     & .\test_robot_actions.exe
     if ($LASTEXITCODE -ne 0) { throw 'Controller tests failed' }
+    & cl /nologo /std:c++17 /EHsc /W4 "/I$project\src" /D_CRT_SECURE_NO_WARNINGS /Fe:test_speech_pipeline.exe /Fo:test_speech_pipeline.obj "$PSScriptRoot\test_speech_pipeline.cpp"
+    if ($LASTEXITCODE -ne 0) { throw 'Speech pipeline test compilation failed' }
+    & .\test_speech_pipeline.exe
+    if ($LASTEXITCODE -ne 0) { throw 'Speech pipeline tests failed' }
+    & cl /nologo /std:c++17 /EHsc /W4 "/I$project\src" "/I$output" /D_CRT_SECURE_NO_WARNINGS /Fe:test_speech_results.exe /Fo:test_speech_results.obj "$PSScriptRoot\test_speech_results.cpp"
+    if ($LASTEXITCODE -ne 0) { throw 'Speech result test compilation failed' }
+    & .\test_speech_results.exe
+    if ($LASTEXITCODE -ne 0) { throw 'Speech result tests failed' }
+    & "C:\Users\nazir\.platformio\penv\Scripts\python.exe" "$PSScriptRoot\test_cue_pack.py"
+    if ($LASTEXITCODE -ne 0) { throw 'Cue packing tests failed' }
+    & cl /nologo /std:c++17 /EHsc /W4 "/I$project\src" /Fe:test_cue_adpcm.exe /Fo:test_cue_adpcm.obj "$PSScriptRoot\test_cue_adpcm.cpp"
+    if ($LASTEXITCODE -ne 0) { throw 'Cue playback test compilation failed' }
+    & .\test_cue_adpcm.exe (Join-Path $project 'test-artifacts\cues')
+    if ($LASTEXITCODE -ne 0) { throw 'Cue playback tests failed' }
     & cl /nologo /std:c++17 /EHsc /W4 "/I$linkOutput" /D_CRT_SECURE_NO_WARNINGS "/Fe:$linkOutput\test_zumo_link.exe" "/Fo:$linkOutput\test_zumo_link.obj" "$linkOutput\test_zumo_link.cpp"
     if ($LASTEXITCODE -ne 0) { throw 'UART bridge test compilation failed' }
     & "$linkOutput\test_zumo_link.exe"

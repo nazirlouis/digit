@@ -180,7 +180,10 @@ class UARTController:
                 confirmed = True
         return confirmed
 
-    def _start_calibration(self, command_id, now):
+    def start_calibration(self, command_id="0", now=None):
+        """Begin stationary floor sampling; ID 0 is used at startup."""
+        if now is None:
+            now = self.clock.ticks_ms()
         if self.calibration is not None:
             self._send(command_id + " ERR BUSY")
             return
@@ -331,7 +334,7 @@ class UARTController:
             self.face.play("neutral")
             self._send(command_id + (" OK BRAKING" if self.braking else " OK STOPPED"))
         elif command == "CALIBRATE" and not args:
-            self._start_calibration(command_id, now)
+            self.start_calibration(command_id, now)
         elif command == "LOOK" and len(args) == 1:
             argument = args[0]
             if not (argument[1:] if argument.startswith("-") else argument).isdigit():

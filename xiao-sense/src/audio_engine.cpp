@@ -4,11 +4,13 @@
 #include <driver/pcnt.h>
 #include <esp_heap_caps.h>
 #include <math.h>
+#include <cmath>
 #include <cstring>
 
 #include "app_config.h"
 #include "wake_word.h"
 #include "speech_commands.h"
+#include "cue_adpcm.h"
 #include "xvf_read.h"
 
 namespace {
@@ -165,6 +167,7 @@ bool AudioEngine::begin() {
     return false;
   }
   // Keep both directions clocked for the lifetime of the audio task.
+  readProcessingStatus();
 
   xSemaphoreTake(mutex_, portMAX_DELAY);
   initialized_ = true;
@@ -383,14 +386,16 @@ void AudioEngine::logDiagnostics() {
   const AudioStatus status = snapshot();
   Serial.printf(
       "[%10lu] Health: audio=%s available=%s captured=%u bytes/%lu ms "
-      "I2S=%s freePSRAM=%u freeHeap=%u error=\"%s\"\n",
+      "I2S=%s freePSRAM=%u freeHeap=%u internal=%u largestInternal=%u error=\"%s\"\n",
       static_cast<unsigned long>(millis()), stateName(status.state),
       status.available ? "yes" : "no",
       static_cast<unsigned int>(status.capturedBytes),
       static_cast<unsigned long>(status.capturedMilliseconds),
       i2sRunning_ ? "running" : "stopped",
       static_cast<unsigned int>(ESP.getFreePsram()),
-      static_cast<unsigned int>(ESP.getFreeHeap()), status.error);
+      static_cast<unsigned int>(ESP.getFreeHeap()),
+      (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+      (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT), status.error);
 }
 
 const char* AudioEngine::stateName(AudioState state) {
@@ -455,6 +460,7 @@ void AudioEngine::taskLoop() {
   uint32_t emptyReads = 0;
   AudioCue activeCue = AudioCue::None;
   CueSamples cue = {nullptr, 0};
+  CueDecoder cueDecoder;
   size_t cueFrame = 0;
   uint32_t cueGeneration = 0;
   for (;;) {
@@ -462,7 +468,7 @@ void AudioEngine::taskLoop() {
     if (cueGeneration != outputGeneration_) { activeCue = AudioCue::None; cueGeneration = outputGeneration_; }
     if (pendingCue_ != AudioCue::None) {
       activeCue = pendingCue_; pendingCue_ = AudioCue::None;
-      cue = cueSamples(activeCue); cueFrame = 0;
+      cue = cueSamples(activeCue); cueFrame = 0; cueDecoder = CueDecoder{};
     }
     xSemaphoreGive(mutex_);
     Command command;
@@ -546,7 +552,7 @@ void AudioEngine::taskLoop() {
         if (cueFrame < noteFrames * 12) cueSample = toneSample(cueFrame % noteFrames, noteFrames, notes[cueFrame / noteFrames]);
         if (++cueFrame >= noteFrames * 12) activeCue = AudioCue::None;
       } else if (activeCue != AudioCue::None) {
-        if (cueFrame < cue.count) cueSample = static_cast<int32_t>(cue.data[cueFrame++]) * 16384;
+        if (cueFrame < cue.count) cueSample = static_cast<int32_t>(cueDecoder.next(cue.data, cueFrame++)) * 16384;
         if (cueFrame >= cue.count) activeCue = AudioCue::None;
       }
       int32_t tone = 0;
@@ -833,6 +839,43 @@ bool AudioEngine::readXvfVersion() {
   return status == kXvfSuccessStatus;
 }
 
+void AudioEngine::readProcessingStatus() {
+  auto read = [&](uint8_t resource, uint8_t command, void* payload, size_t bytes) {
+    uint8_t status = 0xFF;
+    const bool ok = readXvfCommand(resource, command, static_cast<uint8_t*>(payload), bytes, &status) && status == 0;
+    if (!ok) Serial.printf("ReSpeaker audit: resource=%u command=%u unavailable (status=%u)\n", resource, command, status);
+    return ok;
+  };
+  auto integer = [&](uint8_t resource, uint8_t command, int& output) {
+    int32_t value;
+    if (read(resource, command, &value, sizeof(value))) output = value;
+  };
+  auto scalar = [&](uint8_t resource, uint8_t command, float& output) {
+    float value;
+    if (read(resource, command, &value, sizeof(value)) && std::isfinite(value)) output = value;
+  };
+  uint8_t pair[2];
+  if (read(35, 15, pair, 2)) { processing_.leftCategory = pair[0]; processing_.leftSource = pair[1]; }
+  if (read(35, 19, pair, 2)) { processing_.rightCategory = pair[0]; processing_.rightSource = pair[1]; }
+  if (read(35, 13, pair, 2)) { processing_.packedLeft = pair[0]; processing_.packedRight = pair[1]; }
+  integer(33, 35, processing_.asrOutput);
+  scalar(33, 36, processing_.asrGain);
+  uint8_t bypass;
+  if (read(33, 70, &bypass, 1)) processing_.aecBypass = bypass;
+  integer(17, 10, processing_.agc);
+  scalar(17, 13, processing_.agcGain);
+  integer(17, 19, processing_.limiter);
+  scalar(17, 21, processing_.stationaryNoiseFloor);
+  scalar(17, 22, processing_.speechNoiseFloor);
+  integer(17, 23, processing_.echoSuppression);
+  integer(17, 27, processing_.nonlinearEcho);
+  Serial.printf("ReSpeaker audit: L=%d/%d R=%d/%d packed=%d/%d ASR=%d gain=%.3f AEC_bypass=%d PP_AGC=%d gain=%.3f NS=%.3f/%.3f echo=%d/%d limiter=%d\n",
+                processing_.leftCategory, processing_.leftSource, processing_.rightCategory, processing_.rightSource,
+                processing_.packedLeft, processing_.packedRight, processing_.asrOutput, processing_.asrGain,
+                processing_.aecBypass, processing_.agc, processing_.agcGain, processing_.stationaryNoiseFloor,
+                processing_.speechNoiseFloor, processing_.echoSuppression, processing_.nonlinearEcho, processing_.limiter);
+}
+
 void AudioEngine::logCodecDiagnostics() {
   BusLock lock;
   // Page 0 is selected by our volume initialization. Read the live clock,
@@ -912,6 +955,7 @@ void AudioEngine::setError(const char* message) {
     xSemaphoreGive(mutex_);
   }
   wake_word::audioFault();
+  speech_commands::audioFault();
   Serial.printf("Audio error: %s\n", message);
 }
 

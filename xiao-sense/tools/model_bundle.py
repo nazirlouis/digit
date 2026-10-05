@@ -7,6 +7,7 @@ from pathlib import Path
 import subprocess
 import sys
 import shutil
+import re
 
 project = Path(env.subst("$PROJECT_DIR"))
 build = Path(env.subst("$BUILD_DIR"))
@@ -26,8 +27,25 @@ speech_offset, speech_size = partitions["model"]
 def pack(source, target, env):
     speech.mkdir(parents=True, exist_ok=True)
     sr = managed / "espressif__esp-sr" / "model"
-    for model in ("mn7_en", "fst"):
+    for model in ("mn6_en",):
         shutil.copytree(sr / "multinet_model" / model, speech / model, dirs_exist_ok=True)
+    for obsolete in ("mn7_en", "vadnet1_medium"):
+        stale = speech / obsolete
+        if stale.exists():
+            assert stale.resolve().is_relative_to(build.resolve()), "Model cache must stay inside the build directory"
+            shutil.rmtree(stale)
+    (speech / "fst").mkdir(exist_ok=True)
+    stale_cn = speech / "fst" / "commands_cn.txt"
+    if stale_cn.exists():
+        assert stale_cn.resolve().is_relative_to(build.resolve())
+        stale_cn.unlink()
+    phrases = re.findall(r'\{(\d+), "([^"]+)"\}',
+                         (project / "src" / "speech_phrases.h").read_text())
+    assert phrases == [("1", "SAY HELLO"), ("7", "STOP MOVING"), ("7", "STOP")], \
+        "Digit speech registry must contain Say hello and the two Stop phrases"
+    # The model's initial command list and runtime registration use one source.
+    (speech / "fst" / "commands_en.txt").write_text(
+        "".join("%s,%s\n" % phrase for phrase in phrases), encoding="utf-8")
     # Use the upstream packer without its directory-deleting movemodel wrapper.
     import importlib.util
     spec = importlib.util.spec_from_file_location("sr_pack", sr / "pack_model.py")

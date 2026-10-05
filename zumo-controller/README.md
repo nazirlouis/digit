@@ -315,8 +315,13 @@ wait delay is required.
 Save `uart_control.py`, `wake_reaction.py`, `voice_turn.py`, `digit_config.py`, and the updated `main.py` to the Zumo device root. Keep
 the existing `digit_face.py`, matching face/display files,
 and `/zumo_2040_robot` library. Reset the Zumo. Once `main.py` starts, it
-prints `UART CONTROL` and says the motors are stopped. On every reset, driving
-starts locked until calibration. Opening Thonny can interrupt the running
+prints `UART CONTROL` and automatically starts stationary floor calibration.
+Power on with Digit stationary on safe floor: the five downward sensors are
+sampled for about 600 ms, with motors stopped and driving locked until success.
+Calibration runs once per Zumo startup, even if the XIAO has not started yet.
+An unsuitable baseline, sensor fault, Button C, or Stop leaves driving locked;
+reposition Digit and use the dashboard's **Calibrate floor** button to retry.
+Later safety faults still require manual recalibration. Opening Thonny can interrupt the running
 program and leave the REPL prompt; use a power cycle with Thonny disconnected
 when checking automatic startup.
 

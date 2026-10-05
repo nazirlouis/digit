@@ -111,7 +111,7 @@ const char kIndexHtml[] PROGMEM = R"HTML(
     </div>
     <div class="zumo">
       <h2>Digit wake word</h2>
-      <p>Say “Digit”, wait for the chime, then give a command within five seconds. Person detection briefly yields while listening for a command.</p>
+      <p>Say “Digit”, wait for the chime, then give a command within six seconds. Person detection briefly yields while listening for a command.</p>
       <p><strong id="wakeState">Starting...</strong> <span id="wakeLast"></span></p>
       <p id="wakeResult"></p>
       <button id="wakeTest" onclick="action('/api/wake/test')" disabled>Test wake reaction</button>
@@ -135,17 +135,10 @@ const char kIndexHtml[] PROGMEM = R"HTML(
       <p><strong id="routineState">Idle</strong></p>
       <div class="zumo-actions">
         <button data-routine="1" onclick="startRoutine(1)">Say hello</button>
-        <button data-routine="2" onclick="startRoutine(2)">Follow me</button>
-        <button data-routine="3" onclick="startRoutine(3)">Do a dance</button>
-        <button data-routine="4" onclick="startRoutine(4)">Look around</button>
-        <button data-routine="5" onclick="startRoutine(5)">Take my picture</button>
-        <button data-routine="6" onclick="startRoutine(6)">Explore</button>
         <button class="danger" onclick="stopZumo()">STOP ALL</button>
       </div>
-      <p>Every routine requires floor calibration. Explore keeps driving and avoiding obstacles until stopped. STOP cancels movement, speech, countdowns, and pending commands.</p>
+      <p>Say hello requires floor calibration. STOP cancels movement, speech, and pending commands.</p>
       <p id="routineMessage" role="status"></p>
-      <a id="voicePhoto" hidden target="_blank">View latest voice photo</a>
-      <img id="voicePhotoPreview" hidden alt="Latest photo taken by Digit" style="max-width:100%;border-radius:12px;margin-top:12px">
     </div>
     <div class="zumo" id="followPanel">Person turning: <strong id="followState">Off</strong><p>Tracks rotate in place toward the largest person box. Stops when centered or the person is lost.</p></div>
     <div class="zumo">
@@ -175,10 +168,10 @@ const $=id=>document.getElementById(id);
 $('stream').src=`http://${location.hostname}:81/stream`;
 let heldDirection=null,driveTimer=null,driveInFlight=false,zumoReady=false,cameraReady=false,photoPending=false,visionEnabled=false,visionPending=false,followEnabled=false,followPending=false,followHeartbeatPending=false;
 let voiceEnabled=false,voicePending=false,batteryEnabled=false,batteryPending=false,batteryNotice='';
-let controlGeneration=0,routinePending=false,stopPending=false,hardStopPending=false,stopRequests=0,actionActive=false,photoRevision=0;
+let controlGeneration=0,routinePending=false,stopPending=false,hardStopPending=false,stopRequests=0,actionActive=false;
 const routineButtons=[...document.querySelectorAll('[data-routine]')];
-async function refreshActions(){try{const response=await fetch('/api/actions',{cache:'no-store'});if(!response.ok)throw Error('Action status unavailable');const s=await response.json();controlGeneration=Math.max(controlGeneration,s.generation);actionActive=s.active;$('routineState').textContent=s.action+' · '+s.phase;$('commandState').textContent=s.listening?'Listening for your command…':s.voice_ready?'Say Digit, then a command':s.voice_error||'Voice commands unavailable';for(const b of routineButtons)b.disabled=!s.drive_ready||routinePending||stopPending;if(s.photo_revision&&s.photo_revision!==photoRevision){photoRevision=s.photo_revision;const url='/api/actions/photo?v='+photoRevision;$('voicePhoto').href=url;$('voicePhoto').hidden=false;$('voicePhotoPreview').src=url;$('voicePhotoPreview').hidden=false}}catch(error){$('commandState').textContent=error.message;for(const b of routineButtons)b.disabled=true}}
-async function startRoutine(id){if(routinePending||stopPending||!controlGeneration)return;routinePending=true;try{const response=await fetch('/api/actions?command='+id+'&generation='+controlGeneration,{method:'POST'});const s=await response.json();if(!response.ok)throw Error(s.message);controlGeneration=Math.max(controlGeneration,s.generation);$('routineMessage').textContent=s.message}catch(error){$('routineMessage').textContent=error.message}finally{routinePending=false;await refreshActions()}}
+async function refreshActions(){try{const response=await fetch('/api/actions',{cache:'no-store'});if(!response.ok)throw Error('Action status unavailable');const s=await response.json();controlGeneration=Math.max(controlGeneration,s.generation);actionActive=s.active;$('routineState').textContent=s.action+' · '+s.phase;$('commandState').textContent=s.listening?'Listening for your command…':s.voice_ready?(s.voice_result==='No command recognized'?'No command heard. Say Digit and try again.':(s.voice_result==='Audio queue overflow'||s.voice_result==='Audio interrupted')?'Listening interrupted. Say Digit and try again.':s.voice_result==='Recognized'?'Heard: '+(({1:'Say hello',7:'Stop'}[s.last_command])||'command'):'Say Digit, then a command'):s.voice_error||'Voice commands unavailable';for(const b of routineButtons)b.disabled=!s.drive_ready||routinePending||stopPending;}catch(error){$('commandState').textContent=error.message;for(const b of routineButtons)b.disabled=true}}
+async function startRoutine(id){if(id!==1||routinePending||stopPending||!controlGeneration)return;routinePending=true;try{const response=await fetch('/api/actions?command='+id+'&generation='+controlGeneration,{method:'POST'});const s=await response.json();if(!response.ok)throw Error(s.message);controlGeneration=Math.max(controlGeneration,s.generation);$('routineMessage').textContent=s.message}catch(error){$('routineMessage').textContent=error.message}finally{routinePending=false;await refreshActions()}}
 async function voiceAction(value){if(voicePending)return;voicePending=true;try{const response=await fetch('/api/voice/setup?action='+value,{method:'POST'});const data=await response.json();if(!response.ok)throw Error(data.message);$('voiceMessage').textContent=data.message}catch(error){$('voiceMessage').textContent=error.message}finally{voicePending=false;await refreshVoice()}}
 async function refreshVoice(){try{const response=await fetch('/api/voice/status',{cache:'no-store'});if(!response.ok)throw Error('Unavailable');const s=await response.json();voiceEnabled=s.enabled;$('voiceState').textContent=s.turning?'Turning toward saved voice direction':s.paused?'Paused for vision':s.error||(!s.available?'Direction unavailable':!s.front_set?'Set the front direction':!s.calibrated?'Now set Digit’s left side':s.enabled?'Voice turning enabled':'Direction ready · turning off');$('voiceAngle').textContent=s.stable?` · ${Math.round(s.degrees)}° at array`+(s.calibrated?` · ${Math.round(Math.abs(s.relative))}° ${s.relative>=0?'left':'right'}`:''):' · waiting for clear speech';const setup=s.stable&&!s.paused&&!s.turning&&!voicePending;$('voiceFront').disabled=!setup;$('voiceLeft').disabled=!setup||!s.front_set;$('voiceToggle').textContent=s.enabled?'Disable voice turning':'Enable voice turning';$('voiceToggle').disabled=voicePending||(!s.enabled&&(!s.calibrated||!s.available||!s.drive_ready||!s.gyro_ready||s.paused));$('voiceResult').textContent=s.result==='NONE'?'':s.result==='DONE'?'Last turn completed':`Last turn: ${s.result}`;if(!s.gyro_ready)$('voiceResult').textContent+=' · Zumo turn support unavailable; check updated files and gyro'}catch(error){$('voiceState').textContent='Direction unavailable';$('voiceFront').disabled=$('voiceLeft').disabled=$('voiceToggle').disabled=true}}
 const driveButtons=[...document.querySelectorAll('[data-drive]')];
@@ -422,26 +415,108 @@ esp_err_t actionsStatusHandler(httpd_req_t* request) {
   const auto action = robot_actions::snapshot();
   const auto speech = speech_commands::snapshot();
   const auto z = zumo_link::snapshot();
-  char error[192], phase[192], json[900];
+  char error[192], phase[192], result[64], decoder[768], json[2200];
   escapeJsonString(speech.error,error,sizeof(error));
   escapeJsonString(action.phase,phase,sizeof(phase));
+  escapeJsonString(speech.result,result,sizeof(result));
+  escapeJsonString(speech.decoderText,decoder,sizeof(decoder));
   snprintf(json,sizeof(json),
       "{\"action\":\"%s\",\"phase\":\"%s\",\"active\":%s,\"generation\":%lu,"
       "\"voice_ready\":%s,\"listening\":%s,\"voice_error\":\"%s\",\"recognized\":%lu,"
       "\"last_command\":%d,\"score\":%.3f,\"drive_ready\":%s,\"range_valid\":%s,"
-      "\"distance_mm\":%d,\"photo_revision\":%lu}",
+      "\"distance_mm\":%d,\"photo_revision\":%lu,\"voice_result\":\"%s\","
+      "\"command_audio_ms\":%lu,\"command_chunks\":%lu,\"command_mic_peak\":%u,"
+      "\"command_inference_us\":%lu,\"candidate_command\":%d,\"candidate_score\":%.3f,"
+      "\"command_feed_chunks\":%lu,\"command_fetch_chunks\":%lu,\"command_model_peak\":%u,"
+      "\"audio_total_feeds\":%lu,\"audio_total_fetches\":%lu,"
+      "\"command_dropped_frames\":%lu,\"command_decoder_text\":\"%s\"}",
       robot_actions::name(action.command),phase,action.active?"true":"false",(unsigned long)action.generation,
       speech.ready?"true":"false",speech.listening?"true":"false",error,(unsigned long)speech.recognized,
       speech.lastCommand,speech.score,z.connected&&z.ready&&!z.calibrating&&z.actionCapable?"true":"false",
-      z.rangeValid?"true":"false",z.distanceMm,(unsigned long)photo_store::revision());
+      z.rangeValid?"true":"false",z.distanceMm,(unsigned long)photo_store::revision(),result,
+      (unsigned long)(speech.samples/16),(unsigned long)speech.chunks,speech.micPeak,
+      (unsigned long)speech.inferenceUs,speech.candidateCommand,speech.candidateScore,
+      (unsigned long)speech.feedChunks,(unsigned long)speech.fetchChunks,speech.modelPeak,
+      (unsigned long)speech.totalFeeds,
+      (unsigned long)speech.totalFetches,(unsigned long)speech.droppedFrames,decoder);
   return sendJson(request,json);
+}
+esp_err_t audioProcessingHandler(httpd_req_t* request) {
+  const auto& p = audioEngine.processing();
+  char json[800];
+  snprintf(json, sizeof(json),
+      "{\"left_category\":%d,\"left_source\":%d,\"right_category\":%d,\"right_source\":%d,"
+      "\"packed_left\":%d,\"packed_right\":%d,\"asr_output\":%d,\"asr_gain\":%.4f,\"aec_bypass\":%d,"
+      "\"post_agc\":%d,\"post_agc_gain\":%.4f,\"post_limiter\":%d,\"post_noise_floor\":%.4f,"
+      "\"post_speech_noise_floor\":%.4f,\"post_echo\":%d,\"post_nonlinear_echo\":%d}",
+      p.leftCategory,p.leftSource,p.rightCategory,p.rightSource,p.packedLeft,p.packedRight,p.asrOutput,p.asrGain,
+      p.aecBypass,p.agc,p.agcGain,p.limiter,p.stationaryNoiseFloor,p.speechNoiseFloor,p.echoSuppression,p.nonlinearEcho);
+  return sendJson(request,json);
+}
+esp_err_t commandAudioHandler(httpd_req_t* request) {
+  const auto capture = speech_commands::copyAudio();
+  if (!capture.samples) {
+    httpd_resp_set_status(request, "409 Conflict");
+    return sendJson(request, "{\"message\":\"No complete command recording available yet\"}");
+  }
+  // ESP32 is little-endian: lossless 16 kHz signed PCM from detect(), no gain.
+  uint8_t header[44]{};
+  memcpy(header, "RIFF", 4); memcpy(header + 8, "WAVEfmt ", 8); memcpy(header + 36, "data", 4);
+  const uint32_t bytes = capture.count * sizeof(int16_t);
+  const auto put32 = [&](size_t offset, uint32_t value) { memcpy(header + offset, &value, 4); };
+  const auto put16 = [&](size_t offset, uint16_t value) { memcpy(header + offset, &value, 2); };
+  put32(4, 36 + bytes); put32(16, 16); put16(20, 1); put16(22, 1);
+  put32(24, 16000); put32(28, 32000); put16(32, 2); put16(34, 16); put32(40, bytes);
+  char session[16]; snprintf(session, sizeof(session), "%lu", (unsigned long)capture.session);
+  httpd_resp_set_type(request, "audio/wav");
+  httpd_resp_set_hdr(request, "Cache-Control", "no-store");
+  httpd_resp_set_hdr(request, "X-Command-Session", session);
+  httpd_resp_set_hdr(request, "Content-Disposition", "attachment; filename=command-input.wav");
+  esp_err_t result = httpd_resp_send_chunk(request, reinterpret_cast<const char*>(header), sizeof(header));
+  const char* pcm = reinterpret_cast<const char*>(capture.samples);
+  for (size_t offset = 0; result == ESP_OK && offset < bytes; offset += 4096) {
+    result = httpd_resp_send_chunk(request, pcm + offset, min(size_t(4096), size_t(bytes) - offset));
+  }
+  free(capture.samples);
+  if (result == ESP_OK) result = httpd_resp_send_chunk(request, nullptr, 0);
+  return result;
+}
+esp_err_t commandAudioTestHandler(httpd_req_t* request) {
+  if (request->method == HTTP_POST) {
+    char gainText[4];
+    if (!queryValue(request, "gain", gainText, sizeof(gainText)) || gainText[0] < '1' || gainText[0] > '8' || gainText[1] ||
+        request->content_len <= 0 || request->content_len > 16000*7*2 || request->content_len % (512*2)) {
+      httpd_resp_set_status(request, "400 Bad Request");
+      return sendJson(request, "{\"message\":\"Send 16 kHz mono signed PCM in complete 512-sample frames, gain 1 through 8\"}");
+    }
+    auto* pcm = static_cast<int16_t*>(heap_caps_aligned_alloc(16, request->content_len, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (!pcm) return httpd_resp_send_err(request, HTTPD_500_INTERNAL_SERVER_ERROR, "No diagnostic memory");
+    size_t received = 0;
+    while (received < request->content_len) {
+      const int count = httpd_req_recv(request, reinterpret_cast<char*>(pcm) + received, request->content_len - received);
+      if (count <= 0) { free(pcm); return ESP_FAIL; }
+      received += count;
+    }
+    if (!speech_commands::testAudio(pcm, received / sizeof(int16_t), gainText[0] - '0')) {
+      free(pcm); httpd_resp_set_status(request, "409 Conflict");
+      return sendJson(request, "{\"message\":\"Decoder busy or unavailable\"}");
+    }
+    return sendJson(request, "{\"message\":\"Decoder test queued; no robot actions\"}");
+  }
+  const auto probe = speech_commands::audioTestStatus();
+  char escaped[768], json[1000];
+  escapeJsonString(probe.text, escaped, sizeof(escaped));
+  snprintf(json, sizeof(json), "{\"busy\":%s,\"complete\":%s,\"gain\":%u,\"chunks\":%lu,\"state\":%d,\"command\":%d,\"score\":%.3f,\"text\":\"%s\"}",
+           probe.busy?"true":"false", probe.complete?"true":"false", probe.gain, (unsigned long)probe.chunks,
+           probe.decoderState, probe.command, probe.score, escaped);
+  return sendJson(request, json);
 }
 esp_err_t actionsHandler(httpd_req_t* request) {
   robot_actions::Guard control;
   char value[4];
-  if (!queryValue(request,"command",value,sizeof(value)) || value[0]<'1' || value[0]>'7' || value[1]) {
+  if (!queryValue(request,"command",value,sizeof(value)) || (value[0]!='1' && value[0]!='7') || value[1]) {
     httpd_resp_set_status(request,"400 Bad Request");
-    return controlReply(request,"Choose an action from 1 through 7");
+    return controlReply(request,"Choose Say hello or Stop");
   }
   if (!currentGeneration(request)) {
     httpd_resp_set_status(request,"409 Conflict");
@@ -934,6 +1009,10 @@ bool begin() {
       registerUri(controlServer, "/", HTTP_GET, rootHandler) &&
       registerUri(controlServer, "/api/status", HTTP_GET, statusHandler) &&
       registerUri(controlServer, "/api/actions", HTTP_GET, actionsStatusHandler) &&
+      registerUri(controlServer, "/api/audio/processing", HTTP_GET, audioProcessingHandler) &&
+      registerUri(controlServer, "/api/actions/audio.wav", HTTP_GET, commandAudioHandler) &&
+      registerUri(controlServer, "/api/actions/audio/test", HTTP_POST, commandAudioTestHandler) &&
+      registerUri(controlServer, "/api/actions/audio/test", HTTP_GET, commandAudioTestHandler) &&
       registerUri(controlServer, "/api/actions", HTTP_POST, actionsHandler) &&
       registerUri(controlServer, "/api/actions/photo", HTTP_GET, photo_store::send) &&
       registerUri(controlServer, "/api/wake/test", HTTP_POST, wakeTestHandler) &&
