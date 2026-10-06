@@ -10,8 +10,8 @@ const nodes = new Map([...html.matchAll(/\bid="([^"]+)"/g)].map(m=>[m[1],{
   listeners:{},addEventListener(name,fn){this.listeners[name]=fn;},getContext:()=>({clearRect(){},strokeRect(){},fillText(){}}),
 }]));
 const routineIds = [...html.matchAll(/data-routine="(\d+)"/g)].map(m=>Number(m[1]));
-assert.deepEqual(routineIds,[1]);
-const buttons = routineIds.map(()=>({disabled:false}));
+assert.deepEqual(routineIds,[1,8,9,10,11,12,13,14]);
+const buttons = routineIds.map(id=>({disabled:false,dataset:{routine:String(id)}}));
 const driveButtons=['forward','back','left','right'].map(drive=>({dataset:{drive},listeners:{},setPointerCapture(){},addEventListener(name,fn){this.listeners[name]=fn;}}));
 const windowListeners={},documentListeners={};
 let generation=1,active=false,deferNext=false,release,offline=false,deferStop=false,releaseStop;
@@ -25,7 +25,7 @@ const context = vm.createContext({
   async fetch(url,options){
     calls.push({url,options});
     if(offline) throw Error('offline');
-    if(url==='/api/actions')return reply({generation,active,action:active?'Say hello':'Idle',phase:active?'Saying hello':'Stopped',voice_ready:true,listening:false,drive_ready:true,...voice});
+    if(url==='/api/actions')return reply({generation,active,action:active?'Say hello':'Idle',phase:active?'Saying hello':'Stopped',voice_ready:true,listening:false,drive_ready:true,identify_ready:true,person_action_ready:true,object_action_ready:true,...voice});
     if(url.startsWith('/api/zumo/stop')){if(deferStop){deferStop=false;await new Promise(resolve=>releaseStop=resolve);}generation++;active=false;return reply({generation,message:'All actions cancelled; motor stop sent'});}
     if(url.startsWith('/api/actions?')||url.startsWith('/api/zumo/drive?')){
       const requestGeneration=Number(new URL(url,'http://digit').searchParams.get('generation'));
@@ -118,8 +118,12 @@ const testTimeout=setTimeout(()=>{console.error('FAIL: dashboard test did not co
     voice=status; await context.refreshActions();
     assert.equal(nodes.get('commandState').textContent,message);
   }
+  voice={drive_ready:false,person_action_ready:false,object_action_ready:false,identify_ready:true};
+  await context.refreshActions();
+  assert.equal(buttons.find(b=>b.dataset.routine==='9').disabled,false);
+  assert.ok(buttons.filter(b=>b.dataset.routine!=='9').every(b=>b.disabled));
   offline=true;await context.refreshActions();
   assert.ok(buttons.every(b=>b.disabled));
   assert.equal(nodes.get('zumoStop').disabled,false);
-  console.log('PASS: acceleration slider and live drive updates, Say hello only, retired actions blocked, Stop during pending start and drive, offline controls');
+  console.log('PASS: all approved actions, stationary identification, acceleration, retired actions blocked, Stop during pending start and drive, offline controls');
 })().catch(error=>{console.error(error);process.exitCode=1;}).finally(()=>clearTimeout(testTimeout));

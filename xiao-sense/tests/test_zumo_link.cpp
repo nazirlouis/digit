@@ -104,6 +104,39 @@ int main() {
   assert(!zumo_link::wiggle(zumo_link::snapshot().controlGeneration));
   handleLine("1 OK READY=1 FAULT=NONE L=0 R=0 BAT=5800 EDGE=0 VOICE=1 LOOKRAMP=1 WIGGLE=1",nowMs);
   assert(!zumo_link::snapshot().wiggleCapable); // Older wiggle has no phase synchronization.
+  const char* modern="1 OK READY=1 FAULT=NONE L=0 R=0 BAT=5800 EDGE=0 VOICE=1 DIST=900 RANGE=1 AUTO=1 BRAKE=1 LOOKRAMP=1 WIGGLE=2 SCENE=1 SAFE2=1";
+  handleLine(modern,nowMs);
+  assert(zumo_link::snapshot().sceneCapable && zumo_link::snapshot().autoRampCapable);
+  assert(zumo_link::scene("HAPPY","SCREWDRIVER"));
+  assert(!zumo_link::safeDrive(2800,2800)); // Never start before LCD acknowledgement.
+  zumoUart.outgoing.clear(); zumo_link::poll();
+  assertCommand("SCENE HAPPY SCREWDRIVER","WIGGLE");
+  auto displayedId=sceneId;
+  handleLine((std::to_string(displayedId)+" OK SCENE").c_str(),nowMs);
+  assert(!strcmp(zumo_link::snapshot().sceneResult,"APPLIED"));
+  assert(zumo_link::setAcceleration(500));
+  assert(!zumo_link::safeDrive(-2800,2800) && !zumo_link::safeDrive(3201,3201));
+  assert(zumo_link::safeDrive(2800,2800)); nowMs+=100; zumoUart.outgoing.clear(); zumo_link::poll();
+  assertCommand("SAFE 2800 2800 500","DRIVE 2800 2800 500");
+  zumo_link::stop(); zumo_link::poll(); handleLine(modern,nowMs);
+  nowMs+=251; handleLine("555 OK KEEP",nowMs);
+  assert(zumo_link::snapshot().replyAgeMs==0 && zumo_link::snapshot().rangeAgeMs==251);
+  assert(!zumo_link::safeDrive(2800,2800)); // Other ACKs cannot refresh an old distance.
+  handleLine(modern,nowMs);
+  assert(zumo_link::scene("CONFUSED","LOST")); zumo_link::poll(); displayedId=sceneId;
+  zumo_link::stop(); zumoUart.outgoing.clear(); zumo_link::poll();
+  assertCommand("STOP","SCENE CONFUSED LOST");
+  handleLine((std::to_string(displayedId)+" OK SCENE").c_str(),nowMs);
+  assert(sceneId==0 && !driveWanted);
+  assert(zumo_link::scene("CURIOUS","SEARCHING")); zumo_link::poll();
+  nowMs+=1001; handleLine(modern,nowMs); zumo_link::poll();
+  assert(!strcmp(zumo_link::snapshot().sceneResult,"NO_REPLY"));
+  assert(zumo_link::wiggle(zumo_link::snapshot().controlGeneration,true));
+  zumoUart.outgoing.clear(); zumo_link::poll(); assertCommand("WIGGLE EXCITED","WIGGLE");
+  zumo_link::stop(); zumo_link::poll();
+  reply(); assert(!zumo_link::snapshot().sceneCapable && !zumo_link::snapshot().autoRampCapable);
+  assert(!zumo_link::scene("HAPPY","BATTERY") && !zumo_link::safeDrive(2800,2800));
+  std::cout<<"PASS action scene acknowledgements, timeout, Stop, capabilities, selected SAFE ramp and actual range age\n";
   std::cout<<"PASS quick wiggle negotiation, generation, single command, heartbeat, completion and cancellation\n";
   std::cout<<"PASS production UART bridge: default 6000, BRAKE support, older peer fallback, edge and lease priority\n";
 }

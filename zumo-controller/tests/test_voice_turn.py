@@ -275,6 +275,19 @@ class VoiceTurnTests(unittest.TestCase):
                     self.assertEqual(self.controller.deceleration, 12000)
         print("Quick wiggle simulation (including 400 ms gyro preparation): {}-{} ms".format(min(durations), max(durations)))
 
+    def test_excited_wiggle_draws_before_motion_and_uses_the_same_events(self):
+        self.assertEqual(self.send("2 WIGGLE EXCITED"), "2 OK LOOKING")
+        while "2 OK WIGGLE_START" not in self.uart.outgoing:
+            self.step(5)
+        self.assertEqual(self.motors.speeds, (0, 0))
+        self.assertEqual(self.controller.face.actions[-1], ("excited", "FOUND"))
+        for _ in range(6):
+            self.step(5)
+        self.assertNotEqual(self.motors.speeds, (0, 0))
+        self.send("3 STOP")
+        self.assertEqual(self.motors.speeds, (0, 0))
+        self.assertEqual(self.controller.face.actions[-1], "neutral")
+
     def test_greeting_face_is_drawn_before_motor_start_and_safety_rechecked_after_render(self):
         for delay in (60, 350):
             with self.subTest(display_ms=delay):

@@ -29,6 +29,10 @@ struct Status {
   bool brakeCapable;
   bool rampedLookCapable;
   bool wiggleCapable;
+  bool sceneCapable;
+  bool autoRampCapable;
+  char sceneResult[24];
+  uint32_t rangeAgeMs;
 };
 
 void begin();
@@ -43,7 +47,8 @@ bool isFaceName(const char* name);
 bool face(const char* name);
 bool wake();
 bool look(int degrees, uint32_t expectedControlGeneration);
-bool wiggle(uint32_t expectedControlGeneration);
+bool wiggle(uint32_t expectedControlGeneration, bool excited = false);
+bool scene(const char* expression, const char* label);
 bool setAcceleration(int acceleration);
 int acceleration();
 void cancelLook();

@@ -12,6 +12,9 @@ from voice_turn import VoiceTurn, WIGGLE_ACCELERATION, WIGGLE_DECELERATION
 
 MAX_LINE = 63
 MAX_DRIVE_SPEED = 6000
+MAX_AUTO_SPEED = 3200
+SCENE_LABELS = ("NONE", "BATTERY", "MARKER", "SCREWDRIVER", "SEARCHING", "FOUND",
+                "PERSON", "EXIT", "NOT_SURE", "LOST", "OBSTACLE", "CHASE", "READY", "STOPPED")
 DEFAULT_ACCELERATION = 3000  # Motor speed units per second.
 MIN_ACCELERATION = 500
 MAX_ACCELERATION = 6000
@@ -56,6 +59,7 @@ class UARTController:
         self.look_acceleration = MAX_ACCELERATION
         self.wiggle_started = False
         self.wiggle_leg = 0
+        self.wiggle_face = "HAPPY"
         self.line = bytearray()
         self.dropping = False
         self.ready = False
@@ -257,7 +261,7 @@ class UARTController:
             print("UART CONTROL: battery read error:", error)
             millivolts = -1
         valid = self._range_valid(self.clock.ticks_ms())
-        self._send("{} OK READY={} FAULT={} L={} R={} BAT={} EDGE={} VOICE={} DIST={} RANGE={} AUTO=1 BRAKE=1 LOOKRAMP=1 WIGGLE=2".format(
+        self._send("{} OK READY={} FAULT={} L={} R={} BAT={} EDGE={} VOICE={} DIST={} RANGE={} AUTO=1 BRAKE=1 LOOKRAMP=1 WIGGLE=2 SCENE=1 SAFE2=1".format(
             command_id, int(self.ready), self.fault, self.left, self.right,
             millivolts, int(self.edge), int(self.voice_turn is not None),
             self.distance_mm, int(valid)))
@@ -344,8 +348,8 @@ class UARTController:
             self._send(command_id + (" OK BRAKING" if self.braking else " OK STOPPED"))
         elif command == "CALIBRATE" and not args:
             self.start_calibration(command_id, now)
-        elif (command == "LOOK" and len(args) in (1, 2)) or (command == "WIGGLE" and not args):
-            argument = args[0] if args else "15"
+        elif (command == "LOOK" and len(args) in (1, 2)) or (command == "WIGGLE" and (not args or args in (["HAPPY"], ["EXCITED"]))):
+            argument = args[0] if command == "LOOK" else "15"
             if not (argument[1:] if argument.startswith("-") else argument).isdigit():
                 self._send(command_id + " ERR ARGUMENT")
             elif len(args) == 2 and not args[1].isdigit():
@@ -376,6 +380,7 @@ class UARTController:
                     if command == "WIGGLE":
                         self.look_acceleration = WIGGLE_ACCELERATION
                         self.wiggle_leg = 0
+                        self.wiggle_face = args[0] if args else "HAPPY"
                         self.voice_turn.start_wiggle(now)
                     else:
                         self.look_acceleration = int(args[1]) if len(args) == 2 else MAX_ACCELERATION
@@ -388,7 +393,7 @@ class UARTController:
                 self._send(command_id + " OK KEEP")
             else:
                 self._send(command_id + " ERR NO_LOOK")
-        elif (command == "DRIVE" and len(args) in (2, 3)) or (command == "SAFE" and len(args) == 2):
+        elif command in ("DRIVE", "SAFE") and len(args) in (2, 3):
             if not all((arg[1:] if arg.startswith("-") else arg).isdigit()
                        for arg in args):
                 self._send(command_id + " ERR ARGUMENT")
@@ -400,6 +405,8 @@ class UARTController:
                 self._send(command_id + " ERR SPEED_RANGE")
             elif not MIN_ACCELERATION <= acceleration <= MAX_ACCELERATION:
                 self._send(command_id + " ERR ACCEL_RANGE")
+            elif command == "SAFE" and len(args) == 3 and not (0 <= left <= MAX_AUTO_SPEED and 0 <= right <= MAX_AUTO_SPEED):
+                self._send(command_id + " ERR AUTO_SPEED_RANGE")
             elif command == "SAFE" and not self._range_valid(now):
                 self._stop()
                 self._send(command_id + " ERR RANGE_UNAVAILABLE")
@@ -440,6 +447,20 @@ class UARTController:
                     self._send(command_id + " ERR WAKE_IO")
                 else:
                     self._send(command_id + " OK WAKE")
+        elif command == "SCENE" and len(args) == 2:
+            expression, caption = args
+            if expression != expression.upper() or expression.lower() not in EXPRESSIONS or caption not in SCENE_LABELS:
+                self._send(command_id + " ERR ARGUMENT")
+            elif self._moving() or self.look_id is not None or self.calibration is not None:
+                self._send(command_id + " ERR MOVING")
+            else:
+                try:
+                    self._cancel_wake()
+                    self.face.show_scene(expression.lower(), caption)
+                    self._send(command_id + " OK SCENE")
+                except Exception as error:
+                    self._send(command_id + " ERR DISPLAY")
+                    print("UART CONTROL: scene error:", error)
         elif command == "FACE" and len(args) == 1:
             if self._moving() or self.look_id is not None:
                 self._send(command_id + " ERR MOVING")
@@ -472,7 +493,7 @@ class UARTController:
                         self._send(command_id + " ERR LED_IO")
                     else:
                         self._send(command_id + " OK LED")
-        elif command in ("PING", "STATUS", "STOP", "BRAKE", "CALIBRATE", "DRIVE", "SAFE", "TURN", "FACE", "LED", "WAKE", "LOOK", "WIGGLE", "KEEP"):
+        elif command in ("PING", "STATUS", "STOP", "BRAKE", "CALIBRATE", "DRIVE", "SAFE", "TURN", "FACE", "SCENE", "LED", "WAKE", "LOOK", "WIGGLE", "KEEP"):
             self._send(command_id + " ERR ARGUMENT")
         else:
             self._send(command_id + " ERR UNKNOWN_COMMAND")
@@ -547,7 +568,10 @@ class UARTController:
                         # Render the complete happy pose while the tracks are
                         # still off. LCD writes must never block a moving turn.
                         try:
-                            self.face.show_happy()
+                            if self.wiggle_face == "EXCITED":
+                                self.face.show_scene("excited", "FOUND")
+                            else:
+                                self.face.show_happy()
                         except Exception as error:
                             self._send(self.look_id + " ERR LOOK_FACE")
                             self._latch("TURN_FAULT")

@@ -12,6 +12,7 @@ struct Status {
   uint8_t personScorePercent;
   uint32_t resultAgeMs;
   uint32_t resultTimestampMs;
+  uint32_t captureTimestampMs;
   uint32_t inferenceMs;
   uint32_t decodeMs;
   uint32_t totalMs;

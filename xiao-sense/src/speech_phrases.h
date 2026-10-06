@@ -4,6 +4,13 @@ namespace speech_phrases {
 struct Phrase { int command; const char* text; };
 inline constexpr Phrase phrases[] = {
   {1, "SAY HELLO"},
+  {8, "FIND ME"},
+  {9, "WHAT IS THIS"}, {9, "WHAT'S THIS"},
+  {10, "FIND A BATTERY"}, {10, "FIND ME A BATTERY"},
+  {11, "FIND A MARKER"}, {11, "FIND ME A MARKER"},
+  {12, "FIND A SCREWDRIVER"}, {12, "FIND ME A SCREWDRIVER"},
+  {13, "CHASE THIS"},
+  {14, "FIND A WAY OUT"},
   {7, "STOP MOVING"}, {7, "STOP"},
 };
 inline const Phrase* find(int command, const char* text) {

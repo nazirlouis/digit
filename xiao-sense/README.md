@@ -4,6 +4,11 @@ This is the XIAO ESP32-S3 Sense dashboard built with ESP-IDF 5.5 through
 PlatformIO. This is the active XIAO project to open in VS Code. The previous
 Arduino application is preserved in `../xiao-sense-arduino-legacy`.
 
+The **Digit actions** dashboard panel and MultiNet commands now include Find me,
+What's this, Find a battery/marker/screwdriver, Chase this, and Find a way out,
+with coordinated emotion voices, faces and gestures. See
+[action behavior and testing](VOICE_ACTIONS.md). Follow me and Go to bed are deferred.
+
 The camera stays at 640 × 480 JPEG with the existing 180° rotation, live
 stream, and picture download. The on-demand pedestrian detector is Espressif's
 `pico_s8_v1` model. It targets two 320 × 240 frames per second while enabled,
@@ -50,8 +55,8 @@ intermittent. See
 [training details](../model-training/README.md) and
 [prediction preview](../model-training/objects-v3-test-preview.jpg).
 
-The 8 MB flash is nearly full: application ~4.56 MB, combined vision ~0.94 MB,
-speech ~2.76 MB. The build checks each partition's size. Size optimization is
+The 8 MB flash is nearly full: application partition ~3.58 MB, combined vision
+~0.94 MB, speech ~3.78 MB. The build checks each partition's size. Size optimization is
 enabled in sdkconfig.defaults.
 
 The target is centered when its box center is within 10% of the image width
@@ -245,8 +250,10 @@ setup state, gyro availability, last read resource/command/status and the last t
 /api/voice/setup?action=front|left|on|off|reset` performs setup and enabling.
 Calibration/enable are session-only. Once enabled, wake listening and voice
 turning work without keeping the browser open; browser visibility still
-controls the separate turn-only person-follow mode. The six-command controller
-owns its own following mode and cancels it through the same dashboard Stop path.
+controls the separate turn-only person tracker. The approved voice actions own
+their detection modes and cancel through the same dashboard Stop path.
+Follow me and Go to bed remain deferred. See [current actions](VOICE_ACTIONS.md)
+for Find me, What's this, object search, Chase this and Find a way out.
 
 ## Build
 
@@ -258,8 +265,8 @@ owns its own following mode and cancels it through the same dashboard Stop path.
 3. Models are packed automatically. Use normal PlatformIO Upload to install
    the application and both model partitions together.
 
-The custom partition table reserves 4.5 MB for the app, 448 KB at `0x490000`
-for the pedestrian model, and 3 MB at `0x500000` for MultiNet. This upgrade needs
+The custom partition table reserves `0x36b000` bytes for the app, `0xe5000` at
+`0x37b000` for both vision models, and `0x3a0000` at `0x460000` for MultiNet. This upgrade needs
 the new partition table and both models, not just firmware.bin.
 Update `upload_port` in `platformio.ini` if Windows assigns a port
 other than COM7. The board has 8 MB flash and 8 MB PSRAM.

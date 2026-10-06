@@ -81,6 +81,9 @@ class Face:
     def show_happy(self):
         self.actions.append("show_happy")
 
+    def show_scene(self, expression, caption):
+        self.actions.append((expression, caption))
+
     def play(self, expression, hold_ms=None):
         self.actions.append(expression)
 
@@ -127,6 +130,18 @@ class Button:
 
 
 class UARTControlTests(unittest.TestCase):
+    def test_scene_is_stationary_validated_and_stoppable(self):
+        self.assertEqual(self.command("2 SCENE HAPPY BATTERY"), "2 OK SCENE")
+        self.assertEqual(self.face.actions[-1], ("happy", "BATTERY"))
+        self.assertEqual(self.motors.speeds, (0, 0))
+        self.assertEqual(self.command("3 SCENE HAPPY GARAGE"), "3 ERR ARGUMENT")
+        self.assertEqual(self.command("4 SCENE happy BATTERY"), "4 ERR ARGUMENT")
+        self.assertEqual(self.command("5 STOP"), "5 OK STOPPED")
+        self.assertEqual(self.face.actions[-1], "neutral")
+        self.calibrate()
+        self.command("6 DRIVE 2800 2800 6000")
+        self.assertEqual(self.command("7 SCENE EXCITED FOUND"), "7 ERR MOVING")
+
     def setUp(self):
         self.clock = Clock()
         self.uart = UART()

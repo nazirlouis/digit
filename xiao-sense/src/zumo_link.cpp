@@ -27,7 +27,7 @@ int faceIndex(const char* name) {
 }
 
 zumo_link::Status status = {false, false, false, false, 0, 0, -1, 0,
-                            "NONE", "NONE", "NONE", "NONE", false, false, 0, "NONE", false, false, false, -1, 0, false, false, false};
+                            "NONE", "NONE", "NONE", "NONE", false, false, 0, "NONE", false, false, false, -1, 0, false, false, false, false, false, "NONE", UINT32_MAX};
 int desiredLeft = 0;
 int desiredRight = 0;
 int desiredAcceleration = 6000;
@@ -38,6 +38,10 @@ bool stopPending = false;
 bool brakePending = false;
 bool calibrationPending = false;
 int facePending = 0;
+int scenePending = 0;
+char sceneLabel[16] = {};
+uint16_t sceneId = 0;
+uint32_t sceneSentAt = 0;
 bool ledPending = false;
 int ledTarget = -1;
 uint8_t ledRed = 0, ledGreen = 0, ledBlue = 0, ledBrightness = 0;
@@ -48,12 +52,14 @@ uint16_t wakeCommandId = 0;
 uint32_t wakeSentAt = 0;
 bool lookPending = false;
 bool lookWiggle = false;
+bool lookExcited = false;
 int lookDegrees = 0;
 int configuredAcceleration = 6000, lookAcceleration = 6000;
 uint16_t lookId = 0;
 uint32_t lookStarted = 0, lastKeepSent = 0;
 uint32_t lastBrowserDrive = 0;
 uint32_t lastReply = 0;
+uint32_t lastRangeReply = 0;
 uint32_t lastDriveSent = 0;
 uint32_t lastStatusSent = 0;
 uint16_t nextId = 1;
@@ -96,6 +102,8 @@ void finishLook(const char* result, bool sendStop) {
 
 void manualOverride() {
   ++status.controlGeneration;
+  scenePending = 0;
+  sceneId = 0;
   finishLook("CANCELLED", true);
 }
 
@@ -117,6 +125,7 @@ void handleLine(const char* line, uint32_t now) {
     int distance = -1, valid = 0, capable = 0;
     const char* range = strstr(line, " DIST=");
     if (range) sscanf(range, " DIST=%d RANGE=%d AUTO=%d", &distance, &valid, &capable);
+    lastRangeReply = range ? now : 0;
     status.distanceMm = distance;
     status.rangeValid = valid == 1;
     status.actionCapable = capable == 1;
@@ -124,6 +133,8 @@ void handleLine(const char* line, uint32_t now) {
     status.brakeCapable = brake && brake[7] == '1';
     status.rampedLookCapable = strstr(line, " LOOKRAMP=1") != nullptr;
     status.wiggleCapable = strstr(line, " WIGGLE=2") != nullptr;
+    status.sceneCapable = strstr(line, " SCENE=1") != nullptr;
+    status.autoRampCapable = strstr(line, " SAFE2=1") != nullptr;
     snprintf(status.fault, sizeof(status.fault), "%s", fault);
     if (!status.ready) {
       clearDrive();
@@ -139,6 +150,12 @@ void handleLine(const char* line, uint32_t now) {
   portENTER_CRITICAL(&stateLock);
   lastReply = now;
   status.connected = true;
+  if (id == sceneId && sceneId) {
+    const char* error = strstr(line, " ERR ");
+    snprintf(status.sceneResult, sizeof(status.sceneResult), "%s",
+             strstr(line, " OK SCENE") ? "APPLIED" : error ? error + 5 : "BAD_REPLY");
+    sceneId = 0;
+  }
   if (id == lookId && lookId != 0) {
     const char* error = strstr(line, " ERR ");
     if (strstr(line, " OK LOOK_DONE")) {
@@ -255,6 +272,7 @@ Status snapshot() {
   portENTER_CRITICAL(&stateLock);
   Status result = status;
   result.replyAgeMs = lastReply == 0 ? UINT32_MAX : now - lastReply;
+  result.rangeAgeMs = lastRangeReply == 0 ? UINT32_MAX : now - lastRangeReply;
   result.connected = lastReply != 0 && result.replyAgeMs < kLinkTimeoutMs;
   result.manualDriving = driveWanted;
   portEXIT_CRITICAL(&stateLock);
@@ -327,16 +345,19 @@ void stop(bool smooth) {
 }
 
 bool safeDrive(int left, int right) {
-  if (left < -2000 || left > 2000 || right < -2000 || right > 2000) return false;
+  if (left < 0 || left > 3200 || right < 0 || right > 3200) return false;
   const uint32_t now = millis();
   portENTER_CRITICAL(&stateLock);
   const bool allowed = status.ready && !status.edge && !strcmp(status.fault, "NONE") &&
       lastReply && now - lastReply < 500 && status.actionCapable &&
-      status.rangeValid && !status.calibrating && !status.lookActive &&
+      status.rangeValid && status.autoRampCapable && !status.calibrating && !status.lookActive &&
+      lastRangeReply && now - lastRangeReply < 250 &&
+      !stopPending && !facePending && !scenePending && !sceneId &&
       (left + right <= 0 || status.distanceMm > 150);
   if (allowed) {
     desiredLeft = left;
     desiredRight = right;
+    desiredAcceleration = configuredAcceleration;
     driveWanted = left || right;
     turnWanted = false;
     safeWanted = true;
@@ -390,12 +411,13 @@ static bool requestTurn(int degrees, uint32_t expectedControlGeneration, bool wi
       lastReply && now - lastReply < kLinkTimeoutMs && status.ready && status.voiceCapable && status.rampedLookCapable &&
       (!wiggle || status.wiggleCapable) &&
       !status.edge && !status.calibrating && !status.left && !status.right && !driveWanted &&
-      !stopPending && !calibrationPending && !facePending && !ledPending &&
+      !stopPending && !calibrationPending && !facePending && !ledPending && !scenePending && !sceneId &&
       !wakePending && !wakeCommandId && !status.lookActive;
   if (allowed) {
     lookPending = status.lookActive = true;
     lookDegrees = degrees;
     lookWiggle = wiggle;
+    lookExcited = false;
     lookAcceleration = configuredAcceleration;
     lookStarted = now;
     snprintf(status.lookResult, sizeof(status.lookResult), "SENDING");
@@ -407,8 +429,32 @@ static bool requestTurn(int degrees, uint32_t expectedControlGeneration, bool wi
 bool look(int degrees, uint32_t expectedControlGeneration) {
   return requestTurn(degrees, expectedControlGeneration, false);
 }
-bool wiggle(uint32_t expectedControlGeneration) {
-  return requestTurn(15, expectedControlGeneration, true);
+bool wiggle(uint32_t expectedControlGeneration, bool excited) {
+  const bool accepted = requestTurn(15, expectedControlGeneration, true);
+  if (accepted) {
+    portENTER_CRITICAL(&stateLock);
+    lookExcited = excited;
+    portEXIT_CRITICAL(&stateLock);
+  }
+  return accepted;
+}
+
+bool scene(const char* expression, const char* label) {
+  const int face = faceIndex(expression);
+  if (!face || !label || !label[0] || strlen(label) >= sizeof(sceneLabel)) return false;
+  for (const char* p = label; *p; ++p) if ((*p < 'A' || *p > 'Z') && *p != '_') return false;
+  const uint32_t now = millis();
+  portENTER_CRITICAL(&stateLock);
+  const bool allowed = lastReply && now - lastReply < 500 && status.sceneCapable &&
+      !status.left && !status.right && !status.lookActive && !driveWanted && !stopPending &&
+      !status.calibrating && !scenePending && !sceneId && !facePending && !wakePending && !wakeCommandId;
+  if (allowed) {
+    scenePending = face;
+    snprintf(sceneLabel, sizeof(sceneLabel), "%s", label);
+    snprintf(status.sceneResult, sizeof(status.sceneResult), "SENDING");
+  }
+  portEXIT_CRITICAL(&stateLock);
+  return allowed;
 }
 
 bool setAcceleration(int value) {
@@ -480,6 +526,9 @@ void poll() {
   bool sendWake = false;
   bool sendLook = false;
   bool sendWiggle = false;
+  bool sendExcited = false;
+  int sendScene = 0;
+  char label[16] = {};
   uint16_t keepId = 0;
   int angle = 0;
   int target = -1;
@@ -501,6 +550,10 @@ void poll() {
     wakeCommandId = 0;
     snprintf(status.wakeResult, sizeof(status.wakeResult), "NO_REPLY");
   }
+  if (sceneId && now - sceneSentAt >= 1000) {
+    sceneId = 0;
+    snprintf(status.sceneResult, sizeof(status.sceneResult), "NO_REPLY");
+  }
   if (wakePending && (!connected || driveWanted || status.calibrating || calibrationPending ||
                       stopPending || status.left || status.right || now - wakeSentAt > 500)) {
     wakePending = false;
@@ -518,6 +571,8 @@ void poll() {
     clearDrive();
     ledPending = false;
     facePending = 0;
+    scenePending = 0;
+    sceneId = 0;
     ledCommandId = 0;
     if (strcmp(status.ledResult, "SENDING") == 0)
       snprintf(status.ledResult, sizeof(status.ledResult), "DISCONNECTED");
@@ -537,6 +592,10 @@ void poll() {
   } else if (facePending != 0) {
     sendFace = facePending;
     facePending = 0;
+  } else if (scenePending && connected) {
+    sendScene = scenePending;
+    scenePending = 0;
+    snprintf(label, sizeof(label), "%s", sceneLabel);
   } else if (ledPending && connected) {
     sendLed = true;
     target = ledTarget;
@@ -548,6 +607,7 @@ void poll() {
   } else if (lookPending && connected) {
     sendLook = true;
     sendWiggle = lookWiggle;
+    sendExcited = lookExcited;
     angle = lookDegrees;
     acceleration = lookAcceleration;
     lookPending = false;
@@ -578,6 +638,10 @@ void poll() {
   } else if (sendFace) {
     sendPrefix();
     zumoUart.printf("FACE %s\n", kFaceNames[sendFace - 1]);
+  } else if (sendScene) {
+    sceneId = sendPrefix();
+    sceneSentAt = now;
+    zumoUart.printf("SCENE %s %s\n", kFaceNames[sendScene - 1], label);
   } else if (sendLed) {
     ledCommandId = sendPrefix();
     ledSentAt = now;
@@ -596,7 +660,7 @@ void poll() {
     // A concurrent manual request will queue STOP immediately after this line.
     if (status.lookActive) { lookId = id; lastKeepSent = now; }
     portEXIT_CRITICAL(&stateLock);
-    if (sendWiggle) zumoUart.println("WIGGLE");
+    if (sendWiggle) zumoUart.println(sendExcited ? "WIGGLE EXCITED" : "WIGGLE");
     else zumoUart.printf("LOOK %d %d\n", angle, acceleration);
   } else if (keepId) {
     sendPrefix();
@@ -604,7 +668,7 @@ void poll() {
   } else if (sendDrive) {
     sendPrefix();
     if (sendTurn) zumoUart.printf("TURN %d\n", left);
-    else if (sendSafe) zumoUart.printf("SAFE %d %d\n", left, right);
+    else if (sendSafe) zumoUart.printf("SAFE %d %d %d\n", left, right, acceleration);
     else zumoUart.printf("DRIVE %d %d %d\n", left, right, acceleration);
   }
   if (now - lastStatusSent >= kStatusPeriodMs) {

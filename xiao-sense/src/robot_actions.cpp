@@ -1,4 +1,5 @@
 #include "robot_actions.h"
+#include "action_mission.h"
 #include "Arduino.h"
 #include "audio_engine.h"
 #include "person_follow.h"
@@ -92,6 +93,13 @@ const char* name(Command value) {
     case Command::None: return "Idle";
     case Command::Hello: return "Say hello";
     case Command::Stop: return "Stop";
+    case Command::FindMe: return "Find me";
+    case Command::Identify: return "What's this?";
+    case Command::FindBattery: return "Find a battery";
+    case Command::FindMarker: return "Find a marker";
+    case Command::FindScrewdriver: return "Find a screwdriver";
+    case Command::Chase: return "Chase this";
+    case Command::Escape: return "Find a way out";
     default: return "Unknown";
   }
 }
@@ -99,6 +107,7 @@ Status snapshot() { Guard guard; return {command, phase, active, controlEpoch.lo
 void stop(const char* reason, bool smooth) {
   Guard guard;
   ++controlEpoch;
+  action_mission::cancel();
   wake_word::cancel(); speech_commands::cancel(); photo_store::cancel();
   person_follow::setEnabled(false);
   if (vision_service::snapshot().batteryMode) vision_service::setEnabled(false);
@@ -114,16 +123,27 @@ bool start(Command value, uint32_t expected) {
   Guard guard;
   if (expected != controlEpoch.load()) return false;
   if (value == Command::Stop) { stop(); return true; }
-  if (value != Command::Hello) return false;
+  if (!validCommand(static_cast<int>(value))) return false;
   const auto z = zumo_link::snapshot();
-  if (!z.connected || !z.ready || z.calibrating || z.edge || strcmp(z.fault,"NONE") || !z.actionCapable) {
+  const bool stationary = value == Command::Identify;
+  if (!z.connected || z.calibrating || (!stationary &&
+      (!z.ready || z.edge || strcmp(z.fault,"NONE") || !z.actionCapable))) {
     phase = "Calibrate the connected, updated Zumo first"; return false;
   }
-  if (!z.voiceCapable) {
+  if (!stationary && !z.voiceCapable) {
     phase = "Gyroscope unavailable"; return false;
   }
-  if (!z.rampedLookCapable || !z.wiggleCapable) {
+  if (!stationary && (!z.rampedLookCapable || !z.wiggleCapable)) {
     phase = "Update Zumo turn files for synchronized greetings"; return false;
+  }
+  if (value != Command::Hello) {
+    const auto v = vision_service::snapshot();
+    if (!z.sceneCapable || (!stationary && !z.autoRampCapable)) {
+      phase = "Update Zumo action and display files first"; return false;
+    }
+    if (!v.ready || (value != Command::FindMe && !v.batteryReady)) {
+      phase = "Required detection model is unavailable"; return false;
+    }
   }
   stop("Starting routine");
   command = value; active = true; stepAt = millis() + 200;
@@ -132,17 +152,25 @@ bool start(Command value, uint32_t expected) {
   entered = turnIssued = false;
   greetingVoiceStarted = centerVoiceStarted = false;
   phase = name(value);
+  if (value != Command::Hello && !action_mission::start(value)) {
+    finish(action_mission::phase()); return false;
+  }
   return true;
 }
 void poll() {
   Guard guard;
   if (!active) return;
   const auto z = zumo_link::snapshot();
-  if (!z.connected || !z.ready || z.calibrating || z.edge || strcmp(z.fault,"NONE") || z.safetyEvents != safetyEvents) {
+  if (!z.connected || z.calibrating || z.safetyEvents != safetyEvents ||
+      (command != Command::Identify && (!z.ready || z.edge || strcmp(z.fault,"NONE")))) {
     stop("Routine cancelled: Zumo stopped or locked"); return;
   }
   const uint32_t now = millis();
   if (command == Command::Hello) sequence(hello, sizeof(hello)/sizeof(hello[0]), now);
-
+  else {
+    action_mission::poll();
+    phase = action_mission::phase();
+    if (!action_mission::active()) { active = false; command = Command::None; }
+  }
 }
 }

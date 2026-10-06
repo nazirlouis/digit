@@ -363,6 +363,13 @@ void poll() {
     return;
   }
   if (pending && routineGeneration == robot_actions::generation()) {
+    if (robot_actions::snapshot().active) {
+      // A fresh wake is a takeover: never keep approaching while listening.
+      robot_actions::stop("Listening for your next command");
+      react();
+      speech_commands::listen(robot_actions::generation());
+      return;
+    }
     if (!robot_actions::snapshot().active && hasBearing && voice_direction::accepts(directionGeneration) &&
         zumo_link::look(degrees, manualGeneration)) {
       portENTER_CRITICAL(&stateLock);

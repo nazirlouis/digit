@@ -72,7 +72,8 @@ int main() {
   assert(!accepts(1, nullptr, 7));
   assert(!accepts(1, "stop", 0));
   assert(!accepts(1, "unknown", 8));
-  assert(sizeof(speech_phrases::phrases)/sizeof(speech_phrases::phrases[0])==3);
+  assert(sizeof(speech_phrases::phrases)/sizeof(speech_phrases::phrases[0])==14);
+  for (const auto& phrase : speech_phrases::phrases) assert(accepts(1,phrase.text,phrase.command));
   assert(speech_phrases::find(7, "STOP MOVING"));
   assert(speech_phrases::find(7, "STOP"));
   assert(speech_phrases::find(1, "Say Hello"));

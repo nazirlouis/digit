@@ -2,9 +2,9 @@
 
 Say **Digit**, wait for his answering voice, then speak one command within six seconds.
 The existing custom wake model opens English MultiNet 6. Recognition runs on
-the XIAO; no network speech service is used. **Say hello** is the only routine
-available by voice or in the dashboard's **Digit actions** panel. The other
-routines are removed while actions are redesigned; Stop remains available.
+the XIAO; no network speech service is used. The dashboard's **Digit actions**
+panel runs the same actions as the spoken commands below. **Follow me** and
+**Go to bed** are deferred; no garage model is required for this release.
 
 Commands use uppercase English text, registered through
 `esp_mn_commands_add` and applied with `esp_mn_commands_update`. Like the
@@ -71,13 +71,40 @@ of memory needed by the dashboard or Wi-Fi.
 | Command | Behavior |
 | --- | --- |
 | Say hello | One quick left/right/center wiggle with happy eyes and synchronized chirps. The Happy voice begins with motion; the soft closing chirp plays during the return to center. Full 6000 swing targets use a dedicated fast ramp and gyro centering. Requires Zumo `WIGGLE=2` support. |
+| Find me | Enable person detection, scan in 30-degree steps, center a confirmed person, then approach in short ramped steps. Stop near 550 mm and celebrate with excited eyes, voice and the fast wiggle. Any person counts. |
+| What is this / What's this | Stay still, enable object detection, confirm the central visible object across three results, then show BATTERY, MARKER or SCREWDRIVER beneath happy eyes. Uncertain results show NOT SURE with a confused tone. |
+| Find a battery / marker / screwdriver | Scan in place for the requested class, react with surprised eyes and voice, turn toward the initial heading, switch to person detection, find a person again and approach excitedly. “Find me a…” is also accepted. This first version searches within sight from its starting position; it does not map a room or retrieve the object. |
+| Chase this | Acquire the central recognized object and keep that class as the target. Align and approach, stop near 450 mm, then resume only beyond 600 mm. A lost target stops translation and triggers a short local scan. Ends after 60 seconds or Stop. |
+| Find a way out | Use a small floor course with a visible Marker at its exit. Compare front ToF readings at several headings, take short forward steps through measured openings, then align with the exit marker and celebrate nearby. Bounded to 18 advances / 150 seconds; this is a local opening search, not a general maze solver. |
+
+Moving actions require updated Zumo firmware, floor calibration and a working gyro.
+Identification only needs the connected display and detection model. The person
+model's ability to see legs or partial bodies is not assumed; Follow me remains deferred.
+
+The shared action controller coordinates curious search faces/tones, serious
+approach faces, confused loss reactions, surprised discoveries, and excited
+celebrations. The Zumo acknowledges a completed stationary LCD update before
+its matching voice starts. Celebration sound follows actual WIGGLE_START and
+WIGGLE_CENTER events. LCD writes never block a moving control loop. Result
+labels stay visible for eight seconds unless replaced or stopped.
+
+Recognition needs three successive matching camera results at 50% object or
+60% person confidence. Results older than 1.2 seconds, images captured before
+the last completed turn, and stale distance reports cannot guide an approach.
+Target loss brakes immediately on the next result. A search is bounded to one
+12-step sweep; chase recovery uses four local steps. Return-to-person uses an
+approximate turn back plus visual reacquisition, not position tracking.
 
 **Stop moving** and **Stop** are additional voice controls after the wake word.
 The drive pad's **STOP** and the new **STOP ALL** button use the same cancellation
-path. They cancel Say hello, the standalone turn-only person tracker, wake turns,
+path. They cancel every action, the standalone turn-only person tracker, wake turns,
 pending speech results, photo countdown/capture publication, and speaker output.
 They flush a motor STOP to UART before returning the dashboard response.
 Camera streaming and a previously saved photo remain available.
+A newly detected wake word during an action also stops that action before
+opening another command window; a timeout never resumes it. Wake inference
+ignores Digit's own cue playback, so dashboard Stop remains the immediate
+control during a tone.
 
 Dashboard requests carry a generation number. A request or recognition result
 from before Stop cannot start a later movement. Motor-producing polling and
@@ -89,22 +116,28 @@ Say hello starts only after the updated Zumo reports successful floor
 calibration. Edge detection, Button C, and sensor/gyro faults keep movement
 locked until recalibration. Wi-Fi disconnection also cancels the active routine.
 The Zumo still requires motor refreshes within 300 ms. Automatic translation
-uses `SAFE left right`: valid front distance samples younger than 250 ms are
+uses `SAFE left right acceleration`: valid front distance samples younger than 250 ms are
 required, and forward motion stops at 150 mm. Missing/invalid readings never
-count as open space. Manual hold-to-drive retains its existing edge-only rule.
+count as open space. Approach targets are 2800 (above the reported 2000 dead
+zone), with a 3200 automatic cap, the dashboard's 500–6000 acceleration setting,
+and existing fixed braking. Short drive steps include enough time for the
+selected acceleration to reach usable torque. Manual hold-to-drive retains its
+existing edge-only rule. The front range is an obstacle measurement; it cannot
+identify which visible object produced that distance.
 
 Face changes happen during stopped beats, because LCD transfers must not delay
 moving-robot safety checks. Gyro turns require the existing working IMU and motor sign.
 Say hello retains its existing timing and turn behavior. IDs 2 through 6 are
 rejected by the speech pipeline, action API, and controller; Stop keeps ID 7.
-The build and runtime command registries contain three phrases: SAY HELLO,
-STOP MOVING, and STOP. This code change has not been flashed.
+The new actions use IDs 8–14 and the shared build/runtime registry has 14 phrases.
+The bridge requires `SCENE=1 SAFE2=1` support for the new moving actions.
 
 ## Install
 
-1. On the Zumo, use Thonny to replace **main.py** and **uart_control.py** from
-   `../zumo-controller/`. Keep the existing face/display files, **wake_reaction.py**,
-   **voice_turn.py**, and **digit_config.py** installed. The sensor driver must be
+1. On the Zumo, replace **uart_control.py** and **digit_face_engine.py** from
+   `../zumo-controller/`. Keep the current **main.py**, face/display adapters,
+   **wake_reaction.py**, **voice_turn.py**, and **digit_config.py** installed.
+   `voice_turn.py` must be the current fast-wiggle version. The sensor driver must be
    `/zumo_2040_robot/vl53l4cd.py`; its source is in the device-library folder.
    Restart the Zumo. Startup should report the gyroscope and front distance sensor.
 2. Open **digit/xiao-sense**, using **xiao_esp32s3_sense_idf**, and upload through
@@ -113,8 +146,10 @@ STOP MOVING, and STOP. This code change has not been flashed.
 3. The upload now includes the bootloader, partition table, application,
    pedestrian and three-class object models, and MultiNet model. **An application-only flash
    is not sufficient for this upgrade.** The offsets changed to fit the larger MultiNet 6 model and both vision models.
-4. Open the dashboard, confirm both boards are connected, calibrate on safe floor,
-   then try Say hello and Stop before testing the corresponding spoken commands.
+4. Open the dashboard and confirm both boards are connected. With motor power
+   off, inspect status only. For user-led physical testing, start with What's this,
+   then calibrate on safe floor and try Find me, an object search, Chase this and
+   the marked exit course individually. Check Stop and target loss during each.
 
 The build packs models automatically with `tools/model_bundle.py`. Layout:
 
@@ -145,6 +180,33 @@ window, vision yields to command recognition. Runtime model allocation, processi
 under motor/speaker noise require device testing.
 
 ## Verification and physical acceptance
+
+### Five-action update installed 2026-10-05
+
+- Zumo: backed up the installed controller, face engine, gyro-turn module and
+  startup file under `zumo-controller/backups/2026-10-05-before-five-actions/`;
+  copied the new controller and face engine, verified SHA-256 matches, and restarted.
+  The existing startup and fast-wiggle files already matched the workspace.
+- XIAO: built and uploaded the full `xiao_esp32s3_sense_idf` bundle on COM7.
+  Application usage is 3,528,235 / 3,584,000 bytes; combined vision is 937,984
+  bytes and speech is 3,778,784 bytes. All flash image hashes verified.
+- Desktop: 92 Zumo tests passed, along with production action, speech and UART
+  controller tests, 840 mission cancellation points, wake takeover, stale-frame
+  and distance handling, lost targets, and all five action outcomes. Dashboard
+  logic and 320/390/980/1280-pixel layouts passed.
+- Post-flash **GET-only** checks: Zumo connected/ready with no fault, both motor
+  outputs zero, no turn or action active, `scene_supported=true`,
+  `auto_ramp_supported=true`; camera, both model bundles, audio and MultiNet ready.
+  The live dashboard contains Hello and all seven new action buttons (three are
+  object choices). Detection remains off at idle.
+
+Battery power was off. No action, motor command, voice prompt or movement test
+was initiated on either board during acceptance. Physical approach distance,
+target tracking, person detection from Digit's height, course behavior and
+spoken recognition of the new phrases remain for user testing. A successful
+build, simulation and idle status do not establish those physical outcomes.
+
+### Voice diagnostics and earlier investigations
 
 For voice diagnosis, `GET /api/actions` reports `voice_ready`, `listening`,
 `voice_result`, `recognized`, `command_audio_ms`, `command_chunks`,

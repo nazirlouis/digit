@@ -137,9 +137,18 @@ const char kIndexHtml[] PROGMEM = R"HTML(
       <p><strong id="routineState">Idle</strong></p>
       <div class="zumo-actions">
         <button data-routine="1" onclick="startRoutine(1)">Say hello</button>
+        <button data-routine="8" onclick="startRoutine(8)">Find me</button>
+        <button data-routine="9" onclick="startRoutine(9)">What's this?</button>
+        <button data-routine="10" onclick="startRoutine(10)">Find a battery</button>
+        <button data-routine="11" onclick="startRoutine(11)">Find a marker</button>
+        <button data-routine="12" onclick="startRoutine(12)">Find a screwdriver</button>
+        <button data-routine="13" onclick="startRoutine(13)">Chase this</button>
+        <button data-routine="14" onclick="startRoutine(14)">Find a way out</button>
         <button class="danger" onclick="stopZumo()">STOP ALL</button>
       </div>
-      <p>Say hello requires floor calibration. STOP cancels movement, speech, and pending commands.</p>
+      <p>Say “Digit”, then a command. Moving actions need floor calibration. “What's this?” stays still and shows the object name on Digit's screen.</p>
+      <p>For Chase this, hold a battery, marker, or screwdriver in view. For Find a way out, use a small floor course and place a marker at its exit. Object searches turn in place, then look for you again.</p>
+      <p>STOP cancels movement, speech, and pending commands. Saying “Digit” during an action stops it to listen.</p>
       <p id="routineMessage" role="status"></p>
     </div>
     <div class="zumo" id="followPanel">Person turning: <strong id="followState">Off</strong><p>Tracks rotate in place toward the largest person box. Stops when centered or the person is lost.</p></div>
@@ -177,8 +186,9 @@ let heldDirection=null,driveTimer=null,driveInFlight=false,zumoReady=false,camer
 let voiceEnabled=false,voicePending=false,batteryEnabled=false,batteryPending=false,batteryNotice='';
 let controlGeneration=0,routinePending=false,stopPending=false,hardStopPending=false,stopRequests=0,actionActive=false;
 const routineButtons=[...document.querySelectorAll('[data-routine]')];
-async function refreshActions(){try{const response=await fetch('/api/actions',{cache:'no-store'});if(!response.ok)throw Error('Action status unavailable');const s=await response.json();controlGeneration=Math.max(controlGeneration,s.generation);actionActive=s.active;$('routineState').textContent=s.action+' · '+s.phase;$('commandState').textContent=s.listening?(s.voice_result==='Wake voice'?'Digit is answering…':'Listening for your command…'):s.voice_ready?(s.voice_result==='No command recognized'?'No command heard. Say Digit and try again.':(s.voice_result==='Audio queue overflow'||s.voice_result==='Audio interrupted')?'Listening interrupted. Say Digit and try again.':s.voice_result==='Recognized'?'Heard: '+(({1:'Say hello',7:'Stop'}[s.last_command])||'command'):'Say Digit, then a command'):s.voice_error||'Voice commands unavailable';for(const b of routineButtons)b.disabled=!s.drive_ready||routinePending||stopPending;}catch(error){$('commandState').textContent=error.message;for(const b of routineButtons)b.disabled=true}}
-async function startRoutine(id){if(id!==1||routinePending||stopPending||!controlGeneration)return;routinePending=true;try{const response=await fetch('/api/actions?command='+id+'&generation='+controlGeneration+'&acceleration='+Number($('driveAcceleration').value),{method:'POST'});const s=await response.json();if(!response.ok)throw Error(s.message);controlGeneration=Math.max(controlGeneration,s.generation);$('routineMessage').textContent=s.message}catch(error){$('routineMessage').textContent=error.message}finally{routinePending=false;await refreshActions()}}
+const actionNames={1:'Say hello',7:'Stop',8:'Find me',9:"What's this?",10:'Find a battery',11:'Find a marker',12:'Find a screwdriver',13:'Chase this',14:'Find a way out'};
+async function refreshActions(){try{const response=await fetch('/api/actions',{cache:'no-store'});if(!response.ok)throw Error('Action status unavailable');const s=await response.json();controlGeneration=Math.max(controlGeneration,s.generation);actionActive=s.active;$('routineState').textContent=s.action+' · '+s.phase;$('commandState').textContent=s.listening?(s.voice_result==='Wake voice'?'Digit is answering…':'Listening for your command…'):s.voice_ready?(s.voice_result==='No command recognized'?'No command heard. Say Digit and try again.':(s.voice_result==='Audio queue overflow'||s.voice_result==='Audio interrupted')?'Listening interrupted. Say Digit and try again.':s.voice_result==='Recognized'?'Heard: '+(actionNames[s.last_command]||'command'):'Say Digit, then a command'):s.voice_error||'Voice commands unavailable';for(const b of routineButtons){const id=Number(b.dataset.routine);const ready=id===9?s.identify_ready:id===1?s.drive_ready:id===8?s.person_action_ready:s.object_action_ready;b.disabled=!ready||routinePending||stopPending;}}catch(error){$('commandState').textContent=error.message;for(const b of routineButtons)b.disabled=true}}
+async function startRoutine(id){if(!actionNames[id]||id===7||routinePending||stopPending||!controlGeneration)return;routinePending=true;try{const response=await fetch('/api/actions?command='+id+'&generation='+controlGeneration+'&acceleration='+Number($('driveAcceleration').value),{method:'POST'});const s=await response.json();if(!response.ok)throw Error(s.message);controlGeneration=Math.max(controlGeneration,s.generation);$('routineMessage').textContent=s.message}catch(error){$('routineMessage').textContent=error.message}finally{routinePending=false;await refreshActions()}}
 async function voiceAction(value){if(voicePending)return;voicePending=true;try{const response=await fetch('/api/voice/setup?action='+value,{method:'POST'});const data=await response.json();if(!response.ok)throw Error(data.message);$('voiceMessage').textContent=data.message}catch(error){$('voiceMessage').textContent=error.message}finally{voicePending=false;await refreshVoice()}}
 async function refreshVoice(){try{const response=await fetch('/api/voice/status',{cache:'no-store'});if(!response.ok)throw Error('Unavailable');const s=await response.json();voiceEnabled=s.enabled;$('voiceState').textContent=s.turning?'Turning toward saved voice direction':s.paused?'Paused for vision':s.error||(!s.available?'Direction unavailable':!s.front_set?'Set the front direction':!s.calibrated?'Now set Digit’s left side':s.enabled?(!s.gyro_ready?'Voice turning on · update Zumo turn files':!s.drive_ready?'Voice turning on · calibrate the floor':'Voice turning enabled'):'Direction ready · turning off');$('voiceAngle').textContent=s.stable?` · ${Math.round(s.degrees)}° at array`+(s.calibrated?` · ${Math.round(Math.abs(s.relative))}° ${s.relative>=0?'left':'right'}`:''):' · waiting for clear speech';const setup=s.stable&&!s.paused&&!s.turning&&!voicePending;$('voiceFront').disabled=!setup;$('voiceLeft').disabled=!setup||!s.front_set;$('voiceToggle').textContent=s.enabled?'Disable voice turning':'Enable voice turning';$('voiceToggle').disabled=voicePending;$('voiceResult').textContent=s.result==='NONE'?'':s.result==='DONE'?'Last turn completed':`Last turn: ${s.result}`;if(!s.gyro_ready)$('voiceResult').textContent+=' · Check Zumo connection, updated turn files, and gyro'}catch(error){$('voiceState').textContent='Direction unavailable';$('voiceFront').disabled=$('voiceLeft').disabled=$('voiceToggle').disabled=true}}
 const driveButtons=[...document.querySelectorAll('[data-drive]')];
@@ -457,6 +467,11 @@ esp_err_t actionsStatusHandler(httpd_req_t* request) {
   const auto action = robot_actions::snapshot();
   const auto speech = speech_commands::snapshot();
   const auto z = zumo_link::snapshot();
+  const auto vision = vision_service::snapshot();
+  const bool driveReady = z.connected && z.ready && !z.calibrating && !z.edge && !strcmp(z.fault,"NONE") &&
+      z.actionCapable && z.voiceCapable && z.rampedLookCapable && z.wiggleCapable;
+  const bool personReady = driveReady && z.sceneCapable && z.autoRampCapable && vision.ready;
+  const bool identifyReady = z.connected && !z.calibrating && z.sceneCapable && vision.ready && vision.batteryReady;
   char error[192], phase[192], result[64], decoder[768], json[2200];
   escapeJsonString(speech.error,error,sizeof(error));
   escapeJsonString(action.phase,phase,sizeof(phase));
@@ -466,6 +481,7 @@ esp_err_t actionsStatusHandler(httpd_req_t* request) {
       "{\"action\":\"%s\",\"phase\":\"%s\",\"active\":%s,\"generation\":%lu,"
       "\"voice_ready\":%s,\"listening\":%s,\"voice_error\":\"%s\",\"recognized\":%lu,"
       "\"last_command\":%d,\"score\":%.3f,\"drive_ready\":%s,\"range_valid\":%s,"
+      "\"identify_ready\":%s,\"person_action_ready\":%s,\"object_action_ready\":%s,"
       "\"distance_mm\":%d,\"photo_revision\":%lu,\"voice_result\":\"%s\","
       "\"command_audio_ms\":%lu,\"command_chunks\":%lu,\"command_mic_peak\":%u,"
       "\"command_inference_us\":%lu,\"candidate_command\":%d,\"candidate_score\":%.3f,"
@@ -474,8 +490,9 @@ esp_err_t actionsStatusHandler(httpd_req_t* request) {
       "\"command_dropped_frames\":%lu,\"command_decoder_text\":\"%s\"}",
       robot_actions::name(action.command),phase,action.active?"true":"false",(unsigned long)action.generation,
       speech.ready?"true":"false",speech.listening?"true":"false",error,(unsigned long)speech.recognized,
-      speech.lastCommand,speech.score,z.connected&&z.ready&&!z.calibrating&&z.actionCapable?"true":"false",
-      z.rangeValid?"true":"false",z.distanceMm,(unsigned long)photo_store::revision(),result,
+      speech.lastCommand,speech.score,driveReady?"true":"false",
+      z.rangeValid?"true":"false",identifyReady?"true":"false",personReady?"true":"false",
+      personReady&&vision.batteryReady?"true":"false",z.distanceMm,(unsigned long)photo_store::revision(),result,
       (unsigned long)(speech.samples/16),(unsigned long)speech.chunks,speech.micPeak,
       (unsigned long)speech.inferenceUs,speech.candidateCommand,speech.candidateScore,
       (unsigned long)speech.feedChunks,(unsigned long)speech.fetchChunks,speech.modelPeak,
@@ -556,9 +573,12 @@ esp_err_t commandAudioTestHandler(httpd_req_t* request) {
 esp_err_t actionsHandler(httpd_req_t* request) {
   robot_actions::Guard control;
   char value[4];
-  if (!queryValue(request,"command",value,sizeof(value)) || (value[0]!='1' && value[0]!='7') || value[1]) {
+  int id = 0;
+  if (!queryValue(request,"command",value,sizeof(value)) || !value[0] ||
+      strspn(value,"0123456789") != strlen(value) || value[0]=='0' ||
+      !robot_actions::validCommand(id = atoi(value))) {
     httpd_resp_set_status(request,"400 Bad Request");
-    return controlReply(request,"Choose Say hello or Stop");
+    return controlReply(request,"Choose an available Digit action");
   }
   if (!currentGeneration(request)) {
     httpd_resp_set_status(request,"409 Conflict");
@@ -566,14 +586,14 @@ esp_err_t actionsHandler(httpd_req_t* request) {
   }
   char accelerationText[8];
   int acceleration = 6000;
-  if (value[0] == '1' && queryValue(request, "acceleration", accelerationText, sizeof(accelerationText))) {
+  if (id != 7 && queryValue(request, "acceleration", accelerationText, sizeof(accelerationText))) {
     if (!readAcceleration(request, "acceleration", acceleration)) {
       httpd_resp_set_status(request, "400 Bad Request");
       return controlReply(request, "Use acceleration from 500 to 6000");
     }
     zumo_link::setAcceleration(acceleration);
   }
-  if (!robot_actions::start(static_cast<robot_actions::Command>(value[0]-'0'),robot_actions::generation())) {
+  if (!robot_actions::start(static_cast<robot_actions::Command>(id),robot_actions::generation())) {
     httpd_resp_set_status(request,"409 Conflict");
     return controlReply(request,robot_actions::snapshot().phase);
   }
@@ -737,19 +757,21 @@ esp_err_t zumoStatusHandler(httpd_req_t* request) {
   char fault[48], lastError[64];
   escapeJsonString(zumo.fault, fault, sizeof(fault));
   escapeJsonString(zumo.lastError, lastError, sizeof(lastError));
-  char json[640];
+  char json[800];
   snprintf(json, sizeof(json),
            "{\"connected\":%s,\"ready\":%s,\"calibrating\":%s,"
            "\"edge\":%s,\"left\":%d,\"right\":%d,\"battery_mv\":%d,"
            "\"reply_age_ms\":%lu,\"fault\":\"%s\",\"last_error\":\"%s\",\"led_result\":\"%s\",\"brake_supported\":%s,"
-           "\"look_active\":%s,\"manual_driving\":%s,\"turn_ramp_supported\":%s,\"wiggle_supported\":%s,\"acceleration\":%d}",
+           "\"look_active\":%s,\"manual_driving\":%s,\"turn_ramp_supported\":%s,\"wiggle_supported\":%s,\"acceleration\":%d,"
+           "\"scene_supported\":%s,\"auto_ramp_supported\":%s,\"range_age_ms\":%lu}",
            zumo.connected ? "true" : "false", zumo.ready ? "true" : "false",
            zumo.calibrating ? "true" : "false", zumo.edge ? "true" : "false",
            zumo.left, zumo.right, zumo.batteryMillivolts,
            static_cast<unsigned long>(zumo.replyAgeMs), fault, lastError,
            zumo.ledResult, zumo.brakeCapable ? "true" : "false",
            zumo.lookActive ? "true" : "false", zumo.manualDriving ? "true" : "false",
-           zumo.rampedLookCapable ? "true" : "false", zumo.wiggleCapable ? "true" : "false", zumo_link::acceleration());
+           zumo.rampedLookCapable ? "true" : "false", zumo.wiggleCapable ? "true" : "false", zumo_link::acceleration(),
+           zumo.sceneCapable ? "true" : "false", zumo.autoRampCapable ? "true" : "false", (unsigned long)zumo.rangeAgeMs);
   return sendJson(request, json);
 }
 

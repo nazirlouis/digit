@@ -381,7 +381,17 @@ events and uncorrelated errors. Commands are uppercase.
 | `26 WAKE` | Happy face and LED effect while stationary; sound is played by XIAO |
 | `27 LOOK 90` | One measured left turn, then `27 OK LOOK_DONE`; requires floor calibration and gyro |
 | `29 WIGGLE` | One quick left/right/center greeting, then `29 OK LOOK_DONE`; renew with `KEEP 29` |
+| `29 WIGGLE EXCITED` | Same fast ramped gesture and timing events, with excited eyes and FOUND caption |
+| `30 SCENE HAPPY BATTERY` | Render a complete face and short label while stationary, then acknowledge `30 OK SCENE`; label clears after eight seconds or Stop |
+| `31 SAFE 2800 2800 6000` | Guarded automatic forward drive with selected acceleration; refresh within 300 ms |
 | `28 KEEP 27` | Renew only active LOOK 27 for another 300 ms |
+
+The new action firmware advertises `SCENE=1 SAFE2=1`. Extended SAFE commands
+accept forward targets from 0 to 3200 and acceleration from 500 to 6000;
+the XIAO uses 2800 to exceed the reported 2000 motor dead zone. Front range
+must remain valid and younger than 250 ms. Legacy two-argument SAFE behavior
+is retained for compatibility. SCENE accepts the existing uppercase expression
+names and a fixed set of labels; arbitrary display text is not a UART command.
 
 Motion starts with a ramp on the Zumo itself. `DRIVE left right acceleration`
 optionally selects 500-6000 motor speed units per second (protocol fallback

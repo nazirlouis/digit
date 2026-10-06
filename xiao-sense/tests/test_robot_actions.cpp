@@ -127,7 +127,7 @@ int main() {
   resetDevice();
   assert(robot_actions::start(Command::Hello,robot_actions::generation()));
   const auto epoch=robot_actions::generation(), motions=zumo_link::motions, stops=zumo_link::stops;
-  for (int id : {0,2,3,4,5,6,8,255}) {
+  for (int id : {0,2,3,4,5,6,15,255}) {
     assert(!robot_actions::start(static_cast<Command>(id),epoch));
     assert(robot_actions::generation()==epoch && robot_actions::snapshot().active);
     assert(zumo_link::motions==motions && zumo_link::stops==stops);

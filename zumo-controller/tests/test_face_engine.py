@@ -31,6 +31,20 @@ class Display(FrameBuffer):
 
 
 class FaceTests(unittest.TestCase):
+    def test_scene_labels_fit_stay_visible_and_clear_on_stop_or_expiry(self):
+        for label in ("BATTERY", "MARKER", "SCREWDRIVER", "NOT_SURE"):
+            self.face.show_scene("happy", label)
+            self.assertEqual(self.face.caption, label.replace("_", " "))
+            self.assertFalse(self.display.clipped)
+            self.advance(1000)
+            self.assertTrue(self.face.caption)
+            self.advance(7100)
+            self.assertEqual(self.face.caption, "")
+        self.face.show_scene("excited", "FOUND")
+        self.face.play("neutral")
+        self.advance(200)
+        self.assertEqual(self.face.caption, "")
+
     def setUp(self):
         self.now = 0
         for item in (

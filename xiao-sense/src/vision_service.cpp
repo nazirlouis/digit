@@ -111,6 +111,8 @@ void task(void*) {
     const bool frame_ok = frame && frame->format == PIXFORMAT_JPEG && frame->width == 640 &&
                           frame->height == 480 && frame->len > 0 && frame->len <= kJpegCapacity;
     size_t jpeg_length = 0;
+    const uint32_t capture_ms = frame_ok ?
+        uint32_t(uint64_t(frame->timestamp.tv_sec) * 1000 + frame->timestamp.tv_usec / 1000) : 0;
     if (frame_ok) { jpeg_length = frame->len; memcpy(jpeg_copy, frame->buf, jpeg_length); }
     if (frame) esp_camera_fb_return(frame);
     if (!frame_ok || !decode_frame(jpeg_length)) {
@@ -153,6 +155,7 @@ void task(void*) {
     const bool accepted = state.enabled && generation == current_generation;
     if (accepted) {
       state.hasResult = true;
+      state.captureTimestampMs = capture_ms;
       state.personDetected = !battery && count > 0;
       state.personScorePercent = battery ? 0 : static_cast<uint8_t>(highest);
       state.batteryDetected = battery_highest > 0;

@@ -12,6 +12,33 @@ class RangeSensor:
 
 
 class AutomaticDriveTests(unittest.TestCase):
+    def test_extended_safe_ramps_above_dead_zone_with_selected_acceleration(self):
+        for acceleration in (500, 3000, 6000):
+            with self.subTest(acceleration=acceleration):
+                self.setUp()
+                command = "2 SAFE 2800 2800 {}".format(acceleration)
+                self.assertEqual(self.send(command), "2 OK SAFE")
+                self.fixture.advance(100, command)
+                self.assertEqual(self.fixture.motors.speeds, (acceleration // 10,) * 2)
+                self.fixture.advance(6000, command)
+                self.assertEqual(self.fixture.motors.speeds, (2800, 2800))
+                self.send("3 BRAKE")
+                self.fixture.advance(250)
+                self.assertEqual(self.fixture.motors.speeds, (0, 0))
+
+    def test_extended_safe_limits_and_lease_remain_enforced(self):
+        self.assertEqual(self.send("2 SAFE -2800 2800 6000"), "2 ERR AUTO_SPEED_RANGE")
+        self.assertEqual(self.send("3 SAFE 6000 6000 6000"), "3 ERR AUTO_SPEED_RANGE")
+        self.assertEqual(self.send("4 SAFE 2800 2800 1"), "4 ERR ACCEL_RANGE")
+        self.assertEqual(self.send("5 SAFE 2800 2800 6000"), "5 OK SAFE")
+        self.fixture.advance(280)
+        self.assertGreater(self.fixture.motors.speeds[0], 0)
+        self.fixture.advance(25)
+        self.assertEqual(self.fixture.motors.speeds, (0, 0))
+        status = self.send("6 STATUS")
+        self.assertIn("SCENE=1 SAFE2=1", status)
+        self.assertLess(len(status), 192)
+
     def setUp(self):
         self.fixture = fixtures.UARTControlTests()
         self.fixture.setUp()

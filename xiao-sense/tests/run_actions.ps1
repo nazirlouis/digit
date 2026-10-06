@@ -2,11 +2,12 @@ $ErrorActionPreference = 'Stop'
 $project = Split-Path $PSScriptRoot
 $output = Join-Path $project 'test-artifacts\actions'
 New-Item -ItemType Directory -Force (Join-Path $output 'freertos') | Out-Null
-foreach ($file in 'robot_actions.cpp','robot_actions.h','audio_cues.h') {
+foreach ($file in 'robot_actions.cpp','robot_actions.h','audio_cues.h','action_mission.cpp','action_mission.h') {
     Copy-Item -LiteralPath (Join-Path $project "src\$file") -Destination (Join-Path $output $file)
 }
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'action_mocks.h') -Destination (Join-Path $output 'action_mocks.h')
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'test_robot_actions.cpp') -Destination (Join-Path $output 'test_robot_actions.cpp')
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'test_action_missions.cpp') -Destination (Join-Path $output 'test_action_missions.cpp')
 # Exercise the actual wake cancellation/status functions alongside the action
 # controller. The model/audio task remains mocked for these desktop tests.
 $wakeSource = Get-Content -Raw -LiteralPath (Join-Path $project 'src\wake_word.cpp')
@@ -19,6 +20,9 @@ if ($cancelStart -lt 0 -or $cancelEnd -lt 0 -or $snapshotStart -lt 0 -or $snapsh
 }
 $wakeControl = $wakeSource.Substring($cancelStart, $cancelEnd - $cancelStart) + $wakeSource.Substring($snapshotStart, $snapshotEnd - $snapshotStart)
 Set-Content -LiteralPath (Join-Path $output 'wake_control.inc') -Value $wakeControl
+$wakePollEnd = $wakeSource.IndexOf('bool testReaction()', $cancelEnd)
+if ($wakePollEnd -lt 0) { throw 'Wake polling function not found' }
+Set-Content -LiteralPath (Join-Path $output 'wake_poll.inc') -Value $wakeSource.Substring($cancelEnd, $wakePollEnd - $cancelEnd)
 $speechSource = Get-Content -Raw -LiteralPath (Join-Path $project 'src\speech_commands.cpp')
 $publishStart = $speechSource.IndexOf('void publishResult(')
 $publishEnd = $speechSource.IndexOf('void detectTask(', $publishStart)
@@ -61,10 +65,16 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Voice direction compilation failed' }
     & "$directionOutput\test_voice_direction.exe"
     if ($LASTEXITCODE -ne 0) { throw 'Voice direction tests failed' }
-    & cl /nologo /std:c++17 /EHsc /W4 /I. /D_CRT_SECURE_NO_WARNINGS /Fe:test_robot_actions.exe /Fo:test_robot_actions.obj test_robot_actions.cpp
+    & cl /nologo /std:c++17 /EHsc /W4 /I. /D_CRT_SECURE_NO_WARNINGS /DMISSION_TRANSLATION /c /Fo:action_mission.obj action_mission.cpp
+    if ($LASTEXITCODE -ne 0) { throw 'Mission controller compilation failed' }
+    & cl /nologo /std:c++17 /EHsc /W4 /I. /D_CRT_SECURE_NO_WARNINGS /Fe:test_robot_actions.exe /Fo:test_robot_actions.obj test_robot_actions.cpp action_mission.obj
     if ($LASTEXITCODE -ne 0) { throw 'Controller test compilation failed' }
     & .\test_robot_actions.exe
     if ($LASTEXITCODE -ne 0) { throw 'Controller tests failed' }
+    & cl /nologo /std:c++17 /EHsc /W4 /I. /D_CRT_SECURE_NO_WARNINGS /Fe:test_action_missions.exe /Fo:test_action_missions.obj test_action_missions.cpp action_mission.obj
+    if ($LASTEXITCODE -ne 0) { throw 'Mission tests compilation failed' }
+    & .\test_action_missions.exe
+    if ($LASTEXITCODE -ne 0) { throw 'Mission tests failed' }
     & cl /nologo /std:c++17 /EHsc /W4 "/I$project\src" /D_CRT_SECURE_NO_WARNINGS /Fe:test_speech_pipeline.exe /Fo:test_speech_pipeline.obj "$PSScriptRoot\test_speech_pipeline.cpp"
     if ($LASTEXITCODE -ne 0) { throw 'Speech pipeline test compilation failed' }
     & .\test_speech_pipeline.exe

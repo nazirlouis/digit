@@ -21,6 +21,7 @@ const artifacts = path.join(__dirname, '../test-artifacts/drive');
       return route.fulfill({ contentType: 'application/json', body: JSON.stringify({
         generation: 1, active: false, action: 'Idle', phase: 'Stopped',
         voice_ready: true, drive_ready: true, connected: true, ready: true,
+        identify_ready: true, person_action_ready: true, object_action_ready: true,
         fault: 'NONE', last_error: 'NONE', battery_mv: 7600, left: 0, right: 0,
         audio_state: 'READY', audio_available: true, camera_ready: true, vision_ready: true,
         vision_enabled: false, follow_enabled: false, follow_state: 'Off',
@@ -55,6 +56,9 @@ const artifacts = path.join(__dirname, '../test-artifacts/drive');
         assert.equal(await facePanel.locator('[data-face]').count(),13);
         assert.equal(await page.locator('#faceVoice').isChecked(),true);
         await facePanel.screenshot({path:path.join(artifacts, `face-voice-${width}.png`)});
+        const actions = page.locator('.zumo').filter({has:page.locator('#routineState')});
+        assert.equal(await actions.locator('[data-routine]').count(),8);
+        await actions.screenshot({path:path.join(artifacts, `actions-${width}.png`)});
       }
     }
     assert.deepEqual(errors, [], 'Dashboard loads without script errors');

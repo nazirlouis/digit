@@ -98,6 +98,9 @@ class FaceEngine:
         self.look_to = (0, 0)
         self.look = (0, 0)
         self.move_prompt_until = None
+        self.caption = ""
+        self.caption_until = None
+        self.caption_dirty = False
         self._schedule_idle(self.started)
         self._set_color(COLORS["neutral"])
         self._draw(self.pose)
@@ -160,6 +163,9 @@ class FaceEngine:
         if name not in STYLES:
             raise ValueError("unknown face: " + expression)
         _, enter, hold, exit_ms = STYLES[name]
+        self.caption_dirty = bool(self.caption)
+        self.caption = ""
+        self.caption_until = None
         self.from_pose = self.pose
         self.expression = name
         self.started = time.ticks_ms()
@@ -186,6 +192,16 @@ class FaceEngine:
         self.enter_ms = 0
         self.pose = STYLES["happy"][0]
         self._set_color(COLORS["happy"])
+        self._draw(self.pose)
+
+    def show_scene(self, expression, caption):
+        """Render a complete stationary action pose and a short readable label."""
+        self.play(expression, hold_ms=-1)
+        self.enter_ms = 0
+        self.pose = STYLES[expression][0]
+        self.caption = caption.replace("_", " ") if caption != "NONE" else ""
+        self.caption_until = time.ticks_add(time.ticks_ms(), 8000)
+        self._set_color(COLORS[expression])
         self._draw(self.pose)
 
     def show_move_prompt(self):
@@ -279,6 +295,8 @@ class FaceEngine:
 
     def update(self):
         now = time.ticks_ms()
+        if self.caption_until is not None and time.ticks_diff(now, self.caption_until) >= 0:
+            self.play("neutral")
         if self.move_prompt_until is not None:
             if time.ticks_diff(now, self.move_prompt_until) < 0:
                 return
@@ -315,7 +333,7 @@ class FaceEngine:
                 self.hold_ms = None
                 self._schedule_idle(now)
         color_changed = self._set_color(self._expression_color(elapsed))
-        if pose != self.pose or color_changed or tears or self.last_draw_tears or self.last_draw_prompt:
+        if pose != self.pose or color_changed or tears or self.last_draw_tears or self.last_draw_prompt or self.caption_dirty:
             self.pose = pose
             self._draw(pose, hold_elapsed if tears else None)
 
@@ -372,6 +390,11 @@ class FaceEngine:
                                              y * self.CANVAS_HEIGHT // 112,
                                              max(1, 3 * self.CANVAS_WIDTH // 136),
                                              max(2, 5 * self.CANVAS_HEIGHT // 112), 1, True)
+        if self.caption:
+            y = self.CANVAS_HEIGHT - 12
+            self.display.fill_rect(0, y, self.CANVAS_WIDTH, 12, 0)
+            self.display.text(self.caption, max(0, (self.CANVAS_WIDTH - len(self.caption) * 8) // 2), y + 2, 1)
+        self.caption_dirty = False
         self.display.show()
         self.last_draw_prompt = False
         self.last_draw_tears = tear_elapsed is not None

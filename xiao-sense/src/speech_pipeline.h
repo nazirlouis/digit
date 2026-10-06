@@ -1,6 +1,7 @@
 #pragma once
 #include <cstddef>
 #include <cstdint>
+#include "speech_phrases.h"
 
 // Capture metadata follows audio through framing, separately from the robot's
 // control generation. Session zero denotes sound outside a command window.
@@ -18,7 +19,7 @@ inline bool current(const Tag& tag, uint32_t session, bool listening, uint32_t n
   return listening && tag.session != 0 && tag.session == session && now - tag.capturedAt <= 1000;
 }
 inline bool accepts(int count, const char* text, int command) {
-  return count > 0 && text && text[0] && (command == 1 || command == 7);
+  return count > 0 && speech_phrases::find(command, text);
 }
 
 class Assembler {
