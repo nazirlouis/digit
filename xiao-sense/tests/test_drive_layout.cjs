@@ -23,8 +23,9 @@ const artifacts = path.join(__dirname, '../test-artifacts/drive');
         voice_ready: true, drive_ready: true, connected: true, ready: true,
         identify_ready: true, person_action_ready: true, object_action_ready: true,
         fault: 'NONE', last_error: 'NONE', battery_mv: 7600, left: 0, right: 0,
+        distance_mm:50, range_valid:true, range_age_ms:10,
         audio_state: 'READY', audio_available: true, camera_ready: true, vision_ready: true,
-        vision_enabled: false, follow_enabled: false, follow_state: 'Off',
+        vision_enabled: true, person_detected:true, vision_age_ms:10, vision_capture_age_ms:10, follow_enabled: false, follow_state: 'Off',
         captured_ms: 0, max_recording_ms: 10000, psram_free: 4000000,
         ip: '10.0.0.127', volume: 70, available: true, state: 'Listening',
       }) });
@@ -39,10 +40,14 @@ const artifacts = path.join(__dirname, '../test-artifacts/drive');
           return { x: r.x, y: r.y, right: r.right, bottom: r.bottom };
         };
         return { camera: rect('.video'), drive: rect('#zumoDrive'),
+          distance: rect('#distanceBadge'), person: rect('#personBadge'),
           speed: rect('[for="driveSpeed"]'), acceleration: rect('[for="driveAcceleration"]'),
           scrollWidth: document.documentElement.scrollWidth };
       });
       assert.ok(rects.scrollWidth <= width, `No horizontal overflow at ${width}px`);
+      assert.equal(await page.locator('#distanceBadge').textContent(),'ToF: 5.0 cm');
+      assert.ok(rects.distance.x>=rects.camera.x && rects.distance.right<=rects.camera.right && rects.distance.bottom<=rects.camera.bottom,'Distance badge stays within the camera');
+      assert.ok(rects.distance.x>=rects.person.right || rects.distance.y>=rects.person.bottom,'Distance and person badges do not overlap');
       assert.ok(rects.acceleration.y >= rects.speed.bottom, 'Acceleration is below Drive speed');
       if (width > 900) {
         assert.ok(rects.drive.x >= rects.camera.right, 'Drive is beside camera');
@@ -51,13 +56,14 @@ const artifacts = path.join(__dirname, '../test-artifacts/drive');
         assert.ok(rects.drive.y >= rects.camera.bottom, 'Drive follows camera on phones');
       }
       if (width === 1280 || width === 390) {
+        await page.locator('.video').screenshot({path:path.join(artifacts, `camera-distance-${width}.png`)});
         await page.screenshot({ path: path.join(artifacts, `dashboard-${width}.png`) });
         const facePanel = page.locator('.zumo').filter({has:page.locator('#facePreviewTitle')});
         assert.equal(await facePanel.locator('[data-face]').count(),13);
         assert.equal(await page.locator('#faceVoice').isChecked(),true);
         await facePanel.screenshot({path:path.join(artifacts, `face-voice-${width}.png`)});
         const actions = page.locator('.zumo').filter({has:page.locator('#routineState')});
-        assert.equal(await actions.locator('[data-routine]').count(),8);
+        assert.equal(await actions.locator('[data-routine]').count(),9);
         await actions.screenshot({path:path.join(artifacts, `actions-${width}.png`)});
       }
     }

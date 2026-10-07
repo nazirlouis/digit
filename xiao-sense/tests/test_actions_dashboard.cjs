@@ -10,22 +10,26 @@ const nodes = new Map([...html.matchAll(/\bid="([^"]+)"/g)].map(m=>[m[1],{
   listeners:{},addEventListener(name,fn){this.listeners[name]=fn;},getContext:()=>({clearRect(){},strokeRect(){},fillText(){}}),
 }]));
 const routineIds = [...html.matchAll(/data-routine="(\d+)"/g)].map(m=>Number(m[1]));
-assert.deepEqual(routineIds,[1,8,9,10,11,12,13,14]);
+assert.deepEqual(routineIds,[1,16,8,9,10,11,12,13,14]);
+assert.ok(html.includes('>Follow me</button>'));
+assert.ok(!html.includes('Bump me'));
 const buttons = routineIds.map(id=>({disabled:false,dataset:{routine:String(id)}}));
 const driveButtons=['forward','back','left','right'].map(drive=>({dataset:{drive},listeners:{},setPointerCapture(){},addEventListener(name,fn){this.listeners[name]=fn;}}));
 const windowListeners={},documentListeners={};
 let generation=1,active=false,deferNext=false,release,offline=false,deferStop=false,releaseStop;
 const calls=[];
 let voice={};
+let rangeStatus={range_valid:true,distance_mm:50,range_age_ms:20};
+const timers=new Map();let nextTimer=1;
 function reply(data,ok=true){return {ok,json:async()=>data};}
 const context = vm.createContext({
   document:{getElementById:id=>nodes.get(id),querySelectorAll:s=>s==='[data-routine]'?buttons:s==='[data-drive]'?driveButtons:[],addEventListener(name,fn){documentListeners[name]=fn;},hidden:false},
   window:{addEventListener(name,fn){windowListeners[name]=fn;}},location:{hostname:'digit'},
-  setInterval(){},clearInterval(){},setTimeout(){},clearTimeout(){},
+  setInterval(){},clearInterval(){},setTimeout(fn,delay){const id=nextTimer++;timers.set(id,{fn,delay});return id;},clearTimeout(id){timers.delete(id);},
   async fetch(url,options){
     calls.push({url,options});
     if(offline) throw Error('offline');
-    if(url==='/api/actions')return reply({generation,active,action:active?'Say hello':'Idle',phase:active?'Saying hello':'Stopped',voice_ready:true,listening:false,drive_ready:true,identify_ready:true,person_action_ready:true,object_action_ready:true,...voice});
+    if(url==='/api/actions')return reply({generation,active,action:active?'Say hello':'Idle',phase:active?'Saying hello':'Stopped',voice_ready:true,listening:false,drive_ready:true,identify_ready:true,person_action_ready:true,object_action_ready:true,follow_action_ready:true,chase_action_ready:true,...voice});
     if(url.startsWith('/api/zumo/stop')){if(deferStop){deferStop=false;await new Promise(resolve=>releaseStop=resolve);}generation++;active=false;return reply({generation,message:'All actions cancelled; motor stop sent'});}
     if(url.startsWith('/api/actions?')||url.startsWith('/api/zumo/drive?')){
       const requestGeneration=Number(new URL(url,'http://digit').searchParams.get('generation'));
@@ -34,7 +38,7 @@ const context = vm.createContext({
       active=true;generation++;return reply({generation,message:'Action accepted'});
     }
     if(url==='/api/voice/status')return reply({});
-    if(url==='/api/zumo/status')return reply({connected:true,ready:true,fault:'NONE',last_error:'NONE'});
+    if(url==='/api/zumo/status')return reply({connected:true,ready:true,fault:'NONE',last_error:'NONE',...rangeStatus});
     return reply({camera_ready:true,vision_ready:true,audio_state:'READY',max_recording_ms:10000,captured_ms:0});
   },
 });
@@ -42,6 +46,24 @@ const testTimeout=setTimeout(()=>{console.error('FAIL: dashboard test did not co
 (async()=>{
   vm.runInContext(script,context);
   await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(nodes.get('distanceBadge').textContent,'ToF: 5.0 cm');
+  rangeStatus={range_valid:true,distance_mm:13,range_age_ms:100,ready:false,fault:'EDGE'};
+  await context.refreshZumo();
+  assert.equal(nodes.get('distanceBadge').textContent,'ToF: 1.3 cm','Range remains visible while drive is locked');
+  rangeStatus={range_valid:false,distance_mm:-1,range_age_ms:20};
+  await context.refreshZumo();assert.equal(nodes.get('distanceBadge').textContent,'ToF: unavailable');
+  rangeStatus={range_valid:true,distance_mm:50,range_age_ms:250};
+  await context.refreshZumo();assert.equal(nodes.get('distanceBadge').textContent,'ToF: stale');
+  rangeStatus={connected:false,range_valid:true,distance_mm:50,range_age_ms:10};
+  await context.refreshZumo();assert.equal(nodes.get('distanceBadge').textContent,'ToF: offline');
+  rangeStatus={range_valid:true,distance_mm:50,range_age_ms:10};
+  await context.refreshZumo();
+  const expiry=[...timers.values()].find(t=>t.delay===1500);
+  assert.ok(expiry);expiry.fn();
+  assert.equal(nodes.get('distanceBadge').textContent,'ToF: stale','Frozen requests must expire the visible number');
+  offline=true;await context.refreshZumo();
+  assert.equal(nodes.get('distanceBadge').textContent,'ToF: offline');
+  offline=false;await context.refreshZumo();
   nodes.get('driveSpeed').value='4000';
   nodes.get('driveAcceleration').value='500';
   nodes.get('driveAcceleration').listeners.input({target:{value:'500'}});
@@ -118,8 +140,20 @@ const testTimeout=setTimeout(()=>{console.error('FAIL: dashboard test did not co
     voice=status; await context.refreshActions();
     assert.equal(nodes.get('commandState').textContent,message);
   }
-  voice={drive_ready:false,person_action_ready:false,object_action_ready:false,identify_ready:true};
+  voice={follow_action_ready:false};
   await context.refreshActions();
+  assert.equal(buttons.find(b=>b.dataset.routine==='16').disabled,true);
+  assert.ok(buttons.filter(b=>b.dataset.routine!=='16').every(b=>!b.disabled));
+  voice={chase_action_ready:false};
+  await context.refreshActions();
+  assert.equal(buttons.find(b=>b.dataset.routine==='13').disabled,true);
+  assert.ok(buttons.filter(b=>b.dataset.routine!=='13').every(b=>!b.disabled));
+  voice={follow_action_ready:false,drive_ready:false,person_action_ready:false,object_action_ready:false,chase_action_ready:false,identify_ready:true,movement_reason:'Edge stop: place Digit fully on the surface, then recalibrate'};
+  await context.refreshActions();
+  assert.equal(nodes.get('actionAvailability').textContent,voice.movement_reason);
+  assert.equal(context.freshVision({vision_age_ms:20,vision_capture_age_ms:500}),true);
+  assert.equal(context.freshVision({vision_age_ms:20,vision_capture_age_ms:1201}),false);
+  assert.equal(context.freshVision({vision_age_ms:1201,vision_capture_age_ms:500}),false);
   assert.equal(buttons.find(b=>b.dataset.routine==='9').disabled,false);
   assert.ok(buttons.filter(b=>b.dataset.routine!=='9').every(b=>b.disabled));
   offline=true;await context.refreshActions();

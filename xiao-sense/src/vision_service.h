@@ -3,6 +3,7 @@
 #include <stdint.h>
 
 namespace vision_service {
+inline constexpr uint8_t kPersonConfidencePercent = 55;
 
 struct Status {
   bool ready;

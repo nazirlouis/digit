@@ -12,6 +12,111 @@ class RangeSensor:
 
 
 class AutomaticDriveTests(unittest.TestCase):
+    def test_close_approach_passes_15cm_and_brakes_locally_at_10cm(self):
+        command = "2 SAFE 2400 2400 6000 100"
+        self.assertEqual(self.send(command), "2 OK SAFE")
+        self.fixture.advance(420, command)
+        self.assertEqual(self.fixture.motors.speeds, (2400, 2400))
+        self.tof.distance_mm = 140
+        self.advance(20)
+        self.assertEqual(self.fixture.motors.speeds, (2400, 2400))
+        self.tof.distance_mm = 100
+        self.advance(20)
+        self.assertTrue(self.fixture.control.braking)
+        self.assertIn("0 EVENT ARRIVED", self.fixture.uart.outgoing)
+        self.tof.distance_mm = 110
+        self.assertEqual(self.send(command), "2 OK ARRIVED")
+        self.fixture.advance(220)
+        self.assertEqual(self.fixture.motors.speeds, (0, 0))
+        self.assertTrue(self.fixture.control.ready)
+        self.assertNotIn("0 EVENT OBSTACLE", self.fixture.uart.outgoing)
+        self.send("3 STOP")
+        self.assertFalse(self.fixture.control.approach_arrived)
+        self.assertEqual(self.send("4 SAFE 2400 2400 6000"), "4 ERR OBSTACLE")
+
+    def test_close_approach_keeps_emergency_range_edge_and_stale_sensor_stops(self):
+        for failure in ("near", "stale", "edge"):
+            with self.subTest(failure=failure):
+                self.setUp()
+                self.send("2 SAFE 2400 2400 6000 100")
+                self.fixture.advance(420, "2 SAFE 2400 2400 6000 100")
+                if failure == "near":
+                    self.tof.distance_mm = 80
+                    self.advance(20)
+                    self.assertIn("0 EVENT OBSTACLE", self.fixture.uart.outgoing)
+                elif failure == "stale":
+                    self.tof.data_ready = False
+                    self.advance(260)
+                    self.assertEqual(self.fixture.control.fault, "SENSOR")
+                else:
+                    self.fixture.sensors.values[0] = 950
+                    self.advance(20)
+                    self.assertEqual(self.fixture.control.fault, "EDGE")
+                self.assertEqual(self.fixture.motors.speeds, (0, 0))
+
+    def test_close_approach_arguments_and_manual_takeover(self):
+        for command in ("SAFE 2400 2400 6000 20", "SAFE -2400 2400 6000 100", "DRIVE 2400 2400 6000 100"):
+            self.assertIn(" ERR ", self.send("2 " + command))
+        self.send("2 SAFE 2400 2400 6000 100")
+        self.fixture.advance(100)
+        self.send("3 DRIVE 2400 2400 6000")
+        self.assertEqual(self.fixture.control.approach_stop_mm, 0)
+        self.assertFalse(self.fixture.control.safe_motion)
+        self.assertIn("CLOSE=2", self.send("4 STATUS"))
+
+    def test_chase_passes_10cm_and_brakes_locally_at_5cm(self):
+        command = "2 SAFE 2400 2400 6000 50"
+        self.assertEqual(self.send(command), "2 OK SAFE")
+        self.fixture.advance(420, command)
+        for distance in (140, 100, 80, 60, 51):
+            self.tof.distance_mm = distance
+            self.advance(20)
+            self.assertEqual(self.fixture.motors.speeds, (2400, 2400))
+        self.tof.distance_mm = 50
+        self.advance(20)
+        self.assertTrue(self.fixture.control.braking)
+        self.assertIn("0 EVENT ARRIVED", self.fixture.uart.outgoing)
+        self.tof.distance_mm = 60
+        self.assertEqual(self.send(command), "2 OK ARRIVED")
+        self.fixture.advance(220)
+        self.assertEqual(self.fixture.motors.speeds, (0, 0))
+        self.assertTrue(self.fixture.control.ready)
+        self.assertNotIn("0 EVENT OBSTACLE", self.fixture.uart.outgoing)
+        self.send("3 STOP")
+        self.tof.distance_mm = 100
+        self.advance(20)
+        self.assertEqual(self.send(command), "2 OK SAFE")
+        self.fixture.advance(420, command)
+        self.assertEqual(self.fixture.motors.speeds, (2400, 2400))
+
+    def test_chase_keeps_hard_stop_while_braking_and_sensor_safeties(self):
+        for failure in ("near", "stale", "edge", "timeout"):
+            with self.subTest(failure=failure):
+                self.setUp()
+                command = "2 SAFE 2400 2400 6000 50"
+                self.send(command)
+                self.fixture.advance(420, command)
+                if failure == "near":
+                    self.tof.distance_mm = 50
+                    self.advance(20)
+                    self.assertTrue(self.fixture.control.braking)
+                    self.tof.distance_mm = 30
+                    self.advance(20)
+                    self.assertIn("0 EVENT OBSTACLE", self.fixture.uart.outgoing)
+                    self.assertEqual(self.send(command), "2 ERR OBSTACLE")
+                elif failure == "stale":
+                    self.tof.data_ready = False
+                    self.advance(260)
+                    self.assertEqual(self.fixture.control.fault, "SENSOR")
+                elif failure == "edge":
+                    self.fixture.sensors.values[0] = 950
+                    self.advance(20)
+                    self.assertEqual(self.fixture.control.fault, "EDGE")
+                else:
+                    self.advance(301)
+                    self.assertIn("0 EVENT TIMEOUT", self.fixture.uart.outgoing)
+                self.assertEqual(self.fixture.motors.speeds, (0, 0))
+
     def test_extended_safe_ramps_above_dead_zone_with_selected_acceleration(self):
         for acceleration in (500, 3000, 6000):
             with self.subTest(acceleration=acceleration):

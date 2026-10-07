@@ -88,7 +88,7 @@ int main() {
       assert(!zumo_link::state.left && !zumo_link::state.right && !zumo_link::state.lookActive);
       assert(zumo_link::motions==sent && photo_store::captures==photos);
       assert(audioEngine.plays==sounds);
-      assert(!audioEngine.playing && !speech_commands::listening && !person_follow::enabled);
+      assert(!audioEngine.playing && !speech_commands::listening && !person_follow::snapshot().enabled);
     }
     std::cout << "PASS stop at 160 points: " << robot_actions::name(static_cast<Command>(id)) << '\n';
   }
@@ -127,7 +127,7 @@ int main() {
   resetDevice();
   assert(robot_actions::start(Command::Hello,robot_actions::generation()));
   const auto epoch=robot_actions::generation(), motions=zumo_link::motions, stops=zumo_link::stops;
-  for (int id : {0,2,3,4,5,6,15,255}) {
+  for (int id : {0,2,3,4,5,6,15,17,255}) {
     assert(!robot_actions::start(static_cast<Command>(id),epoch));
     assert(robot_actions::generation()==epoch && robot_actions::snapshot().active);
     assert(zumo_link::motions==motions && zumo_link::stops==stops);

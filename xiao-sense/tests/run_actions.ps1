@@ -2,7 +2,7 @@ $ErrorActionPreference = 'Stop'
 $project = Split-Path $PSScriptRoot
 $output = Join-Path $project 'test-artifacts\actions'
 New-Item -ItemType Directory -Force (Join-Path $output 'freertos') | Out-Null
-foreach ($file in 'robot_actions.cpp','robot_actions.h','audio_cues.h','action_mission.cpp','action_mission.h') {
+foreach ($file in 'robot_actions.cpp','robot_actions.h','audio_cues.h','action_mission.cpp','action_mission.h','person_follow.cpp') {
     Copy-Item -LiteralPath (Join-Path $project "src\$file") -Destination (Join-Path $output $file)
 }
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'action_mocks.h') -Destination (Join-Path $output 'action_mocks.h')
@@ -67,11 +67,13 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Voice direction tests failed' }
     & cl /nologo /std:c++17 /EHsc /W4 /I. /D_CRT_SECURE_NO_WARNINGS /DMISSION_TRANSLATION /c /Fo:action_mission.obj action_mission.cpp
     if ($LASTEXITCODE -ne 0) { throw 'Mission controller compilation failed' }
-    & cl /nologo /std:c++17 /EHsc /W4 /I. /D_CRT_SECURE_NO_WARNINGS /Fe:test_robot_actions.exe /Fo:test_robot_actions.obj test_robot_actions.cpp action_mission.obj
+    & cl /nologo /std:c++17 /EHsc /W4 /I. /D_CRT_SECURE_NO_WARNINGS /DMISSION_TRANSLATION /DFOLLOW_TRANSLATION /c /Fo:person_follow.obj person_follow.cpp
+    if ($LASTEXITCODE -ne 0) { throw 'Person follow compilation failed' }
+    & cl /nologo /std:c++17 /EHsc /W4 /I. /D_CRT_SECURE_NO_WARNINGS /Fe:test_robot_actions.exe /Fo:test_robot_actions.obj test_robot_actions.cpp action_mission.obj person_follow.obj
     if ($LASTEXITCODE -ne 0) { throw 'Controller test compilation failed' }
     & .\test_robot_actions.exe
     if ($LASTEXITCODE -ne 0) { throw 'Controller tests failed' }
-    & cl /nologo /std:c++17 /EHsc /W4 /I. /D_CRT_SECURE_NO_WARNINGS /Fe:test_action_missions.exe /Fo:test_action_missions.obj test_action_missions.cpp action_mission.obj
+    & cl /nologo /std:c++17 /EHsc /W4 /I. /D_CRT_SECURE_NO_WARNINGS /Fe:test_action_missions.exe /Fo:test_action_missions.obj test_action_missions.cpp action_mission.obj person_follow.obj
     if ($LASTEXITCODE -ne 0) { throw 'Mission tests compilation failed' }
     & .\test_action_missions.exe
     if ($LASTEXITCODE -ne 0) { throw 'Mission tests failed' }

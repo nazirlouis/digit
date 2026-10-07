@@ -3,8 +3,7 @@
 Say **Digit**, wait for his answering voice, then speak one command within six seconds.
 The existing custom wake model opens English MultiNet 6. Recognition runs on
 the XIAO; no network speech service is used. The dashboard's **Digit actions**
-panel runs the same actions as the spoken commands below. **Follow me** and
-**Go to bed** are deferred; no garage model is required for this release.
+panel runs the same actions as the spoken commands below. **Go to bed** is deferred; no garage model is required for this release.
 
 Commands use uppercase English text, registered through
 `esp_mn_commands_add` and applied with `esp_mn_commands_update`. Like the
@@ -70,16 +69,17 @@ of memory needed by the dashboard or Wi-Fi.
 
 | Command | Behavior |
 | --- | --- |
+| Follow me | Turn in place to keep the largest confidently detected person centered. Hold still when centered or lost; resume when the person returns. No forward/backward travel. Continues until Stop or another control takes over. |
 | Say hello | One quick left/right/center wiggle with happy eyes and synchronized chirps. The Happy voice begins with motion; the soft closing chirp plays during the return to center. Full 6000 swing targets use a dedicated fast ramp and gyro centering. Requires Zumo `WIGGLE=2` support. |
-| Find me | Enable person detection, scan in 30-degree steps, center a confirmed person, then approach in short ramped steps. Stop near 550 mm and celebrate with excited eyes, voice and the fast wiggle. Any person counts. |
+| Find me | Enable person detection, scan in 30-degree steps, center a confirmed person, then approach in short ramped steps. Target 100 mm (10 cm) from the front ToF and celebrate with excited eyes, voice and the fast wiggle. Any person counts. |
 | What is this / What's this | Stay still, enable object detection, confirm the central visible object across three results, then show BATTERY, MARKER or SCREWDRIVER beneath happy eyes. Uncertain results show NOT SURE with a confused tone. |
 | Find a battery / marker / screwdriver | Scan in place for the requested class, react with surprised eyes and voice, turn toward the initial heading, switch to person detection, find a person again and approach excitedly. “Find me a…” is also accepted. This first version searches within sight from its starting position; it does not map a room or retrieve the object. |
-| Chase this | Acquire the central recognized object and keep that class as the target. Align and approach, stop near 450 mm, then resume only beyond 600 mm. A lost target stops translation and triggers a short local scan. Ends after 60 seconds or Stop. |
+| Chase this | Acquire the central recognized object and keep that class as the target. Align and approach to a 50 mm (5 cm) ToF target, then resume at 100 mm (10 cm). Use short 2400-speed steps below 300 mm. On arrival, show happy eyes and chirp while watching the object. A lost target stops translation and triggers a short local scan. Ends after 60 seconds or Stop. Requires Zumo `CLOSE=2` support. |
 | Find a way out | Use a small floor course with a visible Marker at its exit. Compare front ToF readings at several headings, take short forward steps through measured openings, then align with the exit marker and celebrate nearby. Bounded to 18 advances / 150 seconds; this is a local opening search, not a general maze solver. |
 
 Moving actions require updated Zumo firmware, floor calibration and a working gyro.
 Identification only needs the connected display and detection model. The person
-model's ability to see legs or partial bodies is not assumed; Follow me remains deferred.
+model's ability to see legs or partial bodies is not assumed; Follow me tracks only the person boxes that the model can detect.
 
 The shared action controller coordinates curious search faces/tones, serious
 approach faces, confused loss reactions, surprised discoveries, and excited
@@ -88,8 +88,12 @@ its matching voice starts. Celebration sound follows actual WIGGLE_START and
 WIGGLE_CENTER events. LCD writes never block a moving control loop. Result
 labels stay visible for eight seconds unless replaced or stopped.
 
-Recognition needs three successive matching camera results at 50% object or
-60% person confidence. Results older than 1.2 seconds, images captured before
+Object recognition needs three successive matching results at 50% confidence.
+Person acquisition uses the same 55% threshold as the camera overlay and two
+matching detections out of three recent results. One missed frame can occur
+between the two matches; a lone box is insufficient. Candidates expire after
+1.6 seconds. While acquiring a person, wait at least 1.8 seconds before the
+next search turn. Results older than 1.2 seconds, images captured before
 the last completed turn, and stale distance reports cannot guide an approach.
 Target loss brakes immediately on the next result. A search is bounded to one
 12-step sweep; chase recovery uses four local steps. Return-to-person uses an
@@ -117,11 +121,23 @@ calibration. Edge detection, Button C, and sensor/gyro faults keep movement
 locked until recalibration. Wi-Fi disconnection also cancels the active routine.
 The Zumo still requires motor refreshes within 300 ms. Automatic translation
 uses `SAFE left right acceleration`: valid front distance samples younger than 250 ms are
-required, and forward motion stops at 150 mm. Missing/invalid readings never
-count as open space. Approach targets are 2800 (above the reported 2000 dead
+required, and ordinary SAFE forward motion stops at 150 mm. Find me explicitly
+requests `SAFE left right acceleration 100` from a `CLOSE=1` or `CLOSE=2` Zumo. That mode
+starts the existing fixed braking locally at 100 mm and retains an immediate
+80 mm stop while braking. Its ARRIVED acknowledgement prevents continued
+drive refreshes; a small range bounce up to 120 mm after arrival is accepted
+only after the person is visually confirmed again. No reverse correction is
+attempted. Chase this requests `SAFE left right acceleration 50` from a
+`CLOSE=2` Zumo, braking locally at 50 mm with an immediate 30 mm guard.
+Arrival tolerates range bounce up to 70 mm after visual confirmation; once
+caught up, Digit waits until the object is at least 100 mm away before
+chasing again. Missing/invalid readings never count as open space.
+Approach targets are 2800 (above the reported 2000 dead
 zone), with a 3200 automatic cap, the dashboard's 500–6000 acceleration setting,
 and existing fixed braking. Short drive steps include enough time for the
-selected acceleration to reach usable torque. Manual hold-to-drive retains its
+selected acceleration to reach usable torque. For Find me and Chase this inside 300 mm,
+use 2400 and an 80 ms dwell after the ramp instead of 180 ms. The exact resting
+gap depends on braking and requires physical testing. Manual hold-to-drive retains its
 existing edge-only rule. The front range is an obstacle measurement; it cannot
 identify which visible object produced that distance.
 
@@ -180,6 +196,57 @@ window, vision yields to command recognition. Runtime model allocation, processi
 under motor/speaker noise require device testing.
 
 ## Verification and physical acceptance
+
+### Chase this 5 cm refinement, 2026-10-05
+
+Chase this now targets 50 mm from the front ToF, with chasing resuming at
+100 mm. Below 300 mm it uses short 2400-speed steps with the selected
+acceleration and existing fixed braking. The Zumo brakes locally at 50 mm,
+reports arrival, and retains a 30 mm immediate guard while braking. Happy
+eyes and the caught-up chirp remain; the 50-to-100 mm waiting band prevents
+repeated forward starts and repeated arrival cues as the range fluctuates.
+The XIAO requires `CLOSE=2` before allowing this action.
+
+All 97 Zumo tests passed, alongside production XIAO action, speech, UART
+and dashboard tests. Checks cover passage through 100/80 mm, local arrival
+at 50 mm, range bounce, 100 mm resume, older-controller rejection, sensor
+and edge stops, target loss, and cancellation. The complete XIAO bundle
+built successfully (3,530,647 / 3,584,000 application bytes).
+
+Installed on both boards. The previous Zumo controller is backed up under
+`zumo-controller/backups/2026-10-05-before-chase-5cm/`; its replacement's
+SHA-256 matched the workspace, and the complete XIAO upload verified flash
+hashes. GET-only checks reported `chase_stop_mm=50`, `chase_resume_mm=100`,
+`chase_close_supported=true`, both motors zero and no active action, edge
+or fault. The voice and camera were ready. No movement was commanded or
+tested; the actual stopping gap remains for user testing.
+
+### Find me close-approach refinement, 2026-10-05
+
+The previous action required 60% person confidence while the dashboard drew
+55% boxes, and reset its three-result confirmation on any missed detection.
+Those mismatches could explain a visible box without acquisition. Find me now
+uses the shared 55% threshold and two-of-three confirmation. The dashboard
+hides detections whose result or actual camera capture is older than 1.2 seconds
+and reports confirmation, fresh-image waiting, distance waiting and edge locks.
+
+Before this update, read-only live status showed Idle / Dashboard Stop and a
+Zumo EDGE lock with zero motor outputs. Such a lock blocks movement independently
+of visible detections. Edge protection and manual-first control remain in force.
+
+Desktop checks passed for the 10 cm target, short 2400-speed close steps, local
+arrival braking, range bounce, 55% hit/miss/hit acquisition, stale sensors,
+emergency distance, edge locks, protocol compatibility and cancellation.
+All 95 Zumo tests and the XIAO action/speech/UART and dashboard tests passed.
+No physical movement testing is performed by the agent for this update.
+
+Installed on both connected boards, with the prior Zumo controller backed up
+under `zumo-controller/backups/2026-10-05-before-close-approach/`. The copied
+controller SHA-256 matched; the complete XIAO upload verified all flash hashes.
+GET-only post-install checks reported `find_me_stop_mm=100`,
+`person_confirm_percent=55`, `close_approach_supported=true`, both motors zero,
+no active action, no edge/fault lock, and voice/camera/model readiness.
+The actual resting gap and improved physical acquisition await user testing.
 
 ### Five-action update installed 2026-10-05
 
@@ -304,3 +371,57 @@ installing both boards, start with tracks lifted: confirm Stop during Say hello,
 Button C, and communication-loss stop. Verify turns and edge-stop behavior on
 a clear floor without allowing Digit to drive off a surface. No routine starts
 automatically at boot, reconnect, or recalibration.
+
+
+## Follow me (ID 16)
+
+Say "Digit", then "Follow me", or press Follow me in the dashboard. The action
+starts person detection and turns in place to keep the largest person box
+within 8% of the image width from center. Only detections at 55% confidence or
+higher are used. The mirrored camera steering matches the established controller.
+Tracking uses TURN commands at 3000 with Zumo's 6000 units/s acceleration.
+Each correction is 550–700 ms, proportional to the error beyond the center
+band. Its deadline is fixed: new detections may stop it early if the person
+is centered, missing or across center, but cannot extend it or immediately
+reverse it. After each correction, a newer STATUS must show zero tracks;
+a 120 ms settling interval follows. Only images exposed after this interval
+can start another correction. A missing stopped STATUS cancels after 2 seconds.
+The TURN lease is refreshed every 80 ms during a correction;
+it never requests forward motion, reverse motion, a contact stroke
+or gyro LOOK calibration. Results older than 1200 ms or captures older than
+2400 ms stop turning. Lost or centered targets stop turning while leaving the
+action armed. Fresh detections can resume tracking until Stop, wake, manual
+control or another action cancels it. Link loss, edge, and Zumo faults cancel.
+
+The action owns its tracking heartbeat, so voice-started Follow me works without
+an open dashboard. The separate Turn with person camera control retains its
+dashboard heartbeat timeout. Follow me needs the person detector and calibrated
+Zumo, but not the object model, front ToF, gyro or greeting capabilities.
+
+Bump me, its voice phrase, mission, UART protocol and accelerometer controller
+have been removed. ID 15 is retired and rejected; ID 16 prevents stale Bump me
+requests from starting the replacement action. The dashboard reports
+`follow_action_ready`. Desktop tests cover both steering directions, centered
+and lost targets, reacquisition, stale frames, missing optional sensors,
+cancellation and old-ID rejection. Physical centering still needs observation.
+
+Installed 2026-10-07: the XIAO `xiao_esp32s3_sense_idf` full bundle on COM7
+verified all five flash hashes (application 3,532,943 / 3,584,000 bytes).
+Zumo COM6 received `uart_control.py` and `main.py`, both verified by SHA-256
+read-back; `attention_bump.py` was removed after backing up all three files to
+`zumo-controller/backups/2026-10-07-before-follow-me/`. The earlier relaxed gyro
+reference update remains installed. Desktop action/mission/speech/UART and
+dashboard tests passed, along with 105 Zumo tests. After restart, GET-only
+checks reported `follow_action_ready=true`, `voice_ready=true`, Zumo ready,
+no faults and both motors zero. The served dashboard includes Follow me and
+no Bump me. No physical tracking or spoken-command acceptance test was run.
+
+Overshoot refinement installed 2026-10-07: XIAO-only upload of the bounded
+550–700 ms corrections, 8% center tolerance and post-stop capture gate described
+above. Speed 3000 and installed Zumo TURN acceleration 6000 remain in effect.
+Action/mission/speech/UART desktop tests passed, including simulated 689 ms
+camera latency, repeated frames that cannot extend a correction, and stale
+motor status that cannot confirm a stop. The build used 3,533,331 / 3,584,000
+application bytes; all five upload hashes verified. GET-only checks confirmed
+idle state, voice ready and zero motors. The pre-existing Zumo EDGE lock was
+preserved; physical tracking has not been tested with this refinement.

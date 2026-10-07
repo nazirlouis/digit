@@ -76,8 +76,8 @@ class VoiceTurn:
         if self.bias is None:
             self.samples.append(rate)
             if len(self.samples) >= 80 and diff(now, self.started) >= 400:
-                if max(self.samples) - min(self.samples) > 3 or abs(sum(self.samples) / len(self.samples)) > 10:
-                    return self.finish("LOOK_MOVING")
+                # Average the reference without rejecting normal sensor noise
+                # or table vibration as movement. Tracks stay off while sampling.
                 self.bias = sum(self.samples) / len(self.samples)
                 self.samples = None
                 self.progress_at = now

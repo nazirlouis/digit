@@ -1,7 +1,7 @@
 """Shared eyes-only animation, with no hardware imports or blocking waits.
 
 Poses use the LCD's 136x112 design coordinates; the OLED scales them to fit.
-Each eye is (dx, dy, width, height, outer_lid, inner_lid, curve, heart, tilt).
+Each eye is (dx, dy, width, height, outer_lid, inner_lid, curve, heart, tilt, question).
 Lids remove the whole area above their edge, never a stripe through an eye.
 """
 
@@ -35,7 +35,7 @@ COLORS = {
 SURPRISE_FLASH_COLOR = 0xFFFF  # One white eye flash; never the background.
 SURPRISE_FLASH_MS = 160
 
-OPEN = (0, 0, 48, 70, 0, 0, 0, 0, 0)
+OPEN = (0, 0, 48, 70, 0, 0, 0, 0, 0, 0)
 NEUTRAL = (OPEN, OPEN)
 # (two eye poses, enter ms, hold ms, exit ms). None holds until replaced.
 STYLES = {
@@ -48,13 +48,16 @@ STYLES = {
                  (4, 3, 45, 54, 0, 0, 0, 0, 0)), 300, 2800, 320),
     "surprised": (((0, -4, 52, 84, 0, 0, 0, 0, 0),) * 2, 130, 1500, 380),
     "sleeping": (((0, 7, 44, 6, 0, 0, 8, 0, 0),) * 2, 850, None, 400),
-    "confused": (((-2, -5, 42, 14, 0, 0, 0, 0, -16),
-                  (-2, 5, 42, 14, 0, 0, 0, 0, 16)), 320, 3200, 360),
+    "confused": (((0, -3, 44, 68, 0, 0, 0, 0, 0, 1024),
+                  (0, 3, 44, 68, 0, 0, 0, 0, 0, 1024)), 320, 3200, 360),
     "sleepy": (((0, 5, 46, 58, 31, 31, 0, 0, 0),) * 2, 650, 4400, 500),
     "excited": (((0, -4, 50, 78, 0, 0, 0, 0, 0),) * 2, 160, 2700, 300),
     "crying": (((0, 7, 46, 58, 28, 8, 0, 0, 0),) * 2, 420, 3800, 480),
     "love": (((0, 0, 48, 48, 0, 0, 0, 1024, 0),) * 2, 340, 3000, 380),
 }
+# Keep the question-mark morph channel in every pose, including interruptions.
+STYLES = {name: (tuple(eye if len(eye) == 10 else eye + (0,) for eye in style[0]),) + style[1:]
+          for name, style in STYLES.items()}
 
 
 class FaceEngine:
@@ -252,10 +255,7 @@ class FaceEngine:
             return self._offset(pose, dx=self._wave(elapsed, 3600) * 3 // 1024)
         if name == "confused":
             pose = self._offset(pose, dx=self._wave(elapsed, 2200) * 4 // 1024)
-            for blink_at in (1500, 1740):
-                since = elapsed - blink_at
-                if 0 <= since < self.BLINK_DURATION_MS:
-                    return self._close(pose, self._blink_height(since))
+            return pose  # Keep both punctuation dots readable throughout the hold.
         if name == "love":
             pulse = self._wave(elapsed, 1800) * 2 // 1024
             return tuple(eye[:2] + (eye[2] + pulse, eye[3] + pulse) + eye[4:]
@@ -264,7 +264,7 @@ class FaceEngine:
 
     def _close(self, pose, height):
         amount = (self.EYE_HEIGHT - height) * 1024 // (self.EYE_HEIGHT - self.BLINK_MIN_HEIGHT)
-        closed = tuple(eye[:2] + (eye[2], self.BLINK_MIN_HEIGHT, 0, 0, 0, 0, 0)
+        closed = tuple(eye[:2] + (eye[2], self.BLINK_MIN_HEIGHT, 0, 0, 0, 0, 0, 0)
                        for eye in pose)
         return self._mix(pose, closed, amount)
 
@@ -337,13 +337,33 @@ class FaceEngine:
             self.pose = pose
             self._draw(pose, hold_elapsed if tears else None)
 
+    def _draw_question(self, x0, y0, width, height):
+        # Round-ended hook and detached dot, drawn with the same framebuffer
+        # primitives on LCD and OLED. No font files or extra image buffers.
+        points = ((8, 17), (8, 13), (10, 9), (14, 6), (20, 5),
+                  (27, 5), (33, 8), (37, 12), (38, 18), (36, 24),
+                  (32, 28), (27, 31), (24, 35), (24, 41), (24, 44))
+        rx, ry = max(1, width * 5 // 48), max(1, height * 5 // 70)
+        for start, end in zip(points, points[1:]):
+            steps = max(abs(end[0] - start[0]), abs(end[1] - start[1]), 1)
+            for step in range(steps + 1):
+                x = start[0] + (end[0] - start[0]) * step // steps
+                y = start[1] + (end[1] - start[1]) * step // steps
+                self.display.ellipse(x0 + x * width // 48, y0 + y * height // 70,
+                                     rx, ry, 1, True)
+        self.display.ellipse(x0 + width // 2, y0 + 61 * height // 70,
+                             max(1, width * 6 // 48), max(1, height * 6 // 70), 1, True)
+
     def _draw_eye(self, index, eye):
-        dx, dy, width, height, outer, inner, curve, heart, tilt = eye
+        dx, dy, width, height, outer, inner, curve, heart, tilt, question = eye
         width = max(4, width * self.CANVAS_WIDTH // 136)
         height = max(3, height * self.CANVAS_HEIGHT // 112)
         center_x = ((36 if index == 0 else 100) + dx) * self.CANVAS_WIDTH // 136
         center_y = (56 + dy) * self.CANVAS_HEIGHT // 112
         x0, y0 = center_x - width // 2, center_y - height // 2
+        if question >= 512:
+            self._draw_question(x0, y0, width, height)
+            return
         radius = min((width - 1) // 2, (height - 1) // 2)
         outer = outer * self.CANVAS_HEIGHT // 112
         inner = inner * self.CANVAS_HEIGHT // 112

@@ -315,10 +315,13 @@ reported dead zone, pending physical tuning. It stops within 3 degrees for
 turns of 30 degrees or less, or 8 degrees for larger turns, and settles for
 150 ms. The total timeout is 6000 ms plus twice the ramp time to 2400; stall
 detection waits until actual output reaches 2400. STATUS advertises LOOKRAMP=1. Missing
-or invalid gyro data, movement during bias measurement, reversed yaw,
+or invalid gyro data, reversed yaw,
 or no heading progress stops the motors and reports a `LOOK_*` error followed
 by `0 EVENT TURN_FAULT`. Reposition and recalibrate the floor before trying
-again. Display updates are skipped throughout the turn, including gyro
+again. Initial gyro reference samples are averaged without a noise-spread or
+mean-rate rejection, so table vibration does not cancel a turn or wiggle with
+`LOOK_MOVING`. Tracks remain stopped during this reference measurement.
+Display updates are skipped throughout the turn, including gyro
 calibration, so they cannot delay motor control.
 
 STOP and valid manual DRIVE/TURN commands cancel the voice turn. Edge sensors,
@@ -384,6 +387,8 @@ events and uncorrelated errors. Commands are uppercase.
 | `29 WIGGLE EXCITED` | Same fast ramped gesture and timing events, with excited eyes and FOUND caption |
 | `30 SCENE HAPPY BATTERY` | Render a complete face and short label while stationary, then acknowledge `30 OK SCENE`; label clears after eight seconds or Stop |
 | `31 SAFE 2800 2800 6000` | Guarded automatic forward drive with selected acceleration; refresh within 300 ms |
+| `32 SAFE 2400 2400 6000 100` | Explicit Find me close approach: brake locally at 100 mm; report ARRIVED; requires `CLOSE=1` or `CLOSE=2` support |
+| `33 SAFE 2400 2400 6000 50` | Explicit Chase this close approach: brake locally at 50 mm; report ARRIVED; requires `CLOSE=2` support |
 | `28 KEEP 27` | Renew only active LOOK 27 for another 300 ms |
 
 The new action firmware advertises `SCENE=1 SAFE2=1`. Extended SAFE commands
@@ -392,6 +397,16 @@ the XIAO uses 2800 to exceed the reported 2000 motor dead zone. Front range
 must remain valid and younger than 250 ms. Legacy two-argument SAFE behavior
 is retained for compatibility. SCENE accepts the existing uppercase expression
 names and a fixed set of labels; arbitrary display text is not a UART command.
+
+Only the explicit four-argument SAFE form enables a close target; its last
+argument must be exactly 50 or 100. `CLOSE=2` advertises both targets, while
+older `CLOSE=1` controllers support only 100. It preserves the ramp and fixed
+braking, retains an immediate guard 20 mm inside the selected target (30 mm
+for Chase this, 80 mm for Find me), and reports `0 EVENT ARRIVED` or
+`ID OK ARRIVED` without a safety fault. It stays stopped if later refreshes
+arrive or the range bounces upward; Stop or a new manual motion clears that
+arrival state. Ordinary SAFE retains its 150 mm hard stop. Missing range,
+edge faults, Button C and communication timeouts retain their existing stops.
 
 Motion starts with a ramp on the Zumo itself. `DRIVE left right acceleration`
 optionally selects 500-6000 motor speed units per second (protocol fallback
@@ -467,3 +482,14 @@ From this folder run `python -B -m unittest discover -s tests -v` for mocked
 transport checks: offsets, pixel byte order and scaling, partial updates,
 shared SPI/LED/button behavior, and recovery after transfer errors. These do
 not verify the physical panel or on-device performance.
+
+
+## Follow me
+
+The XIAO Follow me action (ID 16) uses person detections to send only `TURN`
+commands, which apply equal and opposite track speeds. It holds still when
+centered or when the person is lost, and resumes when fresh detections return.
+Follow me targets 3000 motor units; TURN uses 6000 units/s acceleration,
+reaching that target from rest in about 500 ms.
+The old BUMP/BKEEP commands and accelerometer nudge implementation are removed.
+Edge detection, Button C, STOP, calibration and the UART lease still apply.

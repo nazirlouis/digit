@@ -27,10 +27,11 @@ int faceIndex(const char* name) {
 }
 
 zumo_link::Status status = {false, false, false, false, 0, 0, -1, 0,
-                            "NONE", "NONE", "NONE", "NONE", false, false, 0, "NONE", false, false, false, -1, 0, false, false, false, false, false, "NONE", UINT32_MAX};
+                            "NONE", "NONE", "NONE", "NONE", false, false, 0, "NONE", false, false, false, -1, 0, false, false, false, false, false, "NONE", UINT32_MAX, false, false, false, 0};
 int desiredLeft = 0;
 int desiredRight = 0;
 int desiredAcceleration = 6000;
+int desiredStopMm = 150;
 bool driveWanted = false;
 bool turnWanted = false;
 bool safeWanted = false;
@@ -102,6 +103,7 @@ void finishLook(const char* result, bool sendStop) {
 
 void manualOverride() {
   ++status.controlGeneration;
+  status.approachArrived = false;
   scenePending = 0;
   sceneId = 0;
   finishLook("CANCELLED", true);
@@ -120,6 +122,7 @@ void handleLine(const char* line, uint32_t now) {
     status.edge = edge != 0;
     status.left = left;
     status.right = right;
+    status.statusTimestampMs = now;
     status.batteryMillivolts = battery;
     status.voiceCapable = voice == 1;
     int distance = -1, valid = 0, capable = 0;
@@ -135,6 +138,8 @@ void handleLine(const char* line, uint32_t now) {
     status.wiggleCapable = strstr(line, " WIGGLE=2") != nullptr;
     status.sceneCapable = strstr(line, " SCENE=1") != nullptr;
     status.autoRampCapable = strstr(line, " SAFE2=1") != nullptr;
+    status.chaseCloseCapable = strstr(line, " CLOSE=2") != nullptr;
+    status.closeApproachCapable = status.chaseCloseCapable || strstr(line, " CLOSE=1") != nullptr;
     snprintf(status.fault, sizeof(status.fault), "%s", fault);
     if (!status.ready) {
       clearDrive();
@@ -209,6 +214,11 @@ void handleLine(const char* line, uint32_t now) {
     clearDrive();
     finishLook(reason, true);
     queueStop();
+  } else if ((strcmp(line, "0 EVENT ARRIVED") == 0 || strstr(line, " OK ARRIVED")) &&
+             safeWanted && (desiredStopMm == 50 || desiredStopMm == 100)) {
+    // The Zumo is already braking locally; this is arrival, not a safety fault.
+    status.approachArrived = true;
+    clearDrive();
   } else if (strcmp(line, "0 EVENT TIMEOUT") == 0 ||
              strcmp(line, "0 EVENT OBSTACLE") == 0) {
     ++status.safetyEvents;
@@ -344,20 +354,24 @@ void stop(bool smooth) {
   portEXIT_CRITICAL(&stateLock);
 }
 
-bool safeDrive(int left, int right) {
+bool safeDrive(int left, int right, int stopDistanceMm) {
   if (left < 0 || left > 3200 || right < 0 || right > 3200) return false;
+  if (stopDistanceMm != 50 && stopDistanceMm != 100 && stopDistanceMm != 150) return false;
   const uint32_t now = millis();
   portENTER_CRITICAL(&stateLock);
   const bool allowed = status.ready && !status.edge && !strcmp(status.fault, "NONE") &&
       lastReply && now - lastReply < 500 && status.actionCapable &&
       status.rangeValid && status.autoRampCapable && !status.calibrating && !status.lookActive &&
       lastRangeReply && now - lastRangeReply < 250 &&
+      (stopDistanceMm != 100 || status.closeApproachCapable) &&
+      (stopDistanceMm != 50 || status.chaseCloseCapable) && !status.approachArrived &&
       !stopPending && !facePending && !scenePending && !sceneId &&
-      (left + right <= 0 || status.distanceMm > 150);
+      (left + right <= 0 || status.distanceMm > (stopDistanceMm < 150 ? stopDistanceMm - 20 : 150));
   if (allowed) {
-    desiredLeft = left;
+      desiredLeft = left;
     desiredRight = right;
     desiredAcceleration = configuredAcceleration;
+    desiredStopMm = stopDistanceMm;
     driveWanted = left || right;
     turnWanted = false;
     safeWanted = true;
@@ -536,7 +550,7 @@ void poll() {
   bool sendDrive = false;
   bool sendTurn = false;
   bool sendSafe = false;
-  int left = 0, right = 0, acceleration = 6000;
+  int left = 0, right = 0, acceleration = 6000, stopDistanceMm = 150;
   portENTER_CRITICAL(&stateLock);
   const bool connected = lastReply != 0 && now - lastReply < kLinkTimeoutMs;
   const uint32_t turnDeadline = lookWiggle ? 5000U :
@@ -625,6 +639,7 @@ void poll() {
     left = desiredLeft;
     right = desiredRight;
     acceleration = desiredAcceleration;
+    stopDistanceMm = desiredStopMm;
     lastDriveSent = now;
   }
   portEXIT_CRITICAL(&stateLock);
@@ -668,6 +683,7 @@ void poll() {
   } else if (sendDrive) {
     sendPrefix();
     if (sendTurn) zumoUart.printf("TURN %d\n", left);
+    else if (sendSafe && stopDistanceMm < 150) zumoUart.printf("SAFE %d %d %d %d\n", left, right, acceleration, stopDistanceMm);
     else if (sendSafe) zumoUart.printf("SAFE %d %d %d\n", left, right, acceleration);
     else zumoUart.printf("DRIVE %d %d %d\n", left, right, acceleration);
   }

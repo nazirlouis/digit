@@ -13,6 +13,8 @@ from voice_turn import VoiceTurn, WIGGLE_ACCELERATION, WIGGLE_DECELERATION
 MAX_LINE = 63
 MAX_DRIVE_SPEED = 6000
 MAX_AUTO_SPEED = 3200
+APPROACH_STOP_DISTANCES_MM = (50, 100)
+APPROACH_BRAKING_MARGIN_MM = 20
 SCENE_LABELS = ("NONE", "BATTERY", "MARKER", "SCREWDRIVER", "SEARCHING", "FOUND",
                 "PERSON", "EXIT", "NOT_SURE", "LOST", "OBSTACLE", "CHASE", "READY", "STOPPED")
 DEFAULT_ACCELERATION = 3000  # Motor speed units per second.
@@ -52,6 +54,8 @@ class UARTController:
         self.last_range_poll = None
         self.range_failed = False
         self.safe_motion = False
+        self.approach_stop_mm = 0
+        self.approach_arrived = False
         self.wake = WakeReaction(face, rgb_leds, clock)
         self.voice_turn = VoiceTurn(gyro, clock, turn_motor_sign) if gyro else None
         self.look_id = None
@@ -102,6 +106,8 @@ class UARTController:
         self.last_drive = None
         if not smooth:
             self.safe_motion = False
+            self.approach_stop_mm = 0
+            self.approach_arrived = False
         if self.look_id is not None:
             self._send(self.look_id + " ERR LOOK_CANCELLED")
         self.look_id = None
@@ -261,7 +267,7 @@ class UARTController:
             print("UART CONTROL: battery read error:", error)
             millivolts = -1
         valid = self._range_valid(self.clock.ticks_ms())
-        self._send("{} OK READY={} FAULT={} L={} R={} BAT={} EDGE={} VOICE={} DIST={} RANGE={} AUTO=1 BRAKE=1 LOOKRAMP=1 WIGGLE=2 SCENE=1 SAFE2=1".format(
+        self._send("{} OK READY={} FAULT={} L={} R={} BAT={} EDGE={} VOICE={} DIST={} RANGE={} AUTO=1 BRAKE=1 LOOKRAMP=1 WIGGLE=2 SCENE=1 SAFE2=1 CLOSE=2".format(
             command_id, int(self.ready), self.fault, self.left, self.right,
             millivolts, int(self.edge), int(self.voice_turn is not None),
             self.distance_mm, int(valid)))
@@ -312,6 +318,8 @@ class UARTController:
             self._stop()  # Manual motion supersedes an automatic voice turn.
         else:
             self._cancel_wake()
+        self.approach_stop_mm = 0
+        self.approach_arrived = False
         if left or right:
             self._target_motion(left, right, now, acceleration)
             self.safe_motion = False
@@ -393,28 +401,39 @@ class UARTController:
                 self._send(command_id + " OK KEEP")
             else:
                 self._send(command_id + " ERR NO_LOOK")
-        elif command in ("DRIVE", "SAFE") and len(args) in (2, 3):
+        elif (command == "DRIVE" and len(args) in (2, 3)) or (command == "SAFE" and len(args) in (2, 3, 4)):
             if not all((arg[1:] if arg.startswith("-") else arg).isdigit()
                        for arg in args):
                 self._send(command_id + " ERR ARGUMENT")
                 return
             left, right = int(args[0]), int(args[1])
-            acceleration = int(args[2]) if len(args) == 3 else DEFAULT_ACCELERATION
+            acceleration = int(args[2]) if len(args) >= 3 else DEFAULT_ACCELERATION
+            close = command == "SAFE" and len(args) == 4
+            stop_mm = int(args[3]) if close else 150
             if not (-MAX_DRIVE_SPEED <= left <= MAX_DRIVE_SPEED and
                     -MAX_DRIVE_SPEED <= right <= MAX_DRIVE_SPEED):
                 self._send(command_id + " ERR SPEED_RANGE")
             elif not MIN_ACCELERATION <= acceleration <= MAX_ACCELERATION:
                 self._send(command_id + " ERR ACCEL_RANGE")
-            elif command == "SAFE" and len(args) == 3 and not (0 <= left <= MAX_AUTO_SPEED and 0 <= right <= MAX_AUTO_SPEED):
+            elif close and stop_mm not in APPROACH_STOP_DISTANCES_MM:
+                self._send(command_id + " ERR DISTANCE_RANGE")
+            elif command == "SAFE" and len(args) >= 3 and not (0 <= left <= MAX_AUTO_SPEED and 0 <= right <= MAX_AUTO_SPEED):
                 self._send(command_id + " ERR AUTO_SPEED_RANGE")
             elif command == "SAFE" and not self._range_valid(now):
                 self._stop()
                 self._send(command_id + " ERR RANGE_UNAVAILABLE")
-            elif command == "SAFE" and left + right > 0 and self.distance_mm <= 150:
+            elif command == "SAFE" and left + right > 0 and self.distance_mm <= (stop_mm - APPROACH_BRAKING_MARGIN_MM if close else 150):
                 self._stop()
                 self._send(command_id + " ERR OBSTACLE")
+            elif close and (self.distance_mm <= stop_mm or self.approach_arrived):
+                self._stop(smooth=True)
+                self.approach_stop_mm = stop_mm
+                self.approach_arrived = True
+                self.safe_motion = self._moving()
+                self._send(command_id + " OK ARRIVED")
             else:
                 if self._apply_motion(command_id, left, right, now, command, acceleration):
+                    self.approach_stop_mm = stop_mm if close else 0
                     if left or right:
                         self.safe_motion = command == "SAFE" and self._moving()
         elif command == "TURN" and len(args) == 1:
@@ -428,7 +447,8 @@ class UARTController:
             else:
                 # Equal and opposite tracks enforce rotation at the robot.
                 # Positive turns right; negative turns left.
-                self._apply_motion(command_id, speed, -speed, now, "TURN")
+                self._apply_motion(command_id, speed, -speed, now, "TURN",
+                                   MAX_ACCELERATION)
         elif command == "WAKE" and not args:
             if self._moving():
                 self._send(command_id + " ERR MOVING")
@@ -546,9 +566,15 @@ class UARTController:
         if self.safe_motion:
             if not self._range_valid(now):
                 self._latch("SENSOR")
-            elif (self.left + self.right > 0 or self.target_left + self.target_right > 0) and self.distance_mm <= 150:
-                self._stop()
-                self._send("0 EVENT OBSTACLE")
+            elif self.left + self.right > 0 or self.target_left + self.target_right > 0:
+                hard_stop = self.approach_stop_mm - APPROACH_BRAKING_MARGIN_MM if self.approach_stop_mm else 150
+                if self.distance_mm <= hard_stop:
+                    self._stop()
+                    self._send("0 EVENT OBSTACLE")
+                elif self.approach_stop_mm and not self.approach_arrived and self.distance_mm <= self.approach_stop_mm:
+                    self._stop(smooth=True)
+                    self.approach_arrived = True
+                    self._send("0 EVENT ARRIVED")
         self._poll_uart(now)
         self._sample_calibration(now)
         if self.look_id is not None:

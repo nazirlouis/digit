@@ -33,6 +33,10 @@ struct Status {
   bool autoRampCapable;
   char sceneResult[24];
   uint32_t rangeAgeMs;
+  bool closeApproachCapable;
+  bool approachArrived;
+  bool chaseCloseCapable;
+  uint32_t statusTimestampMs;
 };
 
 void begin();
@@ -40,7 +44,7 @@ void poll();
 Status snapshot();
 bool drive(int left, int right, int acceleration = 6000);
 bool turn(int speed);
-bool safeDrive(int left, int right);
+bool safeDrive(int left, int right, int stopDistanceMm = 150);
 void stop(bool smooth = false);
 bool calibrate();
 bool isFaceName(const char* name);

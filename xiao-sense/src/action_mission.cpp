@@ -14,12 +14,21 @@ enum class Beat { Idle, Present, Observe, Turn, Drive, Brake, Return,
                   EscapeRead, Celebrate, Finish };
 constexpr uint32_t kFreshMs = 1200;
 constexpr int kApproachSpeed = 2800;
+constexpr int kCloseSpeed = 2400;
+constexpr int kFindMeStopMm = 100;
+constexpr int kChaseStopMm = 50;
+constexpr int kChaseResumeMm = 100;
+constexpr uint32_t kPersonConfirmMs = 1600;
 constexpr const char* labels[] = {"BATTERY", "MARKER", "SCREWDRIVER"};
 Command task = Command::None;
 Beat beat = Beat::Idle, afterPresent = Beat::Observe, afterTurn = Beat::Observe, afterBrake = Beat::Observe;
 bool running = false, ownsVision = false, objects = false, returning = false;
 bool issued = false, cueIssued = false, cheering = false, centerChirp = false, chaseNear = false;
 bool exitTarget = false, sawTarget = false;
+bool closeArrival = false;
+unsigned personHits = 0;
+uint32_t candidateAt = 0;
+int driveSpeed = kApproachSpeed;
 const char* message = "Idle";
 const char* expression = "CURIOUS";
 const char* caption = "SEARCHING";
@@ -51,6 +60,7 @@ bool visionMode(bool useObjects) {
 void observe() {
   beat = Beat::Observe; at = millis(); freshAfter = lastFreshAt = at;
   lastFrame = 0; matches = 0; candidateClass = -1;
+  personHits = 0; candidateAt = 0;
 }
 void present(const char* face, const char* label, AudioCue sound, Beat next, const char* phase) {
   expression = face; caption = label; cue = sound; afterPresent = next;
@@ -75,15 +85,21 @@ void brake(Beat next) {
 void drive() {
   beat = Beat::Drive; at = millis(); lastDrive = 0;
   // Let the selected ramp reach usable torque, then take a short forward step.
-  driveFor = (kApproachSpeed * 1000U + zumo_link::acceleration() - 1) / zumo_link::acceleration() + 180;
+  const auto z = zumo_link::snapshot();
+  const bool close = (task == Command::FindMe || task == Command::Chase) && z.rangeValid && z.distanceMm < 300;
+  driveSpeed = close ? kCloseSpeed : kApproachSpeed;
+  driveFor = (driveSpeed * 1000U + zumo_link::acceleration() - 1) / zumo_link::acceleration() + (close ? 80 : 180);
 }
 void celebrate() {
   stopVision(); zumo_link::stop(); audioEngine.cancelOutput();
   beat = Beat::Celebrate; at = millis(); issued = cheering = centerChirp = false;
   message = returning ? "Found it and found you!" : task == Command::Escape ? "Found the way out!" : "Found you!";
 }
+bool freshFrame(const Vision& v, uint32_t now) {
+  return v.hasResult && v.resultAgeMs <= kFreshMs && now - v.captureTimestampMs <= kFreshMs;
+}
 bool goodFrame(const Vision& v, uint32_t now) {
-  return v.hasResult && v.resultAgeMs <= kFreshMs && now - v.captureTimestampMs <= kFreshMs &&
+  return freshFrame(v, now) &&
       static_cast<int32_t>(v.captureTimestampMs - freshAfter) >= 0;
 }
 const Vision::Box* select(const Vision& v) {
@@ -91,7 +107,7 @@ const Vision::Box* select(const Vision& v) {
   int bestRank = -1000000;
   for (unsigned i = 0; i < v.boxCount; ++i) {
     const auto& box = v.boxes[i];
-    if (box.x2 <= box.x1 || box.y2 <= box.y1 || box.scorePercent < (objects ? 50 : 60)) continue;
+    if (box.x2 <= box.x1 || box.y2 <= box.y1 || box.scorePercent < (objects ? 50 : vision_service::kPersonConfidencePercent)) continue;
     if (objects && (box.classId >= 3 || (targetClass >= 0 && box.classId != targetClass))) continue;
     const int area = (box.x2-box.x1) * (box.y2-box.y1);
     const int rank = (task == Command::Identify || (task == Command::Chase && targetClass < 0))
@@ -138,14 +154,25 @@ void rangeRead(const zumo_link::Status& z, uint32_t now) {
 }
 void inspect(const Vision& v, const zumo_link::Status& z, uint32_t now) {
   if (!goodFrame(v, now) || v.resultTimestampMs == lastFrame) {
+    if (!objects && !goodFrame(v, now)) message = "Waiting for a fresh person image";
     if (now - lastFreshAt > 6000) outcome("Waiting for fresh camera images", false, "NOT_SURE");
     return;
   }
   lastFrame = v.resultTimestampMs;
   lastFreshAt = now;
+  if (!objects) {
+    personHits = (personHits << 1) & 7;
+    if (candidateAt && now-candidateAt > kPersonConfirmMs) { personHits = 0; candidateClass = -1; }
+  }
   const auto* box = select(v);
   if (!box) {
-    matches = 0; candidateClass = -1;
+    matches = 0;
+    if (objects) candidateClass = -1;
+    else {
+      message = candidateAt && now-candidateAt < kPersonConfirmMs ?
+          "Person briefly lost; checking again" : "Looking for a person";
+      if ((candidateAt && now-candidateAt < kPersonConfirmMs) || now-at < 1800) return;
+    }
     if (task == Command::Escape && !exitTarget) {
       if (now - at < 700) return;
       if (!z.rangeValid || z.rangeAgeMs >= 250 || z.distanceMm < 500) { beginEscapeScan(z); return; }
@@ -159,10 +186,16 @@ void inspect(const Vision& v, const zumo_link::Status& z, uint32_t now) {
   }
   const int x = (box->x1 + box->x2) / 2;
   const int category = objects ? box->classId : 0;
-  if (candidateClass == category && abs(x-candidateX) <= v.imageWidth/4) ++matches;
-  else matches = 1;
+  const bool consistent = candidateClass == category && abs(x-candidateX) <= v.imageWidth/4;
+  if (consistent) ++matches;
+  else { matches = 1; personHits = 0; }
   candidateClass = category; candidateX = x;
-  if (matches < 3) return;
+  if (objects) { if (matches < 3) return; }
+  else {
+    candidateAt = now; personHits |= 1;
+    const unsigned hits = (personHits & 1) + ((personHits >> 1) & 1) + ((personHits >> 2) & 1);
+    if (hits < 2) { message = "Person seen; confirming"; return; }
+  }
   sawTarget = true;
   scans = 0;
   if (task == Command::Identify) {
@@ -187,11 +220,13 @@ void inspect(const Vision& v, const zumo_link::Status& z, uint32_t now) {
   }
   corrections = 0;
   if (!z.rangeValid || z.rangeAgeMs >= 250) {
+    if (!objects) message = "Person found; waiting for the distance sensor";
     if (now-at > 4500) outcome("Cannot measure the path ahead", false, "OBSTACLE");
     return;
   }
-  const int stopAt = task == Command::Chase ? 450 : 550;
-  if (z.distanceMm <= stopAt) {
+  const int stopAt = task == Command::FindMe ? kFindMeStopMm : task == Command::Chase ? kChaseStopMm : 550;
+  if (closeArrival && z.distanceMm > stopAt + 20) closeArrival = false;
+  if (z.distanceMm <= stopAt || closeArrival) {
     if (task == Command::Chase) {
       if (!chaseNear) {
         chaseNear = true;
@@ -200,7 +235,7 @@ void inspect(const Vision& v, const zumo_link::Status& z, uint32_t now) {
     } else celebrate();
     return;
   }
-  if (task == Command::Chase && chaseNear && z.distanceMm < 600) return;
+  if (task == Command::Chase && chaseNear && z.distanceMm < kChaseResumeMm) return;
   const bool wasNear = chaseNear;
   chaseNear = false;
   present("SERIOUS", objects ? labels[targetClass] : "PERSON", wasNear ? AudioCue::Curious : AudioCue::None,
@@ -213,6 +248,7 @@ bool start(Command value) {
   cancel(); task = value; running = true;
   started = at = millis(); scans = corrections = advances = 0; heading = 0;
   returning = chaseNear = exitTarget = sawTarget = false;
+  closeArrival = false;
   targetClass = value >= Command::FindBattery && value <= Command::FindScrewdriver ? int(value)-int(Command::FindBattery) : -1;
   if (value == Command::Escape) targetClass = 1; // Marker placed at the course exit.
   limitMs = value == Command::Identify ? 12000 : value == Command::Chase ? 60000 : 150000;
@@ -274,22 +310,30 @@ void poll() {
       break;
     case Beat::Drive: {
       const bool course = task == Command::Escape && !exitTarget;
-      const bool frameFresh = v.hasResult && v.resultAgeMs <= kFreshMs && now-v.captureTimestampMs <= kFreshMs;
+      const bool frameFresh = freshFrame(v, now);
       const auto* box = frameFresh ? select(v) : nullptr;
       const bool aligned = box && abs((box->x1+box->x2)/2-v.imageWidth/2) <= v.imageWidth/8;
-      const int stopAt = course ? 350 : task == Command::Chase ? 450 : 550;
+      const int stopAt = course ? 350 : task == Command::FindMe ? kFindMeStopMm : task == Command::Chase ? kChaseStopMm : 550;
+      const bool closeApproach = task == Command::FindMe || task == Command::Chase;
+      if (closeApproach && z.approachArrived) closeArrival = true;
       if (!z.rangeValid || z.rangeAgeMs >= 250 || z.distanceMm <= stopAt ||
-          !frameFresh || (!course && !aligned) || now-at >= driveFor) {
+          closeArrival || !frameFresh || (!course && !aligned) ||
+          now-at >= driveFor) {
         brake(Beat::Observe); return;
       }
       if (!lastDrive || now-lastDrive >= 80) {
-        if (!zumo_link::safeDrive(kApproachSpeed, kApproachSpeed)) { outcome("Approach was rejected", false, "OBSTACLE"); return; }
+        if (!zumo_link::safeDrive(driveSpeed, driveSpeed, closeApproach ? stopAt : 150)) {
+          outcome("Approach was rejected", false, "OBSTACLE"); return;
+        }
         lastDrive = now;
       }
       break;
     }
     case Beat::Brake:
-      if (stopped(z)) { beat = afterBrake; observe(); }
+      if (stopped(z)) {
+        beat = afterBrake; at = now; issued = false;
+        if (beat == Beat::Observe) observe();
+      }
       else if (now-at > 1200) outcome("Motors did not stop");
       break;
     case Beat::Return:

@@ -5,6 +5,7 @@ struct Phrase { int command; const char* text; };
 inline constexpr Phrase phrases[] = {
   {1, "SAY HELLO"},
   {8, "FIND ME"},
+  {16, "FOLLOW ME"},
   {9, "WHAT IS THIS"}, {9, "WHAT'S THIS"},
   {10, "FIND A BATTERY"}, {10, "FIND ME A BATTERY"},
   {11, "FIND A MARKER"}, {11, "FIND ME A MARKER"},

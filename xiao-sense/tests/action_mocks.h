@@ -18,6 +18,11 @@ inline void xSemaphoreGiveRecursive(SemaphoreHandle_t m) { m->unlock(); }
 #define configASSERT(x) assert(x)
 #define portENTER_CRITICAL(x) ((void)(x))
 #define portEXIT_CRITICAL(x) ((void)(x))
+using portMUX_TYPE = int;
+#define portMUX_INITIALIZER_UNLOCKED 0
+#ifdef FOLLOW_TRANSLATION
+static struct { void println(const char*) {} template<class... T> void printf(const char*,T...) {} } Serial;
+#endif
 struct AudioEngine {
   bool playing = false;
   bool available = true;
@@ -54,7 +59,13 @@ inline void listen(uint32_t generation) { listening=true;listenGeneration=genera
 inline void cancel() { listening=false; }
 inline Status snapshot() { return {listening}; }
 }
-namespace person_follow { inline bool enabled=false; inline bool setEnabled(bool v) { enabled=v; return true; } }
+namespace person_follow {
+struct Status { bool enabled; const char* phase; int targetX; int errorPixels; uint8_t scorePercent; };
+bool setEnabled(bool);
+bool heartbeat();
+void poll();
+Status snapshot();
+}
 namespace photo_store {
 inline bool pending=false,cancelled=false;
 inline unsigned captures=0;
@@ -66,9 +77,10 @@ inline bool failed() { return false; }
 }
 namespace camera_service {}
 namespace vision_service {
+inline constexpr uint8_t kPersonConfidencePercent=55;
 struct Status {
   bool ready=true,enabled=false,hasResult=true,personDetected=true,batteryMode=false,batteryReady=true;
-  uint32_t resultAgeMs=0,resultTimestampMs=1,captureTimestampMs=0;
+  uint32_t resultAgeMs=0,resultTimestampMs=1,captureTimestampMs=0,totalMs=0;
   struct Box { int x1=100,y1=40,x2=210,y2=200; uint8_t scorePercent=90,classId=0; } boxes[5];
   uint8_t boxCount=1;
   int imageWidth=320,imageHeight=240;
@@ -82,9 +94,10 @@ namespace zumo_link {
 struct Status {
   bool connected=true,ready=true,calibrating=false,edge=false,actionCapable=true;
   bool voiceCapable=true,rangeValid=true,lookActive=false,manualDriving=false,rampedLookCapable=true;
-  bool wiggleCapable=true,sceneCapable=true,autoRampCapable=true;
+  bool wiggleCapable=true,sceneCapable=true,autoRampCapable=true,closeApproachCapable=true,approachArrived=false,chaseCloseCapable=true;
   int left=0,right=0,distanceMm=900;
   uint32_t controlGeneration=0,replyAgeMs=0,safetyEvents=0,rangeAgeMs=0;
+  uint32_t statusTimestampMs=0;
   char fault[24]="NONE",lookResult[24]="NONE",sceneResult[24]="NONE";
 };
 inline Status state;
@@ -93,12 +106,14 @@ inline unsigned stops=0;
 inline bool lastStopSmooth=false;
 inline uint32_t turnAt=0;
 inline int selectedAcceleration=6000;
+inline int lastStopDistance=150;
 inline bool gesture=false,excitedGesture=false,sceneAvailable=true;
 inline std::vector<int> angles;
 inline std::vector<std::string> scenes;
 inline Status snapshot() { return state; }
-inline void stop(bool smooth=false) { lastStopSmooth=smooth;++stops;state.left=state.right=0;state.lookActive=state.manualDriving=false;++state.controlGeneration; }
-inline bool safeDrive(int left,int right) { state.left=left;state.right=right;++motions;return true; }
+inline void stop(bool smooth=false) { lastStopSmooth=smooth;++stops;state.approachArrived=false;state.left=state.right=0;state.lookActive=state.manualDriving=false;++state.controlGeneration; }
+inline bool safeDrive(int left,int right,int stopMm=150) { lastStopDistance=stopMm;state.left=left;state.right=right;++motions;return true; }
+inline bool turn(int speed) { state.left=speed;state.right=-speed;++motions;return state.ready; }
 inline bool look(int angle,uint32_t) { gesture=false;angles.push_back(angle);state.lookActive=true;turnAt=nowMs;std::strcpy(state.lookResult,"TURNING");++motions;return true; }
 inline bool wiggle(uint32_t generation,bool excited=false) { look(15,generation);gesture=true;excitedGesture=excited;std::strcpy(state.lookResult,"PREPARING");return true; }
 inline bool face(const char*) { return true; }

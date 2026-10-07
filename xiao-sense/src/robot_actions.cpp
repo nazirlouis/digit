@@ -93,6 +93,7 @@ const char* name(Command value) {
     case Command::None: return "Idle";
     case Command::Hello: return "Say hello";
     case Command::Stop: return "Stop";
+    case Command::FollowMe: return "Follow me";
     case Command::FindMe: return "Find me";
     case Command::Identify: return "What's this?";
     case Command::FindBattery: return "Find a battery";
@@ -109,7 +110,9 @@ void stop(const char* reason, bool smooth) {
   ++controlEpoch;
   action_mission::cancel();
   wake_word::cancel(); speech_commands::cancel(); photo_store::cancel();
+  const bool wasFollowing = person_follow::snapshot().enabled;
   person_follow::setEnabled(false);
+  if (wasFollowing) vision_service::setEnabled(false);
   if (vision_service::snapshot().batteryMode) vision_service::setEnabled(false);
   audioEngine.cancelOutput();
   finish(reason, smooth);
@@ -125,18 +128,31 @@ bool start(Command value, uint32_t expected) {
   if (value == Command::Stop) { stop(); return true; }
   if (!validCommand(static_cast<int>(value))) return false;
   const auto z = zumo_link::snapshot();
+  const bool tracking = value == Command::FollowMe;
   const bool stationary = value == Command::Identify;
+  if (!stationary && z.edge) {
+    phase = "Edge stop: place Digit fully on the surface and recalibrate"; return false;
+  }
   if (!z.connected || z.calibrating || (!stationary &&
       (!z.ready || z.edge || strcmp(z.fault,"NONE") || !z.actionCapable))) {
     phase = "Calibrate the connected, updated Zumo first"; return false;
   }
-  if (!stationary && !z.voiceCapable) {
+  if (!stationary && !tracking && !z.voiceCapable) {
     phase = "Gyroscope unavailable"; return false;
   }
-  if (!stationary && (!z.rampedLookCapable || !z.wiggleCapable)) {
+  if (!stationary && !tracking && (!z.rampedLookCapable || !z.wiggleCapable)) {
     phase = "Update Zumo turn files for synchronized greetings"; return false;
   }
-  if (value != Command::Hello) {
+  if (tracking && !vision_service::snapshot().ready) {
+    phase = "Person detector unavailable"; return false;
+  }
+  if (value != Command::Hello && !tracking) {
+    if (value == Command::FindMe && !z.closeApproachCapable) {
+      phase = "Update Zumo for the 10 cm approach"; return false;
+    }
+    if (value == Command::Chase && !z.chaseCloseCapable) {
+      phase = "Update Zumo for the 5 cm chase"; return false;
+    }
     const auto v = vision_service::snapshot();
     if (!z.sceneCapable || (!stationary && !z.autoRampCapable)) {
       phase = "Update Zumo action and display files first"; return false;
@@ -152,7 +168,11 @@ bool start(Command value, uint32_t expected) {
   entered = turnIssued = false;
   greetingVoiceStarted = centerVoiceStarted = false;
   phase = name(value);
-  if (value != Command::Hello && !action_mission::start(value)) {
+  if (tracking) {
+    if (!vision_service::setEnabled(true) || !person_follow::setEnabled(true)) {
+      vision_service::setEnabled(false); finish("Person tracking unavailable"); return false;
+    }
+  } else if (value != Command::Hello && !action_mission::start(value)) {
     finish(action_mission::phase()); return false;
   }
   return true;
@@ -163,10 +183,18 @@ void poll() {
   const auto z = zumo_link::snapshot();
   if (!z.connected || z.calibrating || z.safetyEvents != safetyEvents ||
       (command != Command::Identify && (!z.ready || z.edge || strcmp(z.fault,"NONE")))) {
-    stop("Routine cancelled: Zumo stopped or locked"); return;
+    stop(z.edge ? "Edge detected: place Digit fully on the surface and recalibrate" :
+         "Routine cancelled: Zumo stopped or locked"); return;
   }
   const uint32_t now = millis();
-  if (command == Command::Hello) sequence(hello, sizeof(hello)/sizeof(hello[0]), now);
+  if (command == Command::FollowMe) {
+    const auto follow = person_follow::snapshot();
+    if (!follow.enabled) {
+      vision_service::setEnabled(false); finish(follow.phase); return;
+    }
+    person_follow::heartbeat();
+    phase = follow.phase;
+  } else if (command == Command::Hello) sequence(hello, sizeof(hello)/sizeof(hello[0]), now);
   else {
     action_mission::poll();
     phase = action_mission::phase();

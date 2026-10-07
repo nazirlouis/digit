@@ -20,7 +20,7 @@ constexpr int kHeight = 240;
 // Leave headroom for occasional camera waits while the MJPEG stream is active.
 constexpr uint32_t kPeriodMs = 400;
 constexpr uint32_t kStaleMs = 5000;
-constexpr float kScoreThreshold = 0.55f;
+constexpr float kScoreThreshold = vision_service::kPersonConfidencePercent / 100.0f;
 constexpr float kBatteryScoreThreshold = 0.35f;
 portMUX_TYPE lock = portMUX_INITIALIZER_UNLOCKED;
 vision_service::Status state = {};

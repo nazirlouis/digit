@@ -47,7 +47,9 @@ const char kIndexHtml[] PROGMEM = R"HTML(
     .video{aspect-ratio:4/3;background:#020506;display:grid;place-items:center;position:relative}.video img{width:100%;height:100%;object-fit:contain}
     .video canvas{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
     .video span{position:absolute;bottom:12px;left:12px;background:#071014cc;border-radius:999px;padding:7px 11px;font-size:13px}
-    .person-badge{position:absolute;top:12px;left:12px;padding:9px 14px;border-radius:999px;background:#36e4ff;color:#00151c;font-size:15px;box-shadow:0 4px 20px #0009}
+    .camera-readouts{position:absolute;top:12px;left:12px;right:12px;display:flex;flex-wrap:wrap;align-items:flex-start;gap:8px;pointer-events:none}
+    .person-badge{padding:9px 14px;border-radius:999px;background:#36e4ff;color:#00151c;font-size:15px;box-shadow:0 4px 20px #0009}
+    .distance-badge{margin-left:auto;padding:9px 12px;border:1px solid #36e4ff;border-radius:12px;background:#071014ed;color:#eefcff;font-size:15px;font-weight:750;font-variant-numeric:tabular-nums;box-shadow:0 4px 20px #0009}.distance-badge.unavailable{border-color:#8da4ae;color:#b7cbd3}
     [hidden]{display:none!important}
     .controls{padding:18px;display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px}button{border:0;border-radius:13px;padding:14px 10px;font-weight:750;cursor:pointer;background:#233740;color:#fff}
     button.primary{background:var(--cyan);color:#00151c}button.danger{background:#4a1d29;color:#ffdbe2}button:disabled{opacity:.35;cursor:not-allowed}
@@ -72,7 +74,7 @@ const char kIndexHtml[] PROGMEM = R"HTML(
   <div class="top"><div><h1>Digit Sense</h1><div style="color:var(--muted)">Live camera + ReSpeaker recorder</div></div><div class="pill" id="state">CONNECTING</div></div>
   <section class="panel">
     <div class="drive-view">
-    <div class="video"><img id="stream" alt="Digit camera stream"><canvas id="boxes" width="640" height="480" aria-hidden="true"></canvas><strong class="person-badge" id="personBadge" hidden>Naz Detected</strong><span id="camera">Camera starting...</span></div>
+    <div class="video"><img id="stream" alt="Digit camera stream"><canvas id="boxes" width="640" height="480" aria-hidden="true"></canvas><div class="camera-readouts"><strong class="person-badge" id="personBadge" hidden>Naz Detected</strong><output class="distance-badge unavailable" id="distanceBadge" title="Distance from the front ToF sensor">ToF: connecting</output></div><span id="camera">Camera starting...</span></div>
     <aside class="zumo" id="zumoDrive" aria-label="Zumo drive controls">
       <h2>Zumo drive</h2><p>Hold a direction to move. Release to stop. Calibrate on safe floor first.</p>
       <div class="zumo-status"><span id="zumoLink">Zumo: connecting</span><span id="zumoReady">Drive: locked</span><span id="zumoBattery">Battery: --</span><span id="zumoFault">Fault: --</span></div>
@@ -135,8 +137,10 @@ const char kIndexHtml[] PROGMEM = R"HTML(
       <h2>Digit actions</h2>
       <p id="commandState">Checking voice commands...</p>
       <p><strong id="routineState">Idle</strong></p>
+      <p id="actionAvailability" role="status"></p>
       <div class="zumo-actions">
         <button data-routine="1" onclick="startRoutine(1)">Say hello</button>
+        <button data-routine="16" onclick="startRoutine(16)">Follow me</button>
         <button data-routine="8" onclick="startRoutine(8)">Find me</button>
         <button data-routine="9" onclick="startRoutine(9)">What's this?</button>
         <button data-routine="10" onclick="startRoutine(10)">Find a battery</button>
@@ -147,6 +151,7 @@ const char kIndexHtml[] PROGMEM = R"HTML(
         <button class="danger" onclick="stopZumo()">STOP ALL</button>
       </div>
       <p>Say “Digit”, then a command. Moving actions need floor calibration. “What's this?” stays still and shows the object name on Digit's screen.</p>
+      <p>Follow me turns in place to keep you centered in the camera. It stays still when you are centered or out of view, and resumes tracking when you reappear. It never drives closer. Press Stop to finish.</p>
       <p>For Chase this, hold a battery, marker, or screwdriver in view. For Find a way out, use a small floor course and place a marker at its exit. Object searches turn in place, then look for you again.</p>
       <p>STOP cancels movement, speech, and pending commands. Saying “Digit” during an action stops it to listen.</p>
       <p id="routineMessage" role="status"></p>
@@ -186,8 +191,8 @@ let heldDirection=null,driveTimer=null,driveInFlight=false,zumoReady=false,camer
 let voiceEnabled=false,voicePending=false,batteryEnabled=false,batteryPending=false,batteryNotice='';
 let controlGeneration=0,routinePending=false,stopPending=false,hardStopPending=false,stopRequests=0,actionActive=false;
 const routineButtons=[...document.querySelectorAll('[data-routine]')];
-const actionNames={1:'Say hello',7:'Stop',8:'Find me',9:"What's this?",10:'Find a battery',11:'Find a marker',12:'Find a screwdriver',13:'Chase this',14:'Find a way out'};
-async function refreshActions(){try{const response=await fetch('/api/actions',{cache:'no-store'});if(!response.ok)throw Error('Action status unavailable');const s=await response.json();controlGeneration=Math.max(controlGeneration,s.generation);actionActive=s.active;$('routineState').textContent=s.action+' · '+s.phase;$('commandState').textContent=s.listening?(s.voice_result==='Wake voice'?'Digit is answering…':'Listening for your command…'):s.voice_ready?(s.voice_result==='No command recognized'?'No command heard. Say Digit and try again.':(s.voice_result==='Audio queue overflow'||s.voice_result==='Audio interrupted')?'Listening interrupted. Say Digit and try again.':s.voice_result==='Recognized'?'Heard: '+(actionNames[s.last_command]||'command'):'Say Digit, then a command'):s.voice_error||'Voice commands unavailable';for(const b of routineButtons){const id=Number(b.dataset.routine);const ready=id===9?s.identify_ready:id===1?s.drive_ready:id===8?s.person_action_ready:s.object_action_ready;b.disabled=!ready||routinePending||stopPending;}}catch(error){$('commandState').textContent=error.message;for(const b of routineButtons)b.disabled=true}}
+const actionNames={1:'Say hello',7:'Stop',8:'Find me',9:"What's this?",10:'Find a battery',11:'Find a marker',12:'Find a screwdriver',13:'Chase this',14:'Find a way out',16:'Follow me'};
+async function refreshActions(){try{const response=await fetch('/api/actions',{cache:'no-store'});if(!response.ok)throw Error('Action status unavailable');const s=await response.json();controlGeneration=Math.max(controlGeneration,s.generation);actionActive=s.active;$('routineState').textContent=s.action+' · '+s.phase;$('commandState').textContent=s.listening?(s.voice_result==='Wake voice'?'Digit is answering…':'Listening for your command…'):s.voice_ready?(s.voice_result==='No command recognized'?'No command heard. Say Digit and try again.':(s.voice_result==='Audio queue overflow'||s.voice_result==='Audio interrupted')?'Listening interrupted. Say Digit and try again.':s.voice_result==='Recognized'?'Heard: '+(actionNames[s.last_command]||'command'):'Say Digit, then a command'):s.voice_error||'Voice commands unavailable';$('actionAvailability').textContent=s.movement_reason||'';for(const b of routineButtons){const id=Number(b.dataset.routine);const ready=id===9?s.identify_ready:id===1?s.drive_ready:id===8?s.person_action_ready:id===16?s.follow_action_ready:id===13?s.chase_action_ready:s.object_action_ready;b.disabled=!ready||routinePending||stopPending;}}catch(error){$('commandState').textContent=error.message;for(const b of routineButtons)b.disabled=true}}
 async function startRoutine(id){if(!actionNames[id]||id===7||routinePending||stopPending||!controlGeneration)return;routinePending=true;try{const response=await fetch('/api/actions?command='+id+'&generation='+controlGeneration+'&acceleration='+Number($('driveAcceleration').value),{method:'POST'});const s=await response.json();if(!response.ok)throw Error(s.message);controlGeneration=Math.max(controlGeneration,s.generation);$('routineMessage').textContent=s.message}catch(error){$('routineMessage').textContent=error.message}finally{routinePending=false;await refreshActions()}}
 async function voiceAction(value){if(voicePending)return;voicePending=true;try{const response=await fetch('/api/voice/setup?action='+value,{method:'POST'});const data=await response.json();if(!response.ok)throw Error(data.message);$('voiceMessage').textContent=data.message}catch(error){$('voiceMessage').textContent=error.message}finally{voicePending=false;await refreshVoice()}}
 async function refreshVoice(){try{const response=await fetch('/api/voice/status',{cache:'no-store'});if(!response.ok)throw Error('Unavailable');const s=await response.json();voiceEnabled=s.enabled;$('voiceState').textContent=s.turning?'Turning toward saved voice direction':s.paused?'Paused for vision':s.error||(!s.available?'Direction unavailable':!s.front_set?'Set the front direction':!s.calibrated?'Now set Digit’s left side':s.enabled?(!s.gyro_ready?'Voice turning on · update Zumo turn files':!s.drive_ready?'Voice turning on · calibrate the floor':'Voice turning enabled'):'Direction ready · turning off');$('voiceAngle').textContent=s.stable?` · ${Math.round(s.degrees)}° at array`+(s.calibrated?` · ${Math.round(Math.abs(s.relative))}° ${s.relative>=0?'left':'right'}`:''):' · waiting for clear speech';const setup=s.stable&&!s.paused&&!s.turning&&!voicePending;$('voiceFront').disabled=!setup;$('voiceLeft').disabled=!setup||!s.front_set;$('voiceToggle').textContent=s.enabled?'Disable voice turning':'Enable voice turning';$('voiceToggle').disabled=voicePending;$('voiceResult').textContent=s.result==='NONE'?'':s.result==='DONE'?'Last turn completed':`Last turn: ${s.result}`;if(!s.gyro_ready)$('voiceResult').textContent+=' · Check Zumo connection, updated turn files, and gyro'}catch(error){$('voiceState').textContent='Direction unavailable';$('voiceFront').disabled=$('voiceLeft').disabled=$('voiceToggle').disabled=true}}
@@ -238,7 +243,17 @@ function ledPath(off){const hex=off?'000000':$('ledColor').value.slice(1);const 
 $('ledBrightness').addEventListener('input',event=>{$('ledBrightnessValue').textContent=event.target.value});
 for(const [id,off] of [['ledApply',false],['ledOff',true]]){$(id).addEventListener('click',async()=>{try{await postZumo(ledPath(off));$('ledResult').textContent='Sending...'}catch(error){$('ledResult').textContent=error.message}})}
 window.addEventListener('blur',()=>stopZumo(true));document.addEventListener('visibilitychange',()=>{if(document.hidden)stopZumo(true)});
-async function refreshZumo(){try{const response=await fetch('/api/zumo/status',{cache:'no-store'});if(!response.ok)throw Error('Status unavailable');const s=await response.json();zumoReady=s.connected&&s.ready&&!s.calibrating;if(Number.isFinite(s.acceleration)&&!accelerationDirty&&!accelerationSending){$('driveAcceleration').value=s.acceleration;$('driveAccelerationValue').textContent=s.acceleration;}$('zumoLink').textContent=s.connected?'Zumo: connected':'Zumo: disconnected';$('zumoReady').textContent=s.calibrating?'Drive: calibrating':zumoReady?'Drive: ready':'Drive: locked';$('zumoBattery').textContent=s.battery_mv>=0?`Battery: ${(s.battery_mv/1000).toFixed(2)} V`:'Battery: --';$('zumoFault').textContent='Fault: '+s.fault;$('ledApply').disabled=$('ledOff').disabled=!s.connected;$('ledResult').textContent=s.connected?(s.led_result==='APPLIED'?'Zumo acknowledged':s.led_result==='SENDING'?'Sending...':s.led_result==='NONE'?'--':s.led_result):'Disconnected';for(const button of driveButtons)button.disabled=!zumoReady||followEnabled;$('zumoCalibrate').disabled=!s.connected||s.calibrating||!!heldDirection||followEnabled;faceAvailable=s.connected&&!s.calibrating&&!s.left&&!s.right&&!s.look_active&&!s.manual_driving&&!heldDirection&&!followEnabled&&!actionActive;updateFaceControls();if(!zumoReady&&heldDirection)stopZumo(true);let message='Waiting for Zumo connection...';if(s.connected){if(s.calibrating)message='Calibrating floor...';else if(s.fault!=='NONE')message='Zumo fault: '+s.fault;else if(s.last_error!=='NONE')message=s.last_error;else if(zumoReady)message='Hold a direction to drive.';else message='Connected. Calibrate floor on a safe surface to enable driving.'}$('zumoMessage').textContent=message}catch(error){zumoReady=false;faceAvailable=false;updateFaceControls();for(const button of [...driveButtons,...faceButtons])button.disabled=true;$('ledApply').disabled=$('ledOff').disabled=true;$('ledResult').textContent='Unavailable';$('zumoLink').textContent='Zumo: unavailable';$('zumoMessage').textContent='Zumo status unavailable';if(heldDirection)stopZumo(true)}}
+let distanceTimer=null,zumoRefreshPending=false;
+function updateDistance(s){
+  if(distanceTimer!==null){clearTimeout(distanceTimer);distanceTimer=null;}
+  const badge=$('distanceBadge');
+  const fresh=s?.connected&&s.range_valid&&Number.isFinite(s.distance_mm)&&s.distance_mm>0&&Number.isFinite(s.range_age_ms)&&s.range_age_ms<250;
+  badge.className='distance-badge'+(fresh?'':' unavailable');
+  badge.textContent=fresh?`ToF: ${(s.distance_mm/10).toFixed(1)} cm`:!s?.connected?'ToF: offline':s.range_age_ms>=250?'ToF: stale':'ToF: unavailable';
+  // A stalled request must not leave the last number looking live indefinitely.
+  if(fresh)distanceTimer=setTimeout(()=>{badge.textContent='ToF: stale';badge.className='distance-badge unavailable';distanceTimer=null;},1500);
+}
+async function refreshZumo(){if(zumoRefreshPending)return;zumoRefreshPending=true;try{const response=await fetch('/api/zumo/status',{cache:'no-store'});if(!response.ok)throw Error('Status unavailable');const s=await response.json();updateDistance(s);zumoReady=s.connected&&s.ready&&!s.calibrating;if(Number.isFinite(s.acceleration)&&!accelerationDirty&&!accelerationSending){$('driveAcceleration').value=s.acceleration;$('driveAccelerationValue').textContent=s.acceleration;}$('zumoLink').textContent=s.connected?'Zumo: connected':'Zumo: disconnected';$('zumoReady').textContent=s.calibrating?'Drive: calibrating':zumoReady?'Drive: ready':'Drive: locked';$('zumoBattery').textContent=s.battery_mv>=0?`Battery: ${(s.battery_mv/1000).toFixed(2)} V`:'Battery: --';$('zumoFault').textContent='Fault: '+s.fault;$('ledApply').disabled=$('ledOff').disabled=!s.connected;$('ledResult').textContent=s.connected?(s.led_result==='APPLIED'?'Zumo acknowledged':s.led_result==='SENDING'?'Sending...':s.led_result==='NONE'?'--':s.led_result):'Disconnected';for(const button of driveButtons)button.disabled=!zumoReady||followEnabled;$('zumoCalibrate').disabled=!s.connected||s.calibrating||!!heldDirection||followEnabled;faceAvailable=s.connected&&!s.calibrating&&!s.left&&!s.right&&!s.look_active&&!s.manual_driving&&!heldDirection&&!followEnabled&&!actionActive;updateFaceControls();if(!zumoReady&&heldDirection)stopZumo(true);let message='Waiting for Zumo connection...';if(s.connected){if(s.calibrating)message='Calibrating floor...';else if(s.fault!=='NONE')message='Zumo fault: '+s.fault;else if(s.last_error!=='NONE')message=s.last_error;else if(zumoReady)message='Hold a direction to drive.';else message='Connected. Calibrate floor on a safe surface to enable driving.'}$('zumoMessage').textContent=message}catch(error){updateDistance(null);zumoReady=false;faceAvailable=false;updateFaceControls();for(const button of [...driveButtons,...faceButtons])button.disabled=true;$('ledApply').disabled=$('ledOff').disabled=true;$('ledResult').textContent='Unavailable';$('zumoLink').textContent='Zumo: unavailable';$('zumoMessage').textContent='Zumo status unavailable';if(heldDirection)stopZumo(true)}finally{zumoRefreshPending=false}}
 refreshZumo();setInterval(refreshZumo,500);
 async function action(path){
   try{const response=await fetch(path,{method:'POST'});const data=await response.json();$('message').textContent=data.message||'';$('message').className=response.ok?'':'error';await refresh();}
@@ -257,14 +272,15 @@ async function sendVolume(value){
   finally{volumeSending=false;await refresh();}
 }
 function formatBytes(bytes){return bytes>1048576?(bytes/1048576).toFixed(1)+' MB':Math.round(bytes/1024)+' KB'}
-function drawBoxes(s){const ctx=$('boxes').getContext('2d');ctx.clearRect(0,0,640,480);if(!s.vision_enabled||!s.boxes)return;const sx=640/(s.vision_width||320),sy=480/(s.vision_height||240);ctx.lineWidth=4;ctx.font='bold 18px system-ui';for(const b of s.boxes){const label=s.battery_mode?(b.label||s.object_classes?.[b.class_id]||'Object'):'Person';ctx.strokeStyle=s.battery_mode?(['#ffcf45','#38e4ff','#ff74d4'][b.class_id]||'#ffcf45'):'#36e4ff';ctx.fillStyle=ctx.strokeStyle;const x=b.x1*sx,y=b.y1*sy,w=(b.x2-b.x1)*sx,h=(b.y2-b.y1)*sy;ctx.strokeRect(x,y,w,h);ctx.fillText(`${label} ${b.score}%`,x+4,Math.max(22,y-7))}}
+function freshVision(s){return (s.vision_age_ms??0)<=1200&&(s.vision_capture_age_ms??0)<=1200}
+function drawBoxes(s){const ctx=$('boxes').getContext('2d');ctx.clearRect(0,0,640,480);if(!s.vision_enabled||!s.boxes||!freshVision(s))return;const sx=640/(s.vision_width||320),sy=480/(s.vision_height||240);ctx.lineWidth=4;ctx.font='bold 18px system-ui';for(const b of s.boxes){const label=s.battery_mode?(b.label||s.object_classes?.[b.class_id]||'Object'):'Person';ctx.strokeStyle=s.battery_mode?(['#ffcf45','#38e4ff','#ff74d4'][b.class_id]||'#ffcf45'):'#36e4ff';ctx.fillStyle=ctx.strokeStyle;const x=b.x1*sx,y=b.y1*sy,w=(b.x2-b.x1)*sx,h=(b.y2-b.y1)*sy;ctx.strokeRect(x,y,w,h);ctx.fillText(`${label} ${b.score}%`,x+4,Math.max(22,y-7))}}
 let refreshPending=false;
 async function refresh(){
   if(refreshPending)return;
   refreshPending=true;
   try{
     const response=await fetch('/api/status',{cache:'no-store'});if(!response.ok)throw new Error('Status HTTP '+response.status);const s=await response.json();
-    cameraReady=s.camera_ready;visionEnabled=s.vision_enabled&&!s.battery_mode;batteryEnabled=s.vision_enabled&&!!s.battery_mode;followEnabled=s.follow_enabled;$('takePhoto').disabled=!cameraReady||photoPending;$('visionToggle').disabled=!s.vision_ready||visionPending||batteryPending;$('visionToggle').textContent=visionEnabled?'Stop person detection':'Start person detection';$('followToggle').disabled=!followEnabled&&(!visionEnabled||!zumoReady)||followPending;$('followToggle').textContent=followEnabled?'Stop turning':'Turn with person';$('followState').textContent=s.follow_state+(s.follow_target_x>=0?` · target ${s.follow_target_x}/${s.vision_width}`:'');$('state').textContent=s.audio_state;const rate=s.vision_interval_ms>0&&s.vision_age_ms<2000?` · ${(1000/s.vision_interval_ms).toFixed(1)} fps`:' · measuring';$('camera').textContent=cameraReady?((s.vision_ready||s.battery_ready)?(s.vision_enabled?'LIVE · 640×480 · '+(s.battery_mode?'Object':'Person')+' detection'+rate:'LIVE · 640×480 · Vision off'):'LIVE · 640×480 · Vision unavailable'):s.camera_error;$('personBadge').hidden=!visionEnabled||!s.person_detected;drawBoxes(s);
+    cameraReady=s.camera_ready;visionEnabled=s.vision_enabled&&!s.battery_mode;batteryEnabled=s.vision_enabled&&!!s.battery_mode;followEnabled=s.follow_enabled;$('takePhoto').disabled=!cameraReady||photoPending;$('visionToggle').disabled=!s.vision_ready||visionPending||batteryPending;$('visionToggle').textContent=visionEnabled?'Stop person detection':'Start person detection';$('followToggle').disabled=!followEnabled&&(!visionEnabled||!zumoReady)||followPending;$('followToggle').textContent=followEnabled?'Stop turning':'Turn with person';$('followState').textContent=s.follow_state+(s.follow_target_x>=0?` · target ${s.follow_target_x}/${s.vision_width}`:'');$('state').textContent=s.audio_state;const rate=s.vision_interval_ms>0&&s.vision_age_ms<2000?` · ${(1000/s.vision_interval_ms).toFixed(1)} fps`:' · measuring';$('camera').textContent=cameraReady?((s.vision_ready||s.battery_ready)?(s.vision_enabled?'LIVE · 640×480 · '+(s.battery_mode?'Object':'Person')+' detection'+rate:'LIVE · 640×480 · Vision off'):'LIVE · 640×480 · Vision unavailable'):s.camera_error;$('personBadge').hidden=!visionEnabled||!s.person_detected||!freshVision(s);drawBoxes(s);
     $('batteryToggle').disabled=!s.battery_ready||batteryPending||visionPending||stopPending;$('batteryToggle').textContent=batteryEnabled?'Stop object test':'Test object model';const objectSummary=(s.boxes||[]).map(b=>(b.label||s.object_classes?.[b.class_id]||'Object')+' '+b.score+'%').join(' · ');$('batteryState').textContent=batteryNotice||(!s.battery_ready?'Object model unavailable':!batteryEnabled?'Battery, Marker, Screwdriver · camera test only':s.vision_error||((s.vision_age_ms<2000?(objectSummary||'No objects detected'):'Waiting for object result')+' · '+s.vision_inference_ms+' ms'));
     $('wakeState').textContent=!s.wake_ready?'Wake unavailable':s.wake_paused?'Paused for vision':s.wake_reacting?'Listening · wake reaction':'Listening for Digit';
     $('wakeLast').textContent=s.wake_detections?` · ${s.wake_detections} heard · last ${Math.floor(s.wake_age_ms/1000)}s ago (${Math.round(s.wake_score*100)}%)`:'';
@@ -361,7 +377,7 @@ esp_err_t statusHandler(httpd_req_t* request) {
       "\"speaker_volume\":%u,\"cue_playing\":%s,"
       "\"camera_ready\":%s,\"camera_error\":\"%s\","
       "\"vision_ready\":%s,\"vision_enabled\":%s,\"person_detected\":%s,"
-      "\"person_score_percent\":%u,\"vision_age_ms\":%lu,"
+      "\"person_score_percent\":%u,\"vision_age_ms\":%lu,\"vision_capture_age_ms\":%lu,"
       "\"vision_inference_ms\":%lu,\"vision_decode_ms\":%lu,"
       "\"vision_total_ms\":%lu,\"vision_interval_ms\":%lu,"
       "\"vision_error\":\"%s\","
@@ -377,6 +393,7 @@ esp_err_t statusHandler(httpd_req_t* request) {
       vision.enabled ? "true" : "false",
       vision.personDetected ? "true" : "false", vision.personScorePercent,
       static_cast<unsigned long>(vision.resultAgeMs),
+      static_cast<unsigned long>(vision.hasResult ? millis()-vision.captureTimestampMs : UINT32_MAX),
       static_cast<unsigned long>(vision.inferenceMs),
       static_cast<unsigned long>(vision.decodeMs),
       static_cast<unsigned long>(vision.totalMs),
@@ -472,7 +489,14 @@ esp_err_t actionsStatusHandler(httpd_req_t* request) {
       z.actionCapable && z.voiceCapable && z.rampedLookCapable && z.wiggleCapable;
   const bool personReady = driveReady && z.sceneCapable && z.autoRampCapable && vision.ready;
   const bool identifyReady = z.connected && !z.calibrating && z.sceneCapable && vision.ready && vision.batteryReady;
-  char error[192], phase[192], result[64], decoder[768], json[2200];
+  const char* movementReason = !z.connected ? "Connect the Zumo to use moving actions" :
+      z.edge ? "Edge stop: place Digit fully on the surface, then recalibrate" :
+      z.calibrating ? "Waiting for floor calibration" :
+      !z.ready || strcmp(z.fault,"NONE") ? "Movement is locked; check the Zumo status and recalibrate" :
+      !driveReady ? "Gyroscope or updated movement firmware unavailable" :
+      !z.closeApproachCapable ? "Update Zumo to use Find me at 10 cm" :
+      !z.chaseCloseCapable ? "Update Zumo to use Chase this at 5 cm" : "";
+  char error[192], phase[192], result[64], decoder[768], json[2400];
   escapeJsonString(speech.error,error,sizeof(error));
   escapeJsonString(action.phase,phase,sizeof(phase));
   escapeJsonString(speech.result,result,sizeof(result));
@@ -482,6 +506,8 @@ esp_err_t actionsStatusHandler(httpd_req_t* request) {
       "\"voice_ready\":%s,\"listening\":%s,\"voice_error\":\"%s\",\"recognized\":%lu,"
       "\"last_command\":%d,\"score\":%.3f,\"drive_ready\":%s,\"range_valid\":%s,"
       "\"identify_ready\":%s,\"person_action_ready\":%s,\"object_action_ready\":%s,"
+      "\"follow_action_ready\":%s,\"chase_action_ready\":%s,\"chase_stop_mm\":50,\"chase_resume_mm\":100,"
+      "\"movement_reason\":\"%s\",\"find_me_stop_mm\":100,\"person_confirm_percent\":%u,"
       "\"distance_mm\":%d,\"photo_revision\":%lu,\"voice_result\":\"%s\","
       "\"command_audio_ms\":%lu,\"command_chunks\":%lu,\"command_mic_peak\":%u,"
       "\"command_inference_us\":%lu,\"candidate_command\":%d,\"candidate_score\":%.3f,"
@@ -491,8 +517,11 @@ esp_err_t actionsStatusHandler(httpd_req_t* request) {
       robot_actions::name(action.command),phase,action.active?"true":"false",(unsigned long)action.generation,
       speech.ready?"true":"false",speech.listening?"true":"false",error,(unsigned long)speech.recognized,
       speech.lastCommand,speech.score,driveReady?"true":"false",
-      z.rangeValid?"true":"false",identifyReady?"true":"false",personReady?"true":"false",
-      personReady&&vision.batteryReady?"true":"false",z.distanceMm,(unsigned long)photo_store::revision(),result,
+      z.rangeValid?"true":"false",identifyReady?"true":"false",personReady&&z.closeApproachCapable?"true":"false",
+      personReady&&vision.batteryReady?"true":"false",
+      z.connected&&z.ready&&!z.calibrating&&!z.edge&&!strcmp(z.fault,"NONE")&&z.actionCapable&&vision.ready?"true":"false",
+      personReady&&vision.batteryReady&&z.chaseCloseCapable?"true":"false",movementReason,vision_service::kPersonConfidencePercent,
+      z.distanceMm,(unsigned long)photo_store::revision(),result,
       (unsigned long)(speech.samples/16),(unsigned long)speech.chunks,speech.micPeak,
       (unsigned long)speech.inferenceUs,speech.candidateCommand,speech.candidateScore,
       (unsigned long)speech.feedChunks,(unsigned long)speech.fetchChunks,speech.modelPeak,
@@ -763,7 +792,8 @@ esp_err_t zumoStatusHandler(httpd_req_t* request) {
            "\"edge\":%s,\"left\":%d,\"right\":%d,\"battery_mv\":%d,"
            "\"reply_age_ms\":%lu,\"fault\":\"%s\",\"last_error\":\"%s\",\"led_result\":\"%s\",\"brake_supported\":%s,"
            "\"look_active\":%s,\"manual_driving\":%s,\"turn_ramp_supported\":%s,\"wiggle_supported\":%s,\"acceleration\":%d,"
-           "\"scene_supported\":%s,\"auto_ramp_supported\":%s,\"range_age_ms\":%lu}",
+           "\"scene_supported\":%s,\"auto_ramp_supported\":%s,\"range_age_ms\":%lu,\"close_approach_supported\":%s,\"chase_close_supported\":%s,"
+           "\"distance_mm\":%d,\"range_valid\":%s}",
            zumo.connected ? "true" : "false", zumo.ready ? "true" : "false",
            zumo.calibrating ? "true" : "false", zumo.edge ? "true" : "false",
            zumo.left, zumo.right, zumo.batteryMillivolts,
@@ -771,7 +801,9 @@ esp_err_t zumoStatusHandler(httpd_req_t* request) {
            zumo.ledResult, zumo.brakeCapable ? "true" : "false",
            zumo.lookActive ? "true" : "false", zumo.manualDriving ? "true" : "false",
            zumo.rampedLookCapable ? "true" : "false", zumo.wiggleCapable ? "true" : "false", zumo_link::acceleration(),
-           zumo.sceneCapable ? "true" : "false", zumo.autoRampCapable ? "true" : "false", (unsigned long)zumo.rangeAgeMs);
+           zumo.sceneCapable ? "true" : "false", zumo.autoRampCapable ? "true" : "false", (unsigned long)zumo.rangeAgeMs,
+           zumo.closeApproachCapable ? "true" : "false", zumo.chaseCloseCapable ? "true" : "false",
+           zumo.distanceMm, zumo.rangeValid ? "true" : "false");
   return sendJson(request, json);
 }
 

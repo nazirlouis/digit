@@ -188,6 +188,14 @@ class UARTControlTests(unittest.TestCase):
         self.assertEqual(self.face.actions, ["happy"])
         self.assertEqual(self.command("6 FACE SAD"), "6 OK FACE")
 
+    def test_removed_bump_commands_cannot_move(self):
+        self.calibrate()
+        self.assertNotIn("BUMP=", self.command("2 STATUS"))
+        for command in ("BUMP 1", "BUMP -1", "BKEEP 2"):
+            self.assertEqual(self.command("3 " + command), "3 ERR UNKNOWN_COMMAND")
+            self.assertEqual(self.motors.speeds, (0, 0))
+        self.assertTrue(self.control.ready)
+
     def test_startup_calibration_is_stationary_and_accepts_late_xiao(self):
         self.control.start_calibration()
         self.assertEqual(self.uart.outgoing[-1], "0 OK CALIBRATING")
@@ -426,15 +434,14 @@ class UARTControlTests(unittest.TestCase):
         self.assertEqual(self.command("6 TURN -4000"), "6 OK TURN")
         self.assertEqual(self.motors.speeds, (0, 0))
         self.advance(299)
-        self.assertEqual(self.command("7 STATUS").split(" L=")[1][:15],
-                         "-897 R=897 BAT=")
+        self.assertIn("L=-1794 R=1794 BAT=", self.command("7 STATUS"))
         self.clock.now += 1
         self.control.tick()
         self.assertEqual(self.motors.speeds, (0, 0))
         self.assertIn("0 EVENT TIMEOUT", self.uart.outgoing)
         self.assertEqual(self.command("8 TURN 4000"), "8 OK TURN")
         self.advance(20)
-        self.assertEqual(self.motors.speeds, (60, -60))
+        self.assertEqual(self.motors.speeds, (120, -120))
         self.sensors.values = [980, 100, 100, 100, 100]
         self.clock.now += 20
         self.control.tick()

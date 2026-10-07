@@ -159,14 +159,29 @@ class VoiceTurnTests(unittest.TestCase):
         self.controller.voice_turn = None
         self.assertEqual(self.send("5 LOOK 90"), "5 ERR NO_GYRO")
 
-    def test_robot_moving_during_bias_calibration_never_starts_tracks(self):
-        self.send("2 LOOK 90")
-        for i in range(100):
-            self.gyro.last_reading_dps = (0, 0, 0 if i % 2 else 20)
-            self.step()
-            self.assertEqual(self.motors.speeds, (0, 0))
-        self.assertIn("2 ERR LOOK_MOVING", self.uart.outgoing)
-        self.assertFalse(self.controller.ready)
+    def test_noisy_gyro_reference_proceeds_without_cancel_or_recalibration(self):
+        for command in ("LOOK 90", "WIGGLE"):
+            with self.subTest(command=command):
+                self.setUp()
+                thresholds = self.controller.thresholds[:]
+                self.send("2 " + command)
+                for i in range(80):
+                    self.gyro.last_reading_dps = (0, 0, 10 if i % 2 else 14)
+                    self.step()
+                    self.assertEqual(self.motors.speeds, (0, 0))
+                self.assertIsNotNone(self.controller.voice_turn.bias)
+                self.gyro.last_reading_dps = (0, 0, self.controller.voice_turn.bias)
+                for _ in range(5):
+                    self.step()
+                self.assertNotEqual(self.motors.speeds, (0, 0))
+                self.assertNotIn("2 ERR LOOK_MOVING", self.uart.outgoing)
+                self.assertTrue(self.controller.ready)
+                self.assertEqual(self.controller.fault, "NONE")
+                self.assertEqual(self.controller.thresholds, thresholds)
+                self.assertEqual(self.controller.look_id, "2")
+                self.assertNotIn("0 EVENT TURN_FAULT", self.uart.outgoing)
+                self.send("3 STOP")
+                self.assertEqual(self.motors.speeds, (0, 0))
 
     def test_slow_progress_still_has_an_absolute_deadline(self):
         self.start_motion(180)

@@ -59,13 +59,18 @@ The 8 MB flash is nearly full: application partition ~3.58 MB, combined vision
 ~0.94 MB, speech ~3.78 MB. The build checks each partition's size. Size optimization is
 enabled in sdkconfig.defaults.
 
-The target is centered when its box center is within 10% of the image width
-from the middle (32 pixels in the 320-pixel inference frame). Outside that
-band, the XIAO requests a 180 ms turn at motor speed 4000, then stops and
-waits for the next inference result. The mode never asks for forward or
+The target is centered when its box center is within 8% of the image width
+from the middle (about 25 pixels in the 320-pixel inference frame). Outside that
+band, the XIAO requests a 550–700 ms correction proportional to the centering
+error, at motor speed 3000 with acceleration 6000. Incoming detections cannot
+extend the deadline; centered, lost or opposite-side detections can stop it early.
+After stopping, it requires a new Zumo status showing zero motor output, allows
+120 ms to settle, then waits for an image captured after settling. The mode never asks for forward or
 reverse travel, and it does not use ToF distance. When no person is detected,
-turning stops. The dashboard renews a 1.5-second control lease while visible;
-closing it or losing the connection stops turning. The Zumo still applies its
+turning stops until a fresh person detection returns. The **Follow me** action
+(voice or dashboard) keeps tracking until Stop or another control takes over.
+The separate **Turn with person** control uses a 1.5-second dashboard lease;
+closing that dashboard or losing its connection stops that mode. The Zumo still applies its
 own 300 ms motor timeout, edge stop, button C stop, and calibration gate.
 
 The model detects people, not identity. If several people appear, the largest
