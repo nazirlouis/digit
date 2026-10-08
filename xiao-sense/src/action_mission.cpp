@@ -2,6 +2,7 @@
 #include "Arduino.h"
 #include "audio_engine.h"
 #include "emotion_voice.h"
+#include "reaction_player.h"
 #include "vision_service.h"
 #include "zumo_link.h"
 #include <algorithm>
@@ -12,7 +13,7 @@ namespace {
 using robot_actions::Command;
 using Vision = vision_service::Status;
 enum class Beat { Idle, Present, Observe, Turn, Drive, Brake, Reveal,
-                  EscapeRead, Celebrate, Finish };
+                  EscapeRead, Finish };
 constexpr uint32_t kFreshMs = 1200, kSettleMs = 120, kConfirmMs = 1800;
 constexpr int kApproachSpeed = 3000, kCloseSpeed = 3000, kHelloStopMm = 100;
 constexpr int kExitBatteryStopMm = 100;
@@ -25,7 +26,7 @@ constexpr const char* labels[] = {"BATTERY", "MARKER", "SCREWDRIVER"};
 Command task = Command::None;
 Beat beat = Beat::Idle, afterPresent = Beat::Observe, afterTurn = Beat::Observe, afterBrake = Beat::Observe;
 bool running = false, ownsVision = false, objects = false;
-bool issued = false, cueIssued = false, cheering = false, centerChirp = false;
+bool issued = false;
 bool exitTarget = false, sawTarget = false, welcomed = false, lossReacted = false;
 bool closeArrival = false, stopConfirmed = false;
 unsigned personHits = 0, objectHits = 0;
@@ -41,13 +42,14 @@ int heading = 0, turnAngle = 0, scans = 0, corrections = 0, advances = 0;
 int scanOrigin = 0, scanIndex = 0, bestHeading = 0, bestRange = 0;
 int validScanHeadings = 0;
 uint32_t started = 0, at = 0, freshAfter = 0, lastFrame = 0, lastCapture = 0, lastFreshAt = 0;
-uint32_t lastDrive = 0, shownAt = 0, limitMs = 0;
+uint32_t lastDrive = 0, limitMs = 0;
 uint32_t stationaryAfter = 0, settleUntil = 0, rangeReply = 0;
 uint32_t turnLimitMs = 0;
 uint32_t lastFreshRangeMs = 0;
 uint32_t lastFreshStoppedMs = 0;
 uint32_t activeJob = 0;
 uint32_t steeringFrame = 0;
+uint32_t reactionToken = 0;
 
 int normalized(int degrees) {
   while (degrees > 180) degrees -= 360;
@@ -66,7 +68,7 @@ void stopVision() {
 void abort(const char* reason) {
   // Transport failures cannot rely on another display acknowledgement to end.
   message = reason; running = false; beat = Beat::Idle;
-  audioEngine.cancelOutput(); stopVision(); zumo_link::stop();
+  reaction_player::cancel(); stopVision(); zumo_link::stop();
 }
 void observe() {
   beat = Beat::Observe; at = millis(); freshAfter = at; lastFreshAt = at;
@@ -75,10 +77,10 @@ void observe() {
 }
 void present(const char* face, const char* label, AudioCue sound, Beat next, const char* phase) {
   expression = face; caption = label; cue = sound; afterPresent = next;
-  message = phase; beat = Beat::Present; at = millis(); issued = cueIssued = false;
+  message = phase; beat = Beat::Present; at = millis(); issued = false; reactionToken=0;
 }
 void outcome(const char* phase, bool happy = false, const char* label = "NOT_SURE") {
-  zumo_link::stop(); stationaryAfter = millis(); audioEngine.cancelOutput(); stopVision();
+  zumo_link::stop(); stationaryAfter = millis(); reaction_player::cancel(); stopVision();
   present(happy ? "HAPPY" : "CONFUSED", label, happy ? AudioCue::Happy : AudioCue::Confused, Beat::Finish, phase);
 }
 void rangeStart() { activeJob = 0; rangeReply = 0; at = millis(); }
@@ -106,9 +108,11 @@ void drive() {
   driveSpeed = close ? kCloseSpeed : kApproachSpeed;
 }
 void celebrate() {
-  stopVision(); zumo_link::stop(); stationaryAfter = millis(); audioEngine.cancelOutput();
-  beat = Beat::Celebrate; at = millis(); issued = cheering = centerChirp = false;
+  stopVision(); zumo_link::stop(); stationaryAfter = millis(); reaction_player::cancel();
   message = task == Command::Escape ? "Found the way out!" : "There you are!";
+  // Arrival personality is face and voice; no surprise motor gesture in a maze.
+  present(task==Command::Escape ? "EXCITED" : "LOVE", task==Command::Escape ? "EXIT" : "FOUND",
+          task==Command::Escape ? AudioCue::Excited : AudioCue::Love, Beat::Finish, message);
 }
 bool freshFrame(const Vision& v, uint32_t now) {
   return v.hasResult && v.imageWidth > 0 && v.imageHeight > 0 &&
@@ -275,6 +279,7 @@ bool start(Command value) {
   return true;
 }
 void cancel() {
+  reaction_player::cancel();
   if (running && task != Command::Identify) zumo_link::cancelMotion();
   running = false; beat = Beat::Idle; activeJob=0; stopVision();
 }
@@ -293,35 +298,29 @@ void poll() {
     outcome("I need a little help; search time is up", false, "LOST"); return;
   }
   switch (beat) {
-    case Beat::Present:
+    case Beat::Present: {
       if (!issued) {
-        if (stopped(z) && zumo_link::scene(expression, caption)) {
-          // A replacement expression owns the sound timeline, including a
-          // silent expression. Never carry a previous emotion's voice over it.
-          audioEngine.cancelOutput(); issued = true; at = now;
-        }
-        else if (now-at > 2000) abort("Display or stopped motor status unavailable");
-        return;
-      }
-      if (!cueIssued) {
-        if (!strcmp(z.sceneResult,"SENDING") || !strcmp(z.sceneResult,"RENDERING")) {
-          if (now-at > 3500) abort("Display visibility acknowledgement timed out");
+        if (!stopped(z)) {
+          if (now-at>2000) abort("Stopped motor status unavailable");
           return;
         }
-        if (strcmp(z.sceneResult,"APPLIED")) { abort("Display update failed"); return; }
-        if (cue != AudioCue::None && !audioEngine.playCue(cue)) { abort("Voice unavailable"); return; }
-        cueIssued = true; shownAt = now;
+        const uint32_t cooldown=cue==AudioCue::Curious && task==Command::Escape && !strcmp(caption,"SEARCHING") ? 8000U : 0U;
+        reactionToken=reaction_player::play(expression,caption,cue,reaction_player::Source::Action,cooldown);
+        issued=true; at=now;
       }
-      // Let expressive beats be seen and heard, without delaying each drive step.
-      if (now-shownAt < (afterPresent == Beat::Drive ? 180U : afterPresent == Beat::Finish ? 1200U : 450U)) return;
-      if (cue != AudioCue::None && audioEngine.cuePlaying() &&
-          (task == Command::Identify || afterPresent == Beat::Finish)) {
-        if (now-shownAt <= emotionDurationMs(cue) + 500) return;
-        abort("Voice playback timed out"); return;
-      }
+      const auto reaction=reaction_player::snapshot();
+      // Driving never waits for decoration. The face renderer and coordinator
+      // continue independently while the Zumo owns the movement job.
+      if (afterPresent==Beat::Drive) { enter(afterPresent); drive(); return; }
+      const bool done=reaction_player::finished(reactionToken);
+      if (!done && !reaction.visible) return;
+      if (!done && (task==Command::Identify || afterPresent==Beat::Finish)) return;
+      if (!done && now-reaction.visibleAt<180) return;
+      // Missing optional audio/display is a skipped reaction, not a failed
+      // navigation mission or a reason to alter motor safety.
       enter(afterPresent);
-      if (beat == Beat::Drive) drive();
       break;
+    }
     case Beat::Observe: inspect(v,z,now); break;
     case Beat::Turn:
       if (!issued) {
@@ -389,32 +388,8 @@ void poll() {
     case Beat::EscapeRead:
       if (!activeJob && !stopped(z)) { if (now-lastFreshStoppedMs > 2000) abort("No fresh stopped motor status during scan for 2 seconds"); return; }
       rangeRead(z,now); break;
-    case Beat::Celebrate:
-      if (!issued) {
-        if (stopped(z) && zumo_link::wiggle(z.controlGeneration,true)) { issued = true; at = now; }
-        else if (now-at > 2500) outcome("Found the target",true,"FOUND");
-        return;
-      }
-      if (now-at > 5500) { abort("Celebration timed out"); return; }
-      if (z.lookActive) {
-        if (!cheering && !strcmp(z.lookResult,"WIGGLING")) {
-          if (!audioEngine.playCue(AudioCue::Excited,VoiceTiming::Gesture)) { abort("Celebration voice unavailable"); return; }
-          cheering = true;
-        }
-        if (!centerChirp && !strcmp(z.lookResult,"CENTERING")) {
-          if (!audioEngine.playCue(AudioCue::Neutral,VoiceTiming::Gesture)) { abort("Celebration voice unavailable"); return; }
-          centerChirp = cheering = true;
-        }
-        return;
-      }
-      audioEngine.cancelOutput();
-      if (strcmp(z.lookResult,"DONE")) { outcome("Celebration interrupted"); return; }
-      stationaryAfter = now;
-      present(task == Command::Escape ? "EXCITED" : "LOVE", task == Command::Escape ? "EXIT" : "FOUND",
-              task == Command::Escape ? AudioCue::Excited : AudioCue::Love, Beat::Finish, message);
-      break;
     case Beat::Finish:
-      stopVision(); audioEngine.cancelOutput(); running = false; beat = Beat::Idle;
+      stopVision(); reaction_player::cancel(); running = false; beat = Beat::Idle;
       break;
     default: break;
   }

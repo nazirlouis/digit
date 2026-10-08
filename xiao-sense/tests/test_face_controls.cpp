@@ -48,6 +48,16 @@ Status snapshot(){return state;}
 void manualOverride(){++epoch;}
 void stop(const char*){++epoch;audioEngine.cancelOutput();state.active=false;}
 }
+namespace reaction_player {
+enum class Source {Preview};
+AudioCue queued=AudioCue::None;
+unsigned requests=0;
+unsigned play(const char* face,const char*,AudioCue cue,Source) {
+  audioEngine.cancelOutput();zumo_link::lastFace=face;++zumo_link::faces;
+  queued=cue;return ++requests;
+}
+void visible(){if(queued!=AudioCue::None)audioEngine.playCue(queued);queued=AudioCue::None;}
+}
 void escapeJsonString(const char* input,char* output,size_t size){snprintf(output,size,"%s",input);}
 #include "face_generation.inc"
 #include "face_controls.inc"
@@ -64,9 +74,10 @@ void rejected(httpd_req_t r,const char* status) {
 int main() {
   const char* names[]={"NEUTRAL","HAPPY","SAD","MAD","SERIOUS","CURIOUS","SURPRISED",
                        "SLEEPING","CONFUSED","SLEEPY","EXCITED","CRYING","LOVE"};
-  for(auto* name:names){auto r=request(name);zumoFaceHandler(&r);assert(r.status=="200 OK");
-    assert(zumo_link::lastFace==name&&audioEngine.last==emotionCueForFace(name));}
-  assert(audioEngine.plays==13&&audioEngine.cancels==12&&zumo_link::polls==13);
+  for(auto* name:names){const auto sounds=audioEngine.plays;auto r=request(name);zumoFaceHandler(&r);assert(r.status=="200 OK");
+    assert(zumo_link::lastFace==name&&reaction_player::queued==emotionCueForFace(name));
+    assert(audioEngine.plays==sounds);reaction_player::visible();assert(audioEngine.plays==sounds+1);}
+  assert(audioEngine.plays==13&&audioEngine.cancels==13&&reaction_player::requests==13);
   auto silent=request("HAPPY","0");zumoFaceHandler(&silent);
   assert(silent.status=="200 OK"&&!audioEngine.state.cuePlaying&&audioEngine.plays==13);
   rejected(request("DIZZY"),"400 Bad Request");rejected(request("HAPPY","2"),"400 Bad Request");

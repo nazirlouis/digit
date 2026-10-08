@@ -9,6 +9,8 @@ import math
 import random
 import time
 
+from reaction_catalog import TIMINGS
+
 
 EXPRESSIONS = (
     "neutral", "happy", "sad", "mad", "serious", "curious", "surprised",
@@ -37,27 +39,28 @@ SURPRISE_FLASH_MS = 160
 
 OPEN = (0, 0, 48, 70, 0, 0, 0, 0, 0, 0)
 NEUTRAL = (OPEN, OPEN)
-# (two eye poses, enter ms, hold ms, exit ms). None holds until replaced.
-STYLES = {
-    "neutral": (NEUTRAL, 240, None, 0),
-    "happy": (((0, 7, 48, 7, 0, 0, -18, 0, 0),) * 2, 240, 2400, 280),
-    "sad": (((0, 7, 46, 58, 28, 8, 0, 0, 0),) * 2, 420, 3400, 480),
-    "mad": (((0, 2, 48, 54, 7, 30, 0, 0, 0),) * 2, 190, 2600, 320),
-    "serious": (((0, 1, 48, 46, 17, 17, 0, 0, 0),) * 2, 250, 3000, 320),
-    "curious": (((4, -5, 47, 74, 0, 0, 0, 0, 0),
-                 (4, 3, 45, 54, 0, 0, 0, 0, 0)), 300, 2800, 320),
-    "surprised": (((0, -4, 52, 84, 0, 0, 0, 0, 0),) * 2, 130, 1500, 380),
-    "sleeping": (((0, 7, 44, 6, 0, 0, 8, 0, 0),) * 2, 850, None, 400),
-    "confused": (((0, -3, 44, 68, 0, 0, 0, 0, 0, 1024),
-                  (0, 3, 44, 68, 0, 0, 0, 0, 0, 1024)), 320, 3200, 360),
-    "sleepy": (((0, 5, 46, 58, 31, 31, 0, 0, 0),) * 2, 650, 4400, 500),
-    "excited": (((0, -4, 50, 78, 0, 0, 0, 0, 0),) * 2, 160, 2700, 300),
-    "crying": (((0, 7, 46, 58, 28, 8, 0, 0, 0),) * 2, 420, 3800, 480),
-    "love": (((0, 0, 48, 48, 0, 0, 0, 1024, 0),) * 2, 340, 3000, 380),
+# Approved eye geometry stays independent of the shared voice/face clock.
+POSES = {
+    "neutral": NEUTRAL,
+    "happy": ((0, 7, 48, 7, 0, 0, -18, 0, 0),) * 2,
+    "sad": ((0, 7, 46, 58, 28, 8, 0, 0, 0),) * 2,
+    "mad": ((0, 2, 48, 54, 7, 30, 0, 0, 0),) * 2,
+    "serious": ((0, 1, 48, 46, 17, 17, 0, 0, 0),) * 2,
+    "curious": ((4, -5, 47, 74, 0, 0, 0, 0, 0),
+                (4, 3, 45, 54, 0, 0, 0, 0, 0)),
+    "surprised": ((0, -4, 52, 84, 0, 0, 0, 0, 0),) * 2,
+    "sleeping": ((0, 7, 44, 6, 0, 0, 8, 0, 0),) * 2,
+    "confused": ((0, -3, 44, 68, 0, 0, 0, 0, 0, 1024),
+                 (0, 3, 44, 68, 0, 0, 0, 0, 0, 1024)),
+    "sleepy": ((0, 5, 46, 58, 31, 31, 0, 0, 0),) * 2,
+    "excited": ((0, -4, 50, 78, 0, 0, 0, 0, 0),) * 2,
+    "crying": ((0, 7, 46, 58, 28, 8, 0, 0, 0),) * 2,
+    "love": ((0, 0, 48, 48, 0, 0, 0, 1024, 0),) * 2,
 }
+# (two eye poses, enter ms, hold ms, exit ms). None holds until replaced.
 # Keep the question-mark morph channel in every pose, including interruptions.
-STYLES = {name: (tuple(eye if len(eye) == 10 else eye + (0,) for eye in style[0]),) + style[1:]
-          for name, style in STYLES.items()}
+STYLES = {name: (tuple(eye if len(eye) == 10 else eye + (0,) for eye in pose),) + TIMINGS[name]
+          for name, pose in POSES.items()}
 
 
 class FaceEngine:
@@ -110,6 +113,7 @@ class FaceEngine:
         self._render_prompt = False
         self.scene_sequence = 0
         self.visible_scene_sequence = 0
+        self.active_scene_sequence = None
         self._scene_frame_id = None
         self._render_scene_sequence = 0
         self.last_slice_us = 0
@@ -177,6 +181,7 @@ class FaceEngine:
             raise ValueError("unknown face: " + expression)
         # An interrupted drawing must never later submit its old expression.
         self._render_steps = None
+        self.active_scene_sequence = None
         self._scene_frame_id = None
         self._render_scene_sequence = 0
         if self.cooperative:
@@ -213,26 +218,38 @@ class FaceEngine:
         self._set_color(COLORS["happy"])
         self._draw(self.pose)
 
-    def show_scene(self, expression, caption):
+    def show_scene(self, expression, caption, timing=None):
         """Accept a scene; cooperative callers observe visible_scene_sequence.
 
         Acceptance does not mean the panel has received the frame. The visible
         sequence advances only after its complete first frame is transferred.
         """
-        # The caption can remain readable after a finite emotional reaction.
-        # Only sleeping persists; other faces settle to idle with their voice.
-        _, enter, hold, _ = STYLES[expression]
-        self.play(expression, hold_ms=None if hold is None else enter + hold)
+        # Keep the approved entry, hold and exit rather than snapping straight
+        # to the target eyes. Voice starts after this initial coherent frame.
+        self.play(expression)
+        if timing is not None:
+            self.enter_ms, self.hold_ms, self.exit_ms = timing
         self.scene_sequence += 1
+        self.active_scene_sequence = self.scene_sequence
         self._render_scene_sequence = self.scene_sequence
-        self.enter_ms = 0
-        self.pose = STYLES[expression][0]
         self.caption = caption.replace("_", " ") if caption != "NONE" else ""
-        self.caption_until = time.ticks_add(time.ticks_ms(), 8000)
-        self._set_color(COLORS[expression])
+        self._set_color(self._expression_color(0))
         self._draw(self.pose)
         if not self.cooperative:
-            self.visible_scene_sequence = self.scene_sequence
+            self._scene_visible()
+
+    def _scene_visible(self):
+        sequence = self._render_scene_sequence
+        if sequence and sequence == self.active_scene_sequence:
+            self.visible_scene_sequence = sequence
+            # The entire performance clock starts at visibility. A slow LCD
+            # transfer cannot consume the entry or allow the voice to lead it.
+            self.started = time.ticks_ms()
+            self.last_frame = None
+            if self.caption:
+                self.caption_until = time.ticks_add(self.started, 8000)
+        self._scene_frame_id = None
+        self._render_scene_sequence = 0
 
     def show_move_prompt(self):
         self.play("neutral")
@@ -280,7 +297,10 @@ class FaceEngine:
         if name == "sleeping":
             return self._offset(pose, dy=self._wave(elapsed, 3200) * 2 // 1024)
         if name == "sleepy":
-            phase = elapsed % 3200
+            # Fit one complete approved nod into a short spoken reaction;
+            # explicitly persistent/custom long holds retain the idle cycle.
+            period = min(3200, max(1, self.hold_ms)) if self.hold_ms is not None else 3200
+            phase = (elapsed % period) * 3200 // period
             closed = STYLES["sleeping"][0]
             if phase < 1900:
                 amount = self._ease(phase, 1900)
@@ -374,12 +394,7 @@ class FaceEngine:
                 self.display.flush(max_rows=max_units, max_us=max_us)
                 if (self._scene_frame_id is not None and
                         self.display.completed_frame_id >= self._scene_frame_id):
-                    self.visible_scene_sequence = self._render_scene_sequence
-                    # Start a scene's audible hold at visibility, so the
-                    # transfer time does not silently consume the reaction.
-                    self.started = time.ticks_ms()
-                    self._scene_frame_id = None
-                    self._render_scene_sequence = 0
+                    self._scene_visible()
                 return
             self._update_pose()
         finally:

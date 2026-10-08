@@ -19,6 +19,11 @@ struct AudioMock {
   AudioMock snapshot(){ return *this; }
   void cancelOutput(){ cuePlaying=wakeChimePlaying=false; state=AudioState::Ready; }
 } audioEngine;
+namespace reaction_player {
+bool busy = false;
+bool active() { return busy; }
+void cancel() { busy = false; }
+}
 int pendingCommand = 0;
 #define portENTER_CRITICAL(x) ((void)0)
 #define portEXIT_CRITICAL(x) ((void)0)
@@ -40,6 +45,18 @@ namespace speech_commands {
 int main() {
   using namespace speech_commands;
   state.ready = true;
+  // A face waiting for its visible-frame acknowledgment is still part of the
+  // wake response even though the speaker has not started yet.
+  reaction_player::busy = true;
+  listen(42); poll();
+  nowMs += 500; poll();
+  assert(waitingForVoice && state.listening);
+  reaction_player::busy = false; poll();
+  assert(!waitingForVoice && !strcmp(state.result, "Settling microphone"));
+  nowMs = opensAt - 1; poll();
+  assert(!strcmp(state.result, "Settling microphone"));
+  ++nowMs; poll(); assert(!strcmp(state.result, "Listening"));
+  cancel();
   audioEngine.cuePlaying = audioEngine.wakeChimePlaying = true;
   listen(42); poll();
   nowMs += 800; poll();
@@ -49,7 +66,9 @@ int main() {
   cancel();
   audioEngine.cuePlaying = true; listen(42);
   nowMs += 2500; poll();
-  assert(!state.listening && !audioEngine.cuePlaying && !strcmp(state.result, "Wake voice interrupted"));
+  assert(state.listening && !waitingForVoice && !audioEngine.cuePlaying &&
+         !strcmp(state.result, "Settling microphone"));
+  nowMs = opensAt; poll(); assert(!strcmp(state.result, "Listening"));
   audioEngine.cuePlaying = true; listen(42); cancel(); audioEngine.cancelOutput();
   nowMs += 1000; poll(); assert(!state.listening);
   testState.busy = true;

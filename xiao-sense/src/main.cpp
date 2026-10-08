@@ -18,6 +18,7 @@
 #include "voice_direction.h"
 #include "robot_actions.h"
 #include "speech_commands.h"
+#include "personality_events.h"
 
 namespace {
 constexpr char kTag[] = "digit";
@@ -102,6 +103,7 @@ extern "C" void app_main() {
       speech_commands::poll();
       robot_actions::poll();
       wake_word::poll();
+      personality_events::poll();
     }
     if (!web_started && WiFi.status() == WL_CONNECTED &&
         (!last_web_attempt || millis()-last_web_attempt >= 1000)) {

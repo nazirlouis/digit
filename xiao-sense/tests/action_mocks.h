@@ -35,6 +35,11 @@ struct AudioEngine {
   void cancelOutput() { playing=false; }
 };
 inline AudioEngine audioEngine;
+inline AudioCue emotionCueForFace(const char* name) {
+  const char* names[]={"NEUTRAL","HAPPY","SAD","MAD","SERIOUS","CURIOUS","SURPRISED","SLEEPING","CONFUSED","SLEEPY","EXCITED","CRYING","LOVE"};
+  for(unsigned i=0;i<13;++i) if(!strcmp(name,names[i])) return static_cast<AudioCue>(static_cast<unsigned>(AudioCue::Neutral)+i);
+  return AudioCue::None;
+}
 namespace wake_word {
 struct Status { bool reacting=false,pausedForVision=false,ready=true; char turnReason[96]=""; };
 inline Status state;
@@ -80,6 +85,11 @@ inline bool busy() { return pending; }
 inline bool failed() { return false; }
 }
 namespace camera_service {}
+namespace personality_events {
+inline void cancel() {}
+inline void interaction() {}
+inline void safetyStopped() {}
+}
 namespace vision_service {
 inline constexpr uint8_t kPersonConfidencePercent=55;
 struct Status {
@@ -103,6 +113,7 @@ struct Status {
   int rawDistanceMm=900,rangeStatus=0,encoderLeftCps=0,encoderRightCps=0;
   bool encoderControl=true;
   bool motionCapable=true,motionArmed=false,motionActive=false;
+  uint32_t reactionVersion=reaction_catalog::version;
   uint32_t motionBoot=1,motionSession=0,motionJob=0,motionRangeAgeMs=0,motionSample=0,motionTimestampMs=0;
   int motionDistanceMm=-1,motionHeadingDeciDeg=0;
   char motionState[16]="DISARMED",motionResult[24]="NONE";
@@ -110,7 +121,7 @@ struct Status {
   int targetLeftCps=0,targetRightCps=0;
   uint32_t controlGeneration=0,replyAgeMs=0,safetyEvents=0,rangeAgeMs=0;
   uint32_t statusTimestampMs=0;
-  char fault[24]="NONE",lookResult[24]="NONE",sceneResult[24]="NONE",lastError[32]="NONE";
+  char fault[24]="NONE",lookResult[24]="NONE",sceneResult[24]="NONE",wakeResult[24]="NONE",lastError[32]="NONE";
 };
 inline Status state;
 inline unsigned motions=0;
@@ -135,6 +146,9 @@ inline bool wiggle(uint32_t generation,bool excited=false) { look(15,generation)
 inline bool face(const char*) { return true; }
 inline void cancelLook() { stop(); }
 inline bool scene(const char* face,const char* label) { if(!sceneAvailable)return false;scenes.push_back(std::string(face)+" "+label);std::strcpy(state.sceneResult,sceneAcknowledged?"APPLIED":"SENDING");return true; }
+inline void cancelScene() {strcpy(state.sceneResult,"CANCELLED");}
+inline void cancelWake() {strcpy(state.wakeResult,"CANCELLED");}
+inline bool wake() {if(!sceneAvailable)return false;strcpy(state.wakeResult,sceneAcknowledged?"APPLIED":"RENDERING");return true;}
 inline int acceleration() { return selectedAcceleration; }
 inline void superviseMotion() { supervisorAt=nowMs; }
 inline bool armMotion() { state.motionArmed=state.ready && state.motionCapable && state.encoderControl;return state.motionArmed; }

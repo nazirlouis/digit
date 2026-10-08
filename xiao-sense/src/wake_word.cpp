@@ -6,6 +6,8 @@
 #include "voice_direction.h"
 #include "robot_actions.h"
 #include "speech_commands.h"
+#include "reaction_player.h"
+#include "personality_events.h"
 #include <cstring>
 #include <frontend.h>
 #include <frontend_util.h>
@@ -258,11 +260,11 @@ void task(void*) {
 }
 
 bool react() {
-  const bool chime = audioEngine.playWakeVoice();
-  const bool zumo = zumo_link::wake();
-  Serial.printf("Wake reaction: Digit voice=%s Zumo=%s\n", chime ? "queued" : "unavailable",
-                zumo ? "queued" : "busy/disconnected");
-  return chime || zumo;
+  personality_events::interaction();
+  const auto token = reaction_player::play("HAPPY", "NONE", AudioCue::Happy,
+                                          reaction_player::Source::Wake, 0, VoiceTiming::Wake);
+  Serial.printf("Wake reaction: synchronized face and voice token=%lu\n", (unsigned long)token);
+  return token != 0;
 }
 }  // namespace
 

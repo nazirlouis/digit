@@ -9,6 +9,7 @@
 #include "app_config.h"
 #include "audio_engine.h"
 #include "emotion_voice.h"
+#include "reaction_player.h"
 #include "camera_service.h"
 #include "person_follow.h"
 #include "vision_service.h"
@@ -320,7 +321,7 @@ async function refresh(){
     cameraReady=s.camera_ready;visionEnabled=s.vision_enabled&&!s.battery_mode;batteryEnabled=s.vision_enabled&&!!s.battery_mode;followEnabled=s.follow_enabled;$('takePhoto').disabled=!cameraReady||photoPending;$('visionToggle').disabled=!s.vision_ready||visionPending||batteryPending;$('visionToggle').textContent=visionEnabled?'Stop person detection':'Start person detection';$('followToggle').disabled=!followEnabled&&(!visionEnabled||!zumoReady)||followPending;$('followToggle').textContent=followEnabled?'Stop turning':'Turn with person';$('followState').textContent=s.follow_state+(s.follow_target_x>=0?` · target ${s.follow_target_x}/${s.vision_width}`:'');$('state').textContent=s.audio_state;const rate=s.vision_interval_ms>0&&s.vision_age_ms<2000?` · ${(1000/s.vision_interval_ms).toFixed(1)} fps`:' · measuring';$('camera').textContent=cameraReady?((s.vision_ready||s.battery_ready)?(s.vision_enabled?'LIVE · 640×480 · '+(s.battery_mode?'Object':'Person')+' detection'+rate:'LIVE · 640×480 · Vision off'):'LIVE · 640×480 · Vision unavailable'):s.camera_error;$('personBadge').hidden=!visionEnabled||!s.person_detected||!freshVision(s);drawBoxes(s);
     $('batteryToggle').disabled=!s.battery_ready||batteryPending||visionPending||stopPending;$('batteryToggle').textContent=batteryEnabled?'Stop object test':'Test object model';const objectSummary=(s.boxes||[]).map(b=>(b.label||s.object_classes?.[b.class_id]||'Object')+' '+b.score+'%').join(' · ');$('batteryState').textContent=batteryNotice||(!s.battery_ready?'Object model unavailable':!batteryEnabled?'Battery, Marker, Screwdriver · camera test only':s.vision_error||((s.vision_age_ms<2000?(objectSummary||'No objects detected'):'Waiting for object result')+' · '+s.vision_inference_ms+' ms'));
     $('wakeState').textContent=!s.wake_ready?'Wake unavailable':s.wake_paused?'Paused for vision':s.wake_reacting?'Listening · wake reaction':'Listening for Digit';
-    $('wakeLast').textContent=s.wake_detections?` · ${s.wake_detections} heard · last ${Math.surface(s.wake_age_ms/1000)}s ago (${Math.round(s.wake_score*100)}%)`:'';
+    $('wakeLast').textContent=s.wake_detections?` · ${s.wake_detections} heard · last ${Math.floor(s.wake_age_ms/1000)}s ago (${Math.round(s.wake_score*100)}%)`:'';
     $('wakeResult').textContent=s.wake_error||({'APPLIED':'Zumo acknowledged the reaction','SENDING':'Sending reaction to Zumo...','NONE':'','DISCONNECTED':'Zumo disconnected · speaker reaction remains available','BUSY':'Zumo busy · face and lights skipped','CANCELLED':'Zumo reaction cancelled','NO_REPLY':'No wake acknowledgement from Zumo · check its updated files','UNKNOWN_COMMAND':'Update the Zumo controller for wake reactions'}[s.wake_zumo]||s.wake_zumo);
     $('wakeTest').disabled=s.wake_paused||s.wake_reacting||(!s.audio_available&&!s.wake_zumo_connected);
     const elapsed=s.audio_state==='RECORDING'?s.recording_elapsed_ms:s.captured_ms;
@@ -1001,19 +1002,9 @@ esp_err_t zumoFaceHandler(httpd_req_t* request) {
   }
   person_follow::setEnabled(false);
   robot_actions::manualOverride();
-  if (!zumo_link::face(value)) {
-    httpd_resp_set_status(request, "409 Conflict");
-    return controlReply(request, "Zumo must be connected and stopped");
-  }
-  if (preview) {
-    if (audio.cuePlaying) audioEngine.cancelOutput();
-    // The UART task dispatches the queued face during the voice's lead-in.
-    if (withVoice && !audioEngine.playCue(emotionCueForFace(value))) {
-      httpd_resp_set_status(request, "409 Conflict");
-      return controlReply(request, "Face requested, but the speaker became unavailable");
-    }
-  }
-  return controlReply(request, withVoice ? "Face requested; voice playing once" : "Face command accepted");
+  reaction_player::play(value,"NONE",withVoice ? emotionCueForFace(value) : AudioCue::None,
+                        reaction_player::Source::Preview);
+  return controlReply(request, withVoice ? "Preview queued; voice starts when the face is visible" : "Face preview queued");
 }
 
 esp_err_t zumoFaceStopHandler(httpd_req_t* request) {

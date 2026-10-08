@@ -1,4 +1,5 @@
 #include "speech_commands.h"
+#include "reaction_player.h"
 #include "speech_pipeline.h"
 #include "speech_phrases.h"
 #include "robot_actions.h"
@@ -383,17 +384,25 @@ void audioFault() { fail("Microphone unavailable; check audio status"); }
 
 void poll() {
   const auto audio = audioEngine.snapshot();
+  const bool reactionBusy = reaction_player::active();
   bool cancelVoice = false;
   portENTER_CRITICAL(&lock);
   if (state.listening && waitingForVoice) {
-    if (!audio.cuePlaying && !audio.wakeChimePlaying && audio.state != AudioState::Playing) {
+    if (!reactionBusy && !audio.cuePlaying && !audio.wakeChimePlaying && audio.state != AudioState::Playing) {
       waitingForVoice = false;
       opensAt = millis() + kVoiceTailMs;
-      snprintf(state.result, sizeof(state.result), "Listening");
+      snprintf(state.result, sizeof(state.result), "Settling microphone");
     } else if (millis() - opensAt >= kVoiceWaitTimeoutMs) {
-      waitingForVoice = state.listening = false; ++session; cancelVoice = true;
-      snprintf(state.result, sizeof(state.result), "Wake voice interrupted");
+      // The acknowledgment is optional. A stalled display/speaker must not
+      // consume the user's command window before any microphone samples arrive.
+      waitingForVoice = false; cancelVoice = true;
+      opensAt = millis() + kVoiceTailMs;
+      snprintf(state.result, sizeof(state.result), "Settling microphone");
     }
+  }
+  if (state.listening && !waitingForVoice && static_cast<int32_t>(millis() - opensAt) >= 0 &&
+      !strcmp(state.result, "Settling microphone")) {
+    snprintf(state.result, sizeof(state.result), "Listening");
   }
   if (state.listening && !waitingForVoice && static_cast<int32_t>(millis() - opensAt) >= static_cast<int32_t>(kStallMs)) {
     state.listening = false; ++session;
@@ -403,7 +412,7 @@ void poll() {
   const uint32_t generation = pendingGeneration;
   pendingCommand = 0;
   portEXIT_CRITICAL(&lock);
-  if (cancelVoice) audioEngine.cancelOutput();
+  if (cancelVoice) { reaction_player::cancel(); audioEngine.cancelOutput(); }
   if (command) {
     const bool accepted = robot_actions::start(static_cast<robot_actions::Command>(command), generation);
     Serial.printf("MultiNet command %d: %s\n", command, accepted ? "accepted" : "cancelled or unavailable");

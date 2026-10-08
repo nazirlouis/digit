@@ -59,6 +59,7 @@ int scenePending = 0;
 char sceneLabel[16] = {};
 uint16_t sceneId = 0;
 uint32_t sceneSentAt = 0;
+uint32_t presentationGeneration = 1;
 bool ledPending = false;
 int ledTarget = -1;
 uint8_t ledRed = 0, ledGreen = 0, ledBlue = 0, ledBrightness = 0;
@@ -317,6 +318,10 @@ void handleLine(const char* line, uint32_t now) {
     status.rampedLookCapable = strstr(line, " LOOKRAMP=1") != nullptr;
     status.wiggleCapable = strstr(line, " WIGGLE=2") != nullptr;
     status.sceneCapable = strstr(line, " SCENE=1") != nullptr;
+    unsigned reactionVersion = 0;
+    const char* reactionField = strstr(line, " REACT=");
+    if (reactionField) sscanf(reactionField, " REACT=%x", &reactionVersion);
+    status.reactionVersion = reactionVersion;
     status.autoRampCapable = strstr(line, " SAFE2=1") != nullptr;
     status.chaseCloseCapable = strstr(line, " CLOSE=2") != nullptr;
     status.closeApproachCapable = status.chaseCloseCapable || strstr(line, " CLOSE=1") != nullptr;
@@ -361,8 +366,10 @@ void handleLine(const char* line, uint32_t now) {
   if (id == wakeCommandId && wakeCommandId != 0) {
     const char* error = strstr(line, " ERR ");
     snprintf(status.wakeResult, sizeof(status.wakeResult), "%s",
-             strstr(line, " OK WAKE") ? "APPLIED" : error ? error + 5 : "BAD_REPLY");
-    wakeCommandId = 0;
+             strstr(line, " OK WAKE_VISIBLE") ? "APPLIED" :
+             strstr(line, " OK WAKE") ? (status.motionCapable ? "RENDERING" : "APPLIED") :
+             error ? error + 5 : "BAD_REPLY");
+    if (strcmp(status.wakeResult, "RENDERING")) wakeCommandId = 0;
   }
   if (strcmp(line, "0 EVENT WAKE_FAILED") == 0)
     snprintf(status.wakeResult, sizeof(status.wakeResult), "WAKE_IO");
@@ -762,6 +769,22 @@ bool scene(const char* expression, const char* label) {
   return allowed;
 }
 
+void cancelScene() {
+  portENTER_CRITICAL(&stateLock);
+  ++presentationGeneration;
+  scenePending = 0; sceneId = 0;
+  snprintf(status.sceneResult, sizeof(status.sceneResult), "CANCELLED");
+  portEXIT_CRITICAL(&stateLock);
+}
+
+void cancelWake() {
+  portENTER_CRITICAL(&stateLock);
+  ++presentationGeneration;
+  wakePending = false; wakeCommandId = 0;
+  snprintf(status.wakeResult, sizeof(status.wakeResult), "CANCELLED");
+  portEXIT_CRITICAL(&stateLock);
+}
+
 bool setAcceleration(int value) {
   if (value < 500 || value > 6000) return false;
   portENTER_CRITICAL(&stateLock);
@@ -842,6 +865,7 @@ void poll() {
   bool sendSafe = false;
   char sendMotion[128] = {}, sendHeartbeat[80] = {};
   uint32_t dispatchGeneration = 0, dispatchSession = 0;
+  uint32_t dispatchPresentation = 0;
   uint16_t dispatchJob = 0;
   int left = 0, right = 0, acceleration = 6000, stopDistanceMm = 150;
   portENTER_CRITICAL(&stateLock);
@@ -857,7 +881,7 @@ void poll() {
       (!strcmp(status.lookResult, "SENDING") && now - lookStarted > 1000))) {
     finishLook(!connected ? "DISCONNECTED" : "CANCELLED", true);
   }
-  if (wakeCommandId && now - wakeSentAt >= 1000) {
+  if (wakeCommandId && now - wakeSentAt >= (status.motionCapable ? 1500U : 1000U)) {
     wakeCommandId = 0;
     snprintf(status.wakeResult, sizeof(status.wakeResult), "NO_REPLY");
   }
@@ -969,6 +993,7 @@ void poll() {
   }
   dispatchGeneration=status.controlGeneration;
   dispatchSession=motionSession;
+  dispatchPresentation=presentationGeneration;
   portEXIT_CRITICAL(&stateLock);
 
   // All UART writes belong to this task. Revalidate selected work after the
@@ -982,6 +1007,9 @@ void poll() {
   }
   if (!motionWanted || dispatchSession!=motionSession)
     sendMotion[0]=sendHeartbeat[0]=0;
+  if (dispatchPresentation != presentationGeneration) {
+    sendScene = 0; sendWake = false;
+  }
   const bool hasPrimary=sendStop || sendMotion[0] || sendCalibration || sendFace || sendScene ||
       sendLed || sendWake || sendLook || keepId || sendDrive;
   const uint16_t wire=hasPrimary ? reserveWireId() : 0;

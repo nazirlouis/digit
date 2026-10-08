@@ -1,11 +1,16 @@
 $ErrorActionPreference = 'Stop'
 $project = Split-Path $PSScriptRoot
+$python = if (Test-Path "$env:USERPROFILE\.platformio\penv\Scripts\python.exe") { "$env:USERPROFILE\.platformio\penv\Scripts\python.exe" } else { 'python' }
+& $python (Join-Path (Split-Path $project) 'tools\generate_reactions.py') --check
+if ($LASTEXITCODE -ne 0) { throw 'Reaction catalog validation failed' }
+& $python (Join-Path (Split-Path $project) 'tools\test_reactions.py')
+if ($LASTEXITCODE -ne 0) { throw 'Reaction contract tests failed' }
 $output = Join-Path $project 'test-artifacts\emotions'
 New-Item -ItemType Directory -Force $output | Out-Null
 $web = Get-Content -Raw -LiteralPath (Join-Path $project 'src\web_server.cpp')
 foreach ($section in @(
     @('face_controls.inc','esp_err_t zumoFaceHandler(', 'bool parseLedValue('),
-    @('face_generation.inc','bool currentGeneration(', 'esp_err_t actionsStatusHandler(')
+    @('face_generation.inc','bool currentGeneration(', 'esp_err_t actionsDebugHandler(')
 )) {
     $start = $web.IndexOf($section[1])
     $end = $web.IndexOf($section[2], $start)

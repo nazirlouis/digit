@@ -1,7 +1,7 @@
 """Render and timeline regressions; no device or motor access."""
 
+import json
 import pathlib
-import re
 import sys
 import time
 import unittest
@@ -10,6 +10,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from digit_face_engine import (FaceEngine, EXPRESSIONS, STYLES, NEUTRAL,
                                COLORS, SURPRISE_FLASH_COLOR, SURPRISE_FLASH_MS)
+from reaction_catalog import TIMINGS, WAKE_TIMING
 from test_digit_display import FrameBuffer
 
 
@@ -75,16 +76,37 @@ class CooperativeDisplay(Display):
 class FaceTests(unittest.TestCase):
     def test_speaker_timelines_match_face_timelines(self):
         root = pathlib.Path(__file__).resolve().parents[2]
-        source = (root / "xiao-sense/src/emotion_voice.h").read_text(encoding="utf-8")
-        durations = [int(value) for value in re.search(r'expression\[\] = \{([^}]+)\}', source)[1].split(",")]
-        self.assertEqual(len(durations), len(EXPRESSIONS))
-        for name, duration in zip(EXPRESSIONS, durations):
+        catalog = json.loads((root / "reactions/digit_reactions.json").read_text(encoding="utf-8"))
+        self.assertEqual(tuple(catalog["face_order"]), EXPRESSIONS)
+        self.assertEqual(set(TIMINGS), set(EXPRESSIONS))
+        for reaction in catalog["reactions"]:
+            name = reaction["name"]
+            expression = reaction["profiles"]["expression"]
             _, enter, hold, exit_ms = STYLES[name]
-            expected = enter+3200 if name == "sleeping" else enter if hold is None else enter+hold+exit_ms
-            self.assertEqual(duration, expected, name)
+            self.assertEqual((enter, hold, exit_ms), tuple(expression[key] for key in ("enter_ms", "hold_ms", "exit_ms")), name)
+            if hold is None:
+                self.assertIn(name, ("neutral", "sleeping"))
+            else:
+                self.assertEqual(expression["voice_ms"], enter + hold + exit_ms, name)
+            wake = reaction["profiles"]["wake"]
+            self.assertEqual(WAKE_TIMING, tuple(wake[key] for key in ("enter_ms", "hold_ms", "exit_ms")))
+            self.assertEqual(wake["voice_ms"], sum(WAKE_TIMING))
         from wake_reaction import DURATION_MS
-        wake = int(re.search(r'VoiceTiming::Wake \? (\d+)', source)[1])
-        self.assertEqual(wake, DURATION_MS)
+        self.assertEqual(sum(WAKE_TIMING), DURATION_MS)
+        self.assertLessEqual(DURATION_MS, 900)
+
+    def test_scene_enters_from_existing_eyes_instead_of_snapping_to_target(self):
+        self.face.play("sleeping")
+        self.advance(1000)
+        before = self.face.pose
+        self.face.show_scene("happy", "FOUND")
+        self.assertEqual(self.face.pose, before)
+        self.assertEqual(self.face.enter_ms, TIMINGS["happy"][0])
+        self.advance(self.face.enter_ms // 2)
+        self.assertNotEqual(self.face.pose, before)
+        self.assertNotEqual(self.face.pose, STYLES["happy"][0])
+        self.advance(self.face.enter_ms // 2)
+        self.assertEqual(self.face.pose, STYLES["happy"][0])
 
     def test_action_scene_finishes_its_reaction_but_keeps_the_caption(self):
         for name in EXPRESSIONS:
@@ -187,13 +209,13 @@ class FaceTests(unittest.TestCase):
         self.assertEqual(self.face.pose, NEUTRAL)
 
     def test_sleepy_reopens_and_excited_changes_during_hold(self):
-        for name, steps in (("sleepy", (1900, 1300)), ("excited", (600, 600))):
+        for name, cycle in (("sleepy", STYLES["sleepy"][2]), ("excited", 1200)):
             self.face.play(name)
             self.advance(STYLES[name][1])
             first = bytes(self.display.buf)
-            self.advance(steps[0])
+            self.advance(cycle // 2)
             self.assertNotEqual(bytes(self.display.buf), first)
-            self.advance(steps[1])
+            self.advance(cycle - cycle // 2)
             self.assertEqual(bytes(self.display.buf), first)
 
     def test_time_wrap_and_blink_completion(self):
@@ -314,15 +336,46 @@ class FaceTests(unittest.TestCase):
         face.update()
         self.assertEqual(face.visible_scene_sequence, 1)
         self.assertEqual(face.started, self.now)
+        self.assertEqual(face.enter_ms, TIMINGS["confused"][0])
+        self.assertEqual(face.pose, NEUTRAL)
+        self.assertEqual(face.caption_until, self.now + 8000)
 
     def test_cooperative_scenes_preserve_all_approved_expression_pixels(self):
         face, display = self.cooperative_face()
         for name in EXPRESSIONS:
+            self.face.play("neutral")
+            self.face.pose = NEUTRAL
+            face.play("neutral")
+            face.pose = NEUTRAL
             self.face.show_scene(name, "FOUND")
             face.show_scene(name, "FOUND")
             self.drain_face(face)
             self.assertEqual(display.queued, bytes(self.display.buf), name)
             self.assertEqual(face.visible_scene_sequence, face.scene_sequence)
+            self.face.started = face.started
+            self.now += STYLES[name][1]
+            self.face.update()
+            face.update()
+            self.drain_face(face)
+            self.assertEqual(display.queued, bytes(self.display.buf), name)
+
+    def test_slow_first_frame_does_not_consume_reaction_or_caption_lifetime(self):
+        face, display = self.cooperative_face()
+        face.show_scene("happy", "FOUND")
+        self.now += 1500
+        self.drain_face(face)
+        started = face.started
+        self.assertEqual(face.active_scene_sequence, 1)
+        self.assertEqual(face.visible_scene_sequence, 1)
+        self.assertEqual(face.caption_until, started + 8000)
+        self.now = started + sum(TIMINGS["happy"]) - 1
+        face.update()
+        self.assertEqual(face.expression, "happy")
+        self.drain_face(face)
+        self.now += 30
+        face.update()
+        self.assertEqual(face.expression, "neutral")
+        self.assertEqual(face.caption, "FOUND")
 
     def test_interruption_discards_unfinished_drawing_and_pending_scene_visibility(self):
         face, display = self.cooperative_face()
@@ -338,6 +391,7 @@ class FaceTests(unittest.TestCase):
             face.update()
         face.play("neutral")
         self.assertFalse(display.frame_pending)
+        self.assertIsNone(face.active_scene_sequence)
         face.update()
         self.drain_face(face)
         self.assertEqual(face.visible_scene_sequence, 2)

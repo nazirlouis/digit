@@ -178,7 +178,7 @@ int main() {
   zumo_link::state.distanceMm=500; run(2000);
   assert(robot_actions::snapshot().active && !zumo_link::excitedGesture);
   zumo_link::state.distanceMm=100; untilDone();
-  assert(zumo_link::excitedGesture && shown("LOVE FOUND"));
+  assert(!zumo_link::excitedGesture && shown("LOVE FOUND"));
   reset(); begin(Command::ComeSayHello); untilDriving();
   cameraFresh=false; run(1300); assert(!zumo_link::state.left);
   untilDone();
@@ -398,8 +398,10 @@ int main() {
   assert(speech_commands::listening && speech_commands::listenGeneration==robot_actions::generation());
   assert(robot_actions::generation()!=wakeGeneration && !vision_service::state.enabled);
   const auto wakeMotions=zumo_link::motions; run(15000); assert(zumo_link::motions==wakeMotions);
-  reset(); audioEngine.available=false; begin(Command::ComeSayHello); untilDone(4000);
-  reset(); zumo_link::sceneAvailable=false; begin(Command::Identify); untilDone(4000);
+  reset(); audioEngine.available=false; begin(Command::ComeSayHello); untilDriving();
+  zumo_link::state.distanceMm=100;untilDone(4000);assert(!strcmp(robot_actions::snapshot().phase,"There you are!"));
+  reset(); zumo_link::sceneAvailable=false; begin(Command::Identify); untilDone(10000);
+  assert(!strcmp(robot_actions::snapshot().phase,"That is a battery!"));
   reset(); zumo_link::state.autoRampCapable=false;
   assert(!robot_actions::start(Command::ComeSayHello,robot_actions::generation()));
   reset(); vision_service::state.batteryReady=false;
@@ -422,22 +424,23 @@ int main() {
   run(650);assert(zumo_link::motions==beforeSettling);
   run(2200);assert(zumo_link::motions>beforeSettling);
   robot_actions::stop();
-  // Lost display replies and stuck turns/playback have short, terminal deadlines.
+  // Optional display/audio failures skip personality while preserving results;
+  // actual turn failures still terminate the motion mission.
   reset();zumo_link::sceneAcknowledged=false;
-  begin(Command::Identify);untilDone(5000);
-  assert(strstr(robot_actions::snapshot().phase,"acknowledgement"));
+  begin(Command::Identify);untilDone(14000);
+  assert(!strcmp(robot_actions::snapshot().phase,"That is a battery!"));
   reset();begin(Command::Identify);
   while(!shown("SURPRISED BATTERY"))tick();
-  zumo_link::sceneAcknowledged=false;untilDone(7000);
-  assert(strstr(robot_actions::snapshot().phase,"acknowledgement"));
+  zumo_link::sceneAcknowledged=false;untilDone(9000);
+  assert(!strcmp(robot_actions::snapshot().phase,"That is a battery!"));
   reset();turnCompletes=false;
   vision_service::state.boxes[0].x1=230;vision_service::state.boxes[0].x2=310;
   begin(Command::ComeSayHello);untilDone(19000);
   assert(strstr(robot_actions::snapshot().phase,"Turn timed out"));
   assert(!zumo_link::state.lookActive && !audioEngine.playing);
   reset();audioCompletes=false;
-  begin(Command::Identify);untilDone(4000);
-  assert(strstr(robot_actions::snapshot().phase,"playback timed out"));
+  begin(Command::Identify);untilDone(10000);
+  assert(!strcmp(robot_actions::snapshot().phase,"That is a battery!") && !audioEngine.playing);
   // Object evidence is spatially coherent and bounded in time.
   reset();cameraPeriod=1000;begin(Command::Identify);untilDone();
   assert(!shown("HAPPY BATTERY"));
@@ -487,9 +490,10 @@ int main() {
   }
   assert(!robot_actions::snapshot().active && shown("CONFUSED OBSTACLE"));
   assert(!zumo_link::state.left && !zumo_link::state.right);
-  // No replay of excited audio after a later CENTERING phase has been observed.
+  // Arrival has no motor celebration; unrelated old gesture events cannot
+  // replay its audio or move the tracks.
   reset();zumo_link::state.distanceMm=100;begin(Command::ComeSayHello);
-  for(int i=0;i<400 && !zumo_link::gesture;++i)tick();
+  untilDone();assert(!zumo_link::gesture && shown("LOVE FOUND"));
   strcpy(zumo_link::state.lookResult,"CENTERING");robot_actions::poll();
   const auto phaseSounds=audioEngine.plays;
   strcpy(zumo_link::state.lookResult,"WIGGLING");robot_actions::poll();

@@ -7,6 +7,7 @@ hardware imports so its timing and safety rules can be tested on a desktop.
 
 from digit_face_engine import EXPRESSIONS
 from wake_reaction import WakeReaction
+from reaction_catalog import CATALOG_VERSION
 from voice_turn import VoiceTurn, WIGGLE_ACCELERATION, WIGGLE_DECELERATION, movement_target
 from motion_jobs import MotionJobs
 
@@ -96,6 +97,8 @@ class UARTController:
         self.loop_overruns = 0
         self.scene_wire = None
         self.scene_sequence = None
+        self.wake_wire = None
+        self.wake_sequence = None
         self.motion = MotionJobs(self)
         if hasattr(face, "enable_cooperative"):
             face.enable_cooperative()
@@ -138,6 +141,7 @@ class UARTController:
         self._cancel_wake()
 
     def _cancel_wake(self):
+        self.wake_wire = self.wake_sequence = None
         try:
             self.wake.cancel()
         except Exception as error:
@@ -298,12 +302,12 @@ class UARTController:
         age = self.clock.ticks_diff(self.clock.ticks_ms(), self.range_at) if self.range_at is not None else 65535
         velocity = self.speed_control.velocity if self.speed_control else (0, 0)
         target = self.speed_control.targets if self.speed_control else (0, 0)
-        self._send("{} OK READY={} FAULT={} L={} R={} BAT={} EDGE={} VOICE={} DIST={} RANGE={} AUTO=1 BRAKE=1 LOOKRAMP=1 WIGGLE=2 SCENE=1 SAFE2=1 CLOSE=2 RA={} RS={} RAW={} ENC={} VL={} VR={} MOTION=1 BOOT={} SESSION={} GAP={} OVERRUN={} DSUS={} TL={} TR={}".format(
+        self._send("{} OK READY={} FAULT={} L={} R={} BAT={} EDGE={} VOICE={} DIST={} RANGE={} AUTO=1 BRAKE=1 LOOKRAMP=1 WIGGLE=2 SCENE=1 SAFE2=1 CLOSE=2 RA={} RS={} RAW={} ENC={} VL={} VR={} MOTION=1 BOOT={} SESSION={} GAP={} OVERRUN={} DSUS={} TL={} TR={} REACT={:08x}".format(
             command_id, int(self.ready), self.fault, self.left, self.right,
             millivolts, int(self.edge), int(self.voice_turn is not None),
             self.distance_mm, int(valid), min(65535, age), self.range_status,
             self.raw_distance_mm, int(self.speed_control is not None), int(velocity[0]), int(velocity[1]), self.motion.boot, self.motion.session,
-            self.max_loop_gap_ms, self.loop_overruns, getattr(self.face, "max_slice_us", 0), int(target[0]), int(target[1])))
+            self.max_loop_gap_ms, self.loop_overruns, getattr(self.face, "max_slice_us", 0), int(target[0]), int(target[1]), CATALOG_VERSION))
         if self.motion.session:
             self.motion.snapshot(command_id)
 
@@ -512,6 +516,7 @@ class UARTController:
                 self._send(command_id + " ERR LED_UNAVAILABLE")
             else:
                 try:
+                    self.scene_wire = self.scene_sequence = None
                     self.wake.start(now)
                 except Exception as error:
                     self._cancel_wake()
@@ -519,6 +524,9 @@ class UARTController:
                     self._send(command_id + " ERR WAKE_IO")
                 else:
                     self._send(command_id + " OK WAKE")
+                    if getattr(self.face, "cooperative", False):
+                        self.wake_wire = command_id
+                        self.wake_sequence = self.wake.scene_sequence
         elif command == "SCENE" and len(args) == 2:
             expression, caption = args
             if expression != expression.upper() or expression.lower() not in EXPRESSIONS or caption not in SCENE_LABELS:
@@ -526,6 +534,7 @@ class UARTController:
             elif (self._moving() or self.look_id is not None or self.calibration is not None) and not getattr(self.face, "cooperative", False):
                 self._send(command_id + " ERR MOVING")
             else:
+                self.scene_wire = self.scene_sequence = None
                 try:
                     self._cancel_wake()
                     self.face.show_scene(expression.lower(), caption)
@@ -540,6 +549,7 @@ class UARTController:
             if (self._moving() or self.look_id is not None) and not getattr(self.face, "cooperative", False):
                 self._send(command_id + " ERR MOVING")
             elif args[0] == args[0].upper() and args[0].lower() in EXPRESSIONS:
+                self.scene_wire = self.scene_sequence = None
                 self._cancel_wake()
                 self.face.play(args[0].lower())
                 self._send(command_id + " OK FACE")
@@ -719,9 +729,19 @@ class UARTController:
                 self.face.update(max_units=8, max_us=3000)
             else:
                 self.face.update()
-        if (self.scene_wire is not None and getattr(self.face, "visible_scene_sequence", -1) >= self.scene_sequence):
-            self._send(self.scene_wire + " OK SCENE_VISIBLE")
-            self.scene_wire = self.scene_sequence = None
+        if self.scene_wire is not None:
+            if getattr(self.face, "active_scene_sequence", self.scene_sequence) != self.scene_sequence:
+                self.scene_wire = self.scene_sequence = None
+            elif getattr(self.face, "visible_scene_sequence", -1) == self.scene_sequence:
+                self._send(self.scene_wire + " OK SCENE_VISIBLE")
+                self.scene_wire = self.scene_sequence = None
+        if self.wake_wire is not None:
+            if (not self.wake.active or
+                    getattr(self.face, "active_scene_sequence", self.wake_sequence) != self.wake_sequence):
+                self.wake_wire = self.wake_sequence = None
+            elif getattr(self.face, "visible_scene_sequence", -1) == self.wake_sequence:
+                self._send(self.wake_wire + " OK WAKE_VISIBLE")
+                self.wake_wire = self.wake_sequence = None
 
     def close(self):
         self._stop()

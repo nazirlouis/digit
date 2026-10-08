@@ -7,6 +7,39 @@
 #include <vector>
 #include <fstream>
 #include <string>
+#include <cmath>
+
+const reaction_catalog::Phrase& phraseFor(AudioCue cue, VoiceTiming timing) {
+  const auto i=static_cast<unsigned>(cue)-static_cast<unsigned>(AudioCue::Neutral);
+  return (timing==VoiceTiming::Wake ? reaction_catalog::wakePhrases :
+          timing==VoiceTiming::Gesture ? reaction_catalog::gesturePhrases : reaction_catalog::expressionPhrases)[i];
+}
+
+void verifyNativeTiming(AudioCue cue, VoiceTiming timing, const std::vector<int32_t>& samples) {
+  const auto& phrase=phraseFor(cue,timing);
+  assert(phrase.gain>0 && phrase.gain<=1); // Master volume is never boosted.
+  double energy=0, peak=0;
+  for(auto sample:samples) {
+    const double value=static_cast<double>(sample)/0x08000000;
+    energy+=value*value;
+    peak=std::max(peak,std::abs(value));
+  }
+  assert(peak<=.48 && std::sqrt(energy/samples.size())<=.135);
+  size_t frame=emotionLeadMs(cue,timing)*16;
+  for(size_t i=0;i<frame;++i) assert(samples.at(i)==0);
+  for(unsigned n=0;n<phrase.count;++n) {
+    const auto& note=phrase.notes[n];
+    const size_t end=frame+note.ms*16;
+    assert(samples.at(frame)==0 && samples.at(end-1)==0); // Native fade endpoints.
+    bool audible=false;
+    for(;frame<end;++frame) audible|=samples.at(frame)!=0;
+    assert(audible);
+    const size_t gapEnd=frame+note.gapMs*16;
+    for(;frame<gapEnd;++frame) assert(samples.at(frame)==0); // Exact authored gap.
+  }
+  assert(samples.size()-frame>=25*16); // Quiet face return, never stretched notes.
+  for(;frame<samples.size();++frame) assert(samples[frame]==0);
+}
 
 void writeWav(const std::string& name, const std::vector<int32_t>& samples) {
   std::ofstream out(name, std::ios::binary);
@@ -39,10 +72,13 @@ int main() {
       assert(samples.size() <= 96000); // Every reaction is finite, including sleep.
     }
     assert(peak > 1000000 && peak <= 0x08000000); // Audible, with mixer headroom.
-    assert(jump < 0x04000000); // No large discontinuities at syllable boundaries.
+    assert(jump < 0x08000000); // FM chatter stays within reserved mixer headroom.
     assert(samples.front() == 0 && samples.back() == 0 && voice.next() == 0);
-    for (unsigned i = 0; i < 1440; ++i) assert(samples[i] == 0); // Face lead-in.
     assert(samples.size() == emotionDurationMs(cue)*16);
+    verifyNativeTiming(cue,VoiceTiming::Expression,samples);
+    const auto& full=reaction_catalog::expression[static_cast<unsigned>(cue)-static_cast<unsigned>(AudioCue::Neutral)];
+    assert(full.persistent == (cue==AudioCue::Neutral || cue==AudioCue::Sleeping));
+    assert(full.persistent || full.enterMs+full.holdMs+full.exitMs==samples.size()/16);
     assert(fingerprints.insert(hash).second); // Each emotion has a distinct phrase.
     writeWav(std::string("expression_")+name+".wav",samples);
     voice.start(cue, 16000);
@@ -55,6 +91,9 @@ int main() {
       while(voice.playing())samples.push_back(voice.next());
       assert(samples.size()==emotionDurationMs(cue,timing)*16);
       assert(samples.front()==0 && samples.back()==0);
+      verifyNativeTiming(cue,timing,samples);
+      if(timing==VoiceTiming::Gesture)writeWav(std::string("gesture_")+name+".wav",samples);
+      if(timing==VoiceTiming::Wake)assert(samples.size()<=900*16);
       if(timing==VoiceTiming::Wake && cue==AudioCue::Happy)writeWav("wake.wav",samples);
     }
   }
@@ -64,7 +103,7 @@ int main() {
   voice.start(AudioCue::Happy, 0); assert(!voice.playing() && voice.next() == 0);
   voice.start(AudioCue::Hello, 16000); assert(!voice.playing());
   voice.start(AudioCue::Happy, 96000); assert(!voice.playing());
-  for(auto rate:{8000U,48000U}) {
+  for(auto rate:{8000U,22050U,44100U,48000U}) {
     voice.start(AudioCue::Sleepy,rate);unsigned count=0;
     while(voice.playing()){voice.next();++count;assert(count<=rate*6);}
     assert(count==rate*emotionDurationMs(AudioCue::Sleepy)/1000);
@@ -75,5 +114,7 @@ int main() {
   EmotionVoice fresh; fresh.start(AudioCue::Neutral, 16000);
   while (fresh.playing()) assert(voice.next() == fresh.next());
   assert(!voice.playing());
-  std::cout << "PASS: thirteen bounded, distinct, finite voices; fades, repeat, replacement, invalid input\n";
+  assert(emotionDurationMs(AudioCue::None)==0 && emotionLeadMs(AudioCue::Hello)==0);
+  assert(emotionFaceDurationMs(AudioCue::Happy)==emotionDurationMs(AudioCue::Happy));
+  std::cout << "PASS: thirteen native droid phrases; exact notes/gaps/settling, shared face timelines, short wake, headroom, repeat, replacement, invalid input\n";
 }

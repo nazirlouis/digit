@@ -2,12 +2,13 @@ $ErrorActionPreference = 'Stop'
 $project = Split-Path $PSScriptRoot
 $output = Join-Path $project 'test-artifacts\actions'
 New-Item -ItemType Directory -Force (Join-Path $output 'freertos') | Out-Null
-foreach ($file in 'robot_actions.cpp','robot_actions.h','audio_cues.h','emotion_voice.h','action_mission.cpp','action_mission.h','person_follow.cpp') {
+foreach ($file in 'robot_actions.cpp','robot_actions.h','audio_cues.h','emotion_voice.h','reaction_catalog.h','reaction_player.h','reaction_player.cpp','action_mission.cpp','action_mission.h','person_follow.cpp') {
     Copy-Item -LiteralPath (Join-Path $project "src\$file") -Destination (Join-Path $output $file)
 }
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'action_mocks.h') -Destination (Join-Path $output 'action_mocks.h')
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'test_robot_actions.cpp') -Destination (Join-Path $output 'test_robot_actions.cpp')
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'test_action_missions.cpp') -Destination (Join-Path $output 'test_action_missions.cpp')
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'test_reaction_player.cpp') -Destination (Join-Path $output 'test_reaction_player.cpp')
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'test_person_follow.cpp') -Destination (Join-Path $output 'test_person_follow.cpp')
 # Exercise the actual wake cancellation/status functions alongside the action
 # controller. The model/audio task remains mocked for these desktop tests.
@@ -37,7 +38,7 @@ if (@($publishStart,$publishEnd,$listenStart,$submitStart,$pollStart,$controlEnd
 Set-Content -LiteralPath (Join-Path $output 'speech_result.inc') -Value $speechSource.Substring($publishStart, $publishEnd - $publishStart)
 $speechControl = $speechSource.Substring($listenStart, $submitStart - $listenStart) + $speechSource.Substring($pollStart, $controlEnd - $pollStart)
 Set-Content -LiteralPath (Join-Path $output 'speech_control.inc') -Value $speechControl
-foreach ($header in 'Arduino.h','audio_engine.h','camera_service.h','person_follow.h','photo_store.h','speech_commands.h','vision_service.h','wake_word.h','zumo_link.h','freertos/semphr.h') {
+foreach ($header in 'Arduino.h','audio_engine.h','camera_service.h','person_follow.h','personality_events.h','photo_store.h','speech_commands.h','vision_service.h','wake_word.h','zumo_link.h','freertos/semphr.h') {
     Set-Content -LiteralPath (Join-Path $output $header) -Value '#include "action_mocks.h"'
 }
 $linkOutput = Join-Path $output 'link'
@@ -68,17 +69,23 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Voice direction tests failed' }
     & cl /nologo /std:c++17 /EHsc /W4 /I. /D_CRT_SECURE_NO_WARNINGS /DMISSION_TRANSLATION /c /Fo:action_mission.obj action_mission.cpp
     if ($LASTEXITCODE -ne 0) { throw 'Mission controller compilation failed' }
+    & cl /nologo /std:c++17 /EHsc /W4 /I. /D_CRT_SECURE_NO_WARNINGS /DMISSION_TRANSLATION /c /Fo:reaction_player.obj reaction_player.cpp
+    if ($LASTEXITCODE -ne 0) { throw 'Reaction coordinator compilation failed' }
     & cl /nologo /std:c++17 /EHsc /W4 /I. /D_CRT_SECURE_NO_WARNINGS /DMISSION_TRANSLATION /DFOLLOW_TRANSLATION /c /Fo:person_follow.obj person_follow.cpp
     if ($LASTEXITCODE -ne 0) { throw 'Person follow compilation failed' }
-    & cl /nologo /std:c++17 /EHsc /W4 /I. /D_CRT_SECURE_NO_WARNINGS /Fe:test_robot_actions.exe /Fo:test_robot_actions.obj test_robot_actions.cpp action_mission.obj person_follow.obj
+    & cl /nologo /std:c++17 /EHsc /W4 /I. /D_CRT_SECURE_NO_WARNINGS /DMISSION_TRANSLATION /Fe:test_reaction_player.exe /Fo:test_reaction_player.obj test_reaction_player.cpp reaction_player.obj
+    if ($LASTEXITCODE -ne 0) { throw 'Reaction tests compilation failed' }
+    & .\test_reaction_player.exe
+    if ($LASTEXITCODE -ne 0) { throw 'Reaction tests failed' }
+    & cl /nologo /std:c++17 /EHsc /W4 /I. /D_CRT_SECURE_NO_WARNINGS /Fe:test_robot_actions.exe /Fo:test_robot_actions.obj test_robot_actions.cpp action_mission.obj person_follow.obj reaction_player.obj
     if ($LASTEXITCODE -ne 0) { throw 'Controller test compilation failed' }
     & .\test_robot_actions.exe
     if ($LASTEXITCODE -ne 0) { throw 'Controller tests failed' }
-    & cl /nologo /std:c++17 /EHsc /W4 /I. /D_CRT_SECURE_NO_WARNINGS /Fe:test_action_missions.exe /Fo:test_action_missions.obj test_action_missions.cpp action_mission.obj person_follow.obj
+    & cl /nologo /std:c++17 /EHsc /W4 /I. /D_CRT_SECURE_NO_WARNINGS /Fe:test_action_missions.exe /Fo:test_action_missions.obj test_action_missions.cpp action_mission.obj person_follow.obj reaction_player.obj
     if ($LASTEXITCODE -ne 0) { throw 'Mission tests compilation failed' }
     & .\test_action_missions.exe
     if ($LASTEXITCODE -ne 0) { throw 'Mission tests failed' }
-    & cl /nologo /std:c++17 /EHsc /W4 /I. /D_CRT_SECURE_NO_WARNINGS /Fe:test_person_follow.exe /Fo:test_person_follow.obj test_person_follow.cpp action_mission.obj person_follow.obj
+    & cl /nologo /std:c++17 /EHsc /W4 /I. /D_CRT_SECURE_NO_WARNINGS /Fe:test_person_follow.exe /Fo:test_person_follow.obj test_person_follow.cpp action_mission.obj person_follow.obj reaction_player.obj
     if ($LASTEXITCODE -ne 0) { throw 'Person tracking tests compilation failed' }
     & .\test_person_follow.exe
     if ($LASTEXITCODE -ne 0) { throw 'Person tracking tests failed' }

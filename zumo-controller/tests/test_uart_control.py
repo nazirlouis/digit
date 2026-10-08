@@ -7,6 +7,8 @@ import unittest
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from uart_control import UARTController
 from digit_face_engine import EXPRESSIONS
+from reaction_catalog import CATALOG_VERSION, WAKE_TIMING
+from wake_reaction import DURATION_MS, VISIBILITY_TIMEOUT_MS
 
 
 class Clock:
@@ -116,6 +118,35 @@ class RGBLEDs:
         return self.brightness[index]
 
 
+class DeferredFace(Face):
+    """A display whose first complete transfer is released by the test."""
+    cooperative = True
+
+    def __init__(self, clock):
+        super().__init__()
+        self.clock = clock
+        self.scene_sequence = self.visible_scene_sequence = 0
+        self.active_scene_sequence = None
+        self.timing = None
+
+    def show_scene(self, expression, caption, timing=None):
+        super().show_scene(expression, caption)
+        self.scene_sequence += 1
+        self.active_scene_sequence = self.scene_sequence
+        self.timing = timing
+
+    def play(self, expression, hold_ms=None):
+        super().play(expression, hold_ms)
+        self.active_scene_sequence = None
+
+    def reveal(self):
+        self.visible_scene_sequence = self.active_scene_sequence
+        self.started = self.clock.now
+
+    def update(self, **kwargs):
+        pass
+
+
 class Button:
     def __init__(self):
         self.pressed = False
@@ -154,6 +185,84 @@ class UARTControlTests(unittest.TestCase):
             self.uart, self.motors, self.sensors, Battery(), self.face,
             self.a, self.b, self.c, self.clock, self.leds,
         )
+
+    def defer_display(self):
+        self.face = DeferredFace(self.clock)
+        self.control.face = self.control.wake.face = self.face
+
+    def test_scene_visibility_ack_is_exact_and_only_sent_once(self):
+        self.defer_display()
+        self.assertEqual(self.command("2 SCENE HAPPY FOUND"), "2 OK SCENE")
+        self.assertEqual(self.command("3 SCENE CURIOUS SEARCHING"), "3 OK SCENE")
+        self.face.visible_scene_sequence = 1
+        self.control.tick()
+        self.assertNotIn("2 OK SCENE_VISIBLE", self.uart.outgoing)
+        self.assertNotIn("3 OK SCENE_VISIBLE", self.uart.outgoing)
+        self.face.reveal()
+        self.control.tick()
+        self.assertEqual(self.uart.outgoing[-1], "3 OK SCENE_VISIBLE")
+        self.control.tick()
+        self.assertEqual(self.uart.outgoing.count("3 OK SCENE_VISIBLE"), 1)
+
+    def test_face_or_stop_cannot_acknowledge_an_interrupted_scene_later(self):
+        for replacement in ("FACE SLEEPING", "STOP", "WAKE"):
+            with self.subTest(replacement=replacement):
+                self.setUp()
+                self.defer_display()
+                self.command("2 SCENE CONFUSED NOT_SURE")
+                old_sequence = self.face.scene_sequence
+                self.command("3 " + replacement)
+                self.face.visible_scene_sequence = old_sequence
+                self.control.tick()
+                self.assertNotIn("2 OK SCENE_VISIBLE", self.uart.outgoing)
+                self.assertIsNone(self.control.scene_wire)
+
+    def test_wake_waits_for_visible_eyes_before_starting_led_and_duration(self):
+        self.defer_display()
+        colors = [list(color) for color in self.leds.colors]
+        brightness = list(self.leds.brightness)
+        shown = self.leds.shows
+        self.assertEqual(self.command("2 WAKE"), "2 OK WAKE")
+        self.assertEqual(self.face.timing, WAKE_TIMING)
+        self.clock.now += 500
+        self.control.tick()
+        self.assertEqual(self.leds.shows, shown)
+        self.assertNotIn("2 OK WAKE_VISIBLE", self.uart.outgoing)
+        self.face.reveal()
+        self.control.tick()
+        self.assertEqual(self.uart.outgoing[-1], "2 OK WAKE_VISIBLE")
+        self.assertGreater(self.leds.shows, shown)
+        self.clock.now += DURATION_MS - 1
+        self.control.tick()
+        self.assertTrue(self.control.wake.active)
+        self.clock.now += 1
+        self.control.tick()
+        self.assertFalse(self.control.wake.active)
+        self.assertEqual(self.leds.colors, colors)
+        self.assertEqual(self.leds.brightness, brightness)
+        self.assertEqual(self.motors.speeds, (0, 0))
+
+    def test_stopped_or_unrenderable_wake_has_no_late_visible_ack(self):
+        for stopped in (False, True):
+            with self.subTest(stopped=stopped):
+                self.setUp()
+                self.defer_display()
+                self.command("2 WAKE")
+                sequence = self.face.scene_sequence
+                if stopped:
+                    self.command("3 STOP")
+                else:
+                    self.clock.now += VISIBILITY_TIMEOUT_MS
+                    self.control.tick()
+                self.face.visible_scene_sequence = sequence
+                self.control.tick()
+                self.assertFalse(self.control.wake.active)
+                self.assertIsNone(self.control.wake_wire)
+                self.assertNotIn("2 OK WAKE_VISIBLE", self.uart.outgoing)
+                self.assertEqual(self.motors.speeds, (0, 0))
+
+    def test_status_reports_shared_reaction_catalog_version(self):
+        self.assertIn("REACT={:08x}".format(CATALOG_VERSION), self.command("2 STATUS"))
 
     def command(self, text):
         self.uart.send(text)

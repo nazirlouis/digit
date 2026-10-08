@@ -1,5 +1,7 @@
 #include "robot_actions.h"
 #include "action_mission.h"
+#include "reaction_player.h"
+#include "personality_events.h"
 #include "Arduino.h"
 #include "audio_engine.h"
 #include "person_follow.h"
@@ -86,6 +88,8 @@ void stop(const char* reason, bool smooth) {
   Guard guard;
   if (strcmp(reason,"Starting action")) record("stopped",reason);
   ++controlEpoch;
+  personality_events::cancel();
+  reaction_player::cancel();
   action_mission::cancel();
   wake_word::cancel(); speech_commands::cancel(); photo_store::cancel();
   const bool wasFollowing = person_follow::snapshot().enabled;
@@ -98,7 +102,12 @@ void stop(const char* reason, bool smooth) {
 void manualOverride() {
   Guard guard;
   if (active || speech_commands::snapshot().listening || wake_word::snapshot().reacting) stop("Manual control");
-  else { ++controlEpoch; wake_word::cancel(); speech_commands::cancel(); }
+  else {
+    ++controlEpoch;
+    reaction_player::cancel(); audioEngine.cancelOutput();
+    wake_word::cancel(); speech_commands::cancel();
+  }
+  personality_events::interaction();
 }
 const char* unavailableReason(Command value) {
   if (value == Command::Stop) return "";
@@ -135,6 +144,7 @@ bool start(Command value, uint32_t expected) {
   const char* reason = unavailableReason(value);
   if (reason[0]) { record("rejected",reason); if (!active) phase = reason; return false; }
   stop("Starting action");
+  personality_events::interaction();
   command = value; active = true;
   safetyEvents = zumo_link::snapshot().safetyEvents;
   phase = name(value);
@@ -146,6 +156,7 @@ bool start(Command value, uint32_t expected) {
 }
 void poll() {
   Guard guard;
+  reaction_player::poll();
   if (!active) return;
   const auto z = zumo_link::snapshot();
   if (!z.connected || z.calibrating || z.safetyEvents != safetyEvents ||
@@ -156,7 +167,9 @@ void poll() {
          !strcmp(z.lastError,"TIMEOUT") ? "Controller motion heartbeat timed out" :
          !strcmp(z.lastError,"OBSTACLE") ? "Front distance emergency stop" :
          !strcmp(z.lastError,"RANGE_UNAVAILABLE") ? "Controller rejected missing or stale distance" :
-         motionStopReason(z)); return;
+         motionStopReason(z));
+    personality_events::safetyStopped();
+    return;
   }
   action_mission::poll();
   phase = action_mission::phase();

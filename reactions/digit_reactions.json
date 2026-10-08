@@ -1,0 +1,1479 @@
+{
+  "schema_version": 1,
+  "description": "Digit's authored reaction catalog. Timelines include silence for settling; notes and gaps play at exact native lengths. Persistent faces do not loop audio. Wake is one deliberately short attention phrase.",
+  "sample_rate": 16000,
+  "face_order": [
+    "neutral",
+    "happy",
+    "sad",
+    "mad",
+    "serious",
+    "curious",
+    "surprised",
+    "sleeping",
+    "confused",
+    "sleepy",
+    "excited",
+    "crying",
+    "love"
+  ],
+  "reactions": [
+    {
+      "name": "neutral",
+      "intent": "Quiet acknowledgment",
+      "quiet_by_default": true,
+      "profiles": {
+        "expression": {
+          "enter_ms": 240,
+          "hold_ms": null,
+          "exit_ms": 0,
+          "voice_ms": 240,
+          "lead_ms": 40,
+          "notes": [
+            {
+              "ms": 80,
+              "hz": [
+                720,
+                780
+              ],
+              "kind": "whistle",
+              "level": 0.32,
+              "warble": 0.006,
+              "gap_ms": 0
+            }
+          ],
+          "gain": 1.0
+        },
+        "gesture": {
+          "enter_ms": 60,
+          "hold_ms": 20,
+          "exit_ms": 100,
+          "voice_ms": 180,
+          "lead_ms": 0,
+          "notes": [
+            {
+              "ms": 80,
+              "hz": [
+                720,
+                780
+              ],
+              "kind": "whistle",
+              "level": 0.32,
+              "warble": 0.006,
+              "gap_ms": 0
+            }
+          ],
+          "gain": 1.0
+        },
+        "wake": {
+          "enter_ms": 120,
+          "hold_ms": 420,
+          "exit_ms": 240,
+          "voice_ms": 780,
+          "lead_ms": 60,
+          "notes": [
+            {
+              "ms": 150,
+              "hz": [
+                820,
+                1250,
+                1050
+              ],
+              "kind": "whistle",
+              "level": 0.65,
+              "warble": 0.012,
+              "gap_ms": 45
+            },
+            {
+              "ms": 100,
+              "hz": [
+                1000,
+                1200
+              ],
+              "kind": "chatter",
+              "level": 0.45,
+              "warble": 0.02,
+              "gap_ms": 20
+            }
+          ],
+          "gain": 0.695724
+        }
+      }
+    },
+    {
+      "name": "happy",
+      "intent": "Approved friendly hello: paired whistles answered by chatter",
+      "quiet_by_default": false,
+      "profiles": {
+        "expression": {
+          "enter_ms": 240,
+          "hold_ms": 1000,
+          "exit_ms": 280,
+          "voice_ms": 1520,
+          "lead_ms": 260,
+          "notes": [
+            {
+              "ms": 200,
+              "hz": [
+                700,
+                1300,
+                1100
+              ],
+              "kind": "whistle",
+              "level": 0.75,
+              "warble": 0.02,
+              "gap_ms": 80
+            },
+            {
+              "ms": 110,
+              "hz": [
+                1050,
+                750
+              ],
+              "kind": "chatter",
+              "level": 0.6,
+              "warble": 0.035,
+              "gap_ms": 30
+            },
+            {
+              "ms": 80,
+              "hz": [
+                1400,
+                1150
+              ],
+              "kind": "chatter",
+              "level": 0.55,
+              "warble": 0,
+              "gap_ms": 55
+            },
+            {
+              "ms": 290,
+              "hz": [
+                1000,
+                1500,
+                900
+              ],
+              "kind": "whistle",
+              "level": 0.7,
+              "warble": 0.03,
+              "gap_ms": 20
+            }
+          ],
+          "gain": 0.474917
+        },
+        "gesture": {
+          "enter_ms": 60,
+          "hold_ms": 260,
+          "exit_ms": 100,
+          "voice_ms": 420,
+          "lead_ms": 0,
+          "notes": [
+            {
+              "ms": 150,
+              "hz": [
+                700,
+                1100
+              ],
+              "kind": "whistle",
+              "level": 0.6,
+              "warble": 0.02,
+              "gap_ms": 55
+            },
+            {
+              "ms": 100,
+              "hz": [
+                950,
+                1200
+              ],
+              "kind": "whistle",
+              "level": 0.55,
+              "warble": 0.02,
+              "gap_ms": 15
+            }
+          ],
+          "gain": 0.465151
+        },
+        "wake": {
+          "enter_ms": 120,
+          "hold_ms": 420,
+          "exit_ms": 240,
+          "voice_ms": 780,
+          "lead_ms": 60,
+          "notes": [
+            {
+              "ms": 150,
+              "hz": [
+                820,
+                1250,
+                1050
+              ],
+              "kind": "whistle",
+              "level": 0.65,
+              "warble": 0.012,
+              "gap_ms": 45
+            },
+            {
+              "ms": 100,
+              "hz": [
+                1000,
+                1200
+              ],
+              "kind": "chatter",
+              "level": 0.45,
+              "warble": 0.02,
+              "gap_ms": 20
+            }
+          ],
+          "gain": 0.695724
+        }
+      }
+    },
+    {
+      "name": "sad",
+      "intent": "Soft descending sigh and a little recovery",
+      "quiet_by_default": false,
+      "profiles": {
+        "expression": {
+          "enter_ms": 420,
+          "hold_ms": 920,
+          "exit_ms": 480,
+          "voice_ms": 1820,
+          "lead_ms": 260,
+          "notes": [
+            {
+              "ms": 480,
+              "hz": [
+                720,
+                580,
+                380
+              ],
+              "kind": "whistle",
+              "level": 0.52,
+              "warble": 0.022,
+              "gap_ms": 120
+            },
+            {
+              "ms": 310,
+              "hz": [
+                430,
+                330,
+                390
+              ],
+              "kind": "whistle",
+              "level": 0.4,
+              "warble": 0.018,
+              "gap_ms": 30
+            }
+          ],
+          "gain": 0.621261
+        },
+        "gesture": {
+          "enter_ms": 60,
+          "hold_ms": 220,
+          "exit_ms": 100,
+          "voice_ms": 380,
+          "lead_ms": 0,
+          "notes": [
+            {
+              "ms": 260,
+              "hz": [
+                620,
+                380
+              ],
+              "kind": "whistle",
+              "level": 0.44,
+              "warble": 0.02,
+              "gap_ms": 20
+            }
+          ],
+          "gain": 0.544896
+        },
+        "wake": {
+          "enter_ms": 120,
+          "hold_ms": 420,
+          "exit_ms": 240,
+          "voice_ms": 780,
+          "lead_ms": 60,
+          "notes": [
+            {
+              "ms": 150,
+              "hz": [
+                820,
+                1250,
+                1050
+              ],
+              "kind": "whistle",
+              "level": 0.65,
+              "warble": 0.012,
+              "gap_ms": 45
+            },
+            {
+              "ms": 100,
+              "hz": [
+                1000,
+                1200
+              ],
+              "kind": "chatter",
+              "level": 0.45,
+              "warble": 0.02,
+              "gap_ms": 20
+            }
+          ],
+          "gain": 0.695724
+        }
+      }
+    },
+    {
+      "name": "mad",
+      "intent": "Approved grumpy protest: low rasp, clipped chatter, indignant whistle",
+      "quiet_by_default": false,
+      "profiles": {
+        "expression": {
+          "enter_ms": 190,
+          "hold_ms": 1210,
+          "exit_ms": 320,
+          "voice_ms": 1720,
+          "lead_ms": 260,
+          "notes": [
+            {
+              "ms": 230,
+              "hz": [
+                330,
+                270,
+                380
+              ],
+              "kind": "rasp",
+              "level": 0.65,
+              "warble": 0.09,
+              "gap_ms": 60
+            },
+            {
+              "ms": 100,
+              "hz": [
+                650,
+                430
+              ],
+              "kind": "chatter",
+              "level": 0.7,
+              "warble": 0.04,
+              "gap_ms": 40
+            },
+            {
+              "ms": 290,
+              "hz": [
+                460,
+                280,
+                310
+              ],
+              "kind": "rasp",
+              "level": 0.7,
+              "warble": 0.12,
+              "gap_ms": 110
+            },
+            {
+              "ms": 180,
+              "hz": [
+                950,
+                1550,
+                1100
+              ],
+              "kind": "whistle",
+              "level": 0.65,
+              "warble": 0.01,
+              "gap_ms": 25
+            }
+          ],
+          "gain": 0.709585
+        },
+        "gesture": {
+          "enter_ms": 60,
+          "hold_ms": 250,
+          "exit_ms": 100,
+          "voice_ms": 410,
+          "lead_ms": 0,
+          "notes": [
+            {
+              "ms": 150,
+              "hz": [
+                350,
+                260
+              ],
+              "kind": "rasp",
+              "level": 0.55,
+              "warble": 0.07,
+              "gap_ms": 55
+            },
+            {
+              "ms": 90,
+              "hz": [
+                720,
+                580
+              ],
+              "kind": "chatter",
+              "level": 0.5,
+              "warble": 0.02,
+              "gap_ms": 15
+            }
+          ],
+          "gain": 1.0
+        },
+        "wake": {
+          "enter_ms": 120,
+          "hold_ms": 420,
+          "exit_ms": 240,
+          "voice_ms": 780,
+          "lead_ms": 60,
+          "notes": [
+            {
+              "ms": 150,
+              "hz": [
+                820,
+                1250,
+                1050
+              ],
+              "kind": "whistle",
+              "level": 0.65,
+              "warble": 0.012,
+              "gap_ms": 45
+            },
+            {
+              "ms": 100,
+              "hz": [
+                1000,
+                1200
+              ],
+              "kind": "chatter",
+              "level": 0.45,
+              "warble": 0.02,
+              "gap_ms": 20
+            }
+          ],
+          "gain": 0.695724
+        }
+      }
+    },
+    {
+      "name": "serious",
+      "intent": "One firm, restrained acknowledgment",
+      "quiet_by_default": true,
+      "profiles": {
+        "expression": {
+          "enter_ms": 250,
+          "hold_ms": 450,
+          "exit_ms": 320,
+          "voice_ms": 1020,
+          "lead_ms": 260,
+          "notes": [
+            {
+              "ms": 170,
+              "hz": [
+                780,
+                710
+              ],
+              "kind": "whistle",
+              "level": 0.52,
+              "warble": 0.005,
+              "gap_ms": 65
+            },
+            {
+              "ms": 85,
+              "hz": [
+                610,
+                620
+              ],
+              "kind": "chatter",
+              "level": 0.34,
+              "warble": 0,
+              "gap_ms": 10
+            }
+          ],
+          "gain": 0.905776
+        },
+        "gesture": {
+          "enter_ms": 60,
+          "hold_ms": 100,
+          "exit_ms": 100,
+          "voice_ms": 260,
+          "lead_ms": 0,
+          "notes": [
+            {
+              "ms": 150,
+              "hz": [
+                750,
+                670
+              ],
+              "kind": "whistle",
+              "level": 0.45,
+              "warble": 0,
+              "gap_ms": 10
+            }
+          ],
+          "gain": 0.600328
+        },
+        "wake": {
+          "enter_ms": 120,
+          "hold_ms": 420,
+          "exit_ms": 240,
+          "voice_ms": 780,
+          "lead_ms": 60,
+          "notes": [
+            {
+              "ms": 150,
+              "hz": [
+                820,
+                1250,
+                1050
+              ],
+              "kind": "whistle",
+              "level": 0.65,
+              "warble": 0.012,
+              "gap_ms": 45
+            },
+            {
+              "ms": 100,
+              "hz": [
+                1000,
+                1200
+              ],
+              "kind": "chatter",
+              "level": 0.45,
+              "warble": 0.02,
+              "gap_ms": 20
+            }
+          ],
+          "gain": 0.695724
+        }
+      }
+    },
+    {
+      "name": "curious",
+      "intent": "Approved searching warble, processing chirps, then rising question",
+      "quiet_by_default": false,
+      "profiles": {
+        "expression": {
+          "enter_ms": 300,
+          "hold_ms": 1140,
+          "exit_ms": 320,
+          "voice_ms": 1760,
+          "lead_ms": 260,
+          "notes": [
+            {
+              "ms": 220,
+              "hz": [
+                900,
+                650,
+                1050
+              ],
+              "kind": "whistle",
+              "level": 0.7,
+              "warble": 0.025,
+              "gap_ms": 90
+            },
+            {
+              "ms": 70,
+              "hz": [
+                1600,
+                1350
+              ],
+              "kind": "chatter",
+              "level": 0.55,
+              "warble": 0,
+              "gap_ms": 35
+            },
+            {
+              "ms": 80,
+              "hz": [
+                1150,
+                1500
+              ],
+              "kind": "chatter",
+              "level": 0.6,
+              "warble": 0,
+              "gap_ms": 120
+            },
+            {
+              "ms": 430,
+              "hz": [
+                650,
+                850,
+                1750
+              ],
+              "kind": "whistle",
+              "level": 0.75,
+              "warble": 0.018,
+              "gap_ms": 40
+            }
+          ],
+          "gain": 0.434963
+        },
+        "gesture": {
+          "enter_ms": 60,
+          "hold_ms": 380,
+          "exit_ms": 100,
+          "voice_ms": 540,
+          "lead_ms": 0,
+          "notes": [
+            {
+              "ms": 120,
+              "hz": [
+                850,
+                650
+              ],
+              "kind": "whistle",
+              "level": 0.55,
+              "warble": 0.02,
+              "gap_ms": 60
+            },
+            {
+              "ms": 240,
+              "hz": [
+                680,
+                1300
+              ],
+              "kind": "whistle",
+              "level": 0.62,
+              "warble": 0.015,
+              "gap_ms": 20
+            }
+          ],
+          "gain": 0.413747
+        },
+        "wake": {
+          "enter_ms": 120,
+          "hold_ms": 420,
+          "exit_ms": 240,
+          "voice_ms": 780,
+          "lead_ms": 60,
+          "notes": [
+            {
+              "ms": 150,
+              "hz": [
+                820,
+                1250,
+                1050
+              ],
+              "kind": "whistle",
+              "level": 0.65,
+              "warble": 0.012,
+              "gap_ms": 45
+            },
+            {
+              "ms": 100,
+              "hz": [
+                1000,
+                1200
+              ],
+              "kind": "chatter",
+              "level": 0.45,
+              "warble": 0.02,
+              "gap_ms": 20
+            }
+          ],
+          "gain": 0.695724
+        }
+      }
+    },
+    {
+      "name": "surprised",
+      "intent": "A quick upward gasp with a small settling chirp",
+      "quiet_by_default": false,
+      "profiles": {
+        "expression": {
+          "enter_ms": 130,
+          "hold_ms": 580,
+          "exit_ms": 380,
+          "voice_ms": 1090,
+          "lead_ms": 130,
+          "notes": [
+            {
+              "ms": 150,
+              "hz": [
+                760,
+                1650,
+                1450
+              ],
+              "kind": "whistle",
+              "level": 0.75,
+              "warble": 0.009,
+              "gap_ms": 75
+            },
+            {
+              "ms": 170,
+              "hz": [
+                1250,
+                950
+              ],
+              "kind": "chatter",
+              "level": 0.5,
+              "warble": 0.025,
+              "gap_ms": 25
+            }
+          ],
+          "gain": 0.627999
+        },
+        "gesture": {
+          "enter_ms": 60,
+          "hold_ms": 120,
+          "exit_ms": 100,
+          "voice_ms": 280,
+          "lead_ms": 0,
+          "notes": [
+            {
+              "ms": 160,
+              "hz": [
+                700,
+                1450,
+                1100
+              ],
+              "kind": "whistle",
+              "level": 0.65,
+              "warble": 0.015,
+              "gap_ms": 20
+            }
+          ],
+          "gain": 0.41544
+        },
+        "wake": {
+          "enter_ms": 120,
+          "hold_ms": 420,
+          "exit_ms": 240,
+          "voice_ms": 780,
+          "lead_ms": 60,
+          "notes": [
+            {
+              "ms": 150,
+              "hz": [
+                820,
+                1250,
+                1050
+              ],
+              "kind": "whistle",
+              "level": 0.65,
+              "warble": 0.012,
+              "gap_ms": 45
+            },
+            {
+              "ms": 100,
+              "hz": [
+                1000,
+                1200
+              ],
+              "kind": "chatter",
+              "level": 0.45,
+              "warble": 0.02,
+              "gap_ms": 20
+            }
+          ],
+          "gain": 0.695724
+        }
+      }
+    },
+    {
+      "name": "sleeping",
+      "intent": "One soft settling breath, then quiet persistent sleeping eyes",
+      "quiet_by_default": true,
+      "profiles": {
+        "expression": {
+          "enter_ms": 850,
+          "hold_ms": null,
+          "exit_ms": 400,
+          "voice_ms": 2100,
+          "lead_ms": 260,
+          "notes": [
+            {
+              "ms": 780,
+              "hz": [
+                470,
+                360,
+                270
+              ],
+              "kind": "whistle",
+              "level": 0.29,
+              "warble": 0.027,
+              "gap_ms": 190
+            },
+            {
+              "ms": 420,
+              "hz": [
+                270,
+                300,
+                235
+              ],
+              "kind": "whistle",
+              "level": 0.22,
+              "warble": 0.025,
+              "gap_ms": 20
+            }
+          ],
+          "gain": 0.955069
+        },
+        "gesture": {
+          "enter_ms": 60,
+          "hold_ms": 380,
+          "exit_ms": 100,
+          "voice_ms": 540,
+          "lead_ms": 0,
+          "notes": [
+            {
+              "ms": 420,
+              "hz": [
+                400,
+                250
+              ],
+              "kind": "whistle",
+              "level": 0.25,
+              "warble": 0.02,
+              "gap_ms": 20
+            }
+          ],
+          "gain": 0.884508
+        },
+        "wake": {
+          "enter_ms": 120,
+          "hold_ms": 420,
+          "exit_ms": 240,
+          "voice_ms": 780,
+          "lead_ms": 60,
+          "notes": [
+            {
+              "ms": 150,
+              "hz": [
+                820,
+                1250,
+                1050
+              ],
+              "kind": "whistle",
+              "level": 0.65,
+              "warble": 0.012,
+              "gap_ms": 45
+            },
+            {
+              "ms": 100,
+              "hz": [
+                1000,
+                1200
+              ],
+              "kind": "chatter",
+              "level": 0.45,
+              "warble": 0.02,
+              "gap_ms": 20
+            }
+          ],
+          "gain": 0.695724
+        }
+      }
+    },
+    {
+      "name": "confused",
+      "intent": "Approved uneven chatter, pitch tumble, hesitant final question",
+      "quiet_by_default": false,
+      "profiles": {
+        "expression": {
+          "enter_ms": 320,
+          "hold_ms": 1120,
+          "exit_ms": 360,
+          "voice_ms": 1800,
+          "lead_ms": 260,
+          "notes": [
+            {
+              "ms": 90,
+              "hz": [
+                1500,
+                900
+              ],
+              "kind": "chatter",
+              "level": 0.6,
+              "warble": 0.03,
+              "gap_ms": 45
+            },
+            {
+              "ms": 80,
+              "hz": [
+                650,
+                1100
+              ],
+              "kind": "chatter",
+              "level": 0.62,
+              "warble": 0.02,
+              "gap_ms": 90
+            },
+            {
+              "ms": 320,
+              "hz": [
+                1300,
+                750,
+                1000,
+                450
+              ],
+              "kind": "whistle",
+              "level": 0.72,
+              "warble": 0.09,
+              "gap_ms": 170
+            },
+            {
+              "ms": 240,
+              "hz": [
+                600,
+                620,
+                1150
+              ],
+              "kind": "whistle",
+              "level": 0.6,
+              "warble": 0.01,
+              "gap_ms": 30
+            }
+          ],
+          "gain": 0.514849
+        },
+        "gesture": {
+          "enter_ms": 60,
+          "hold_ms": 310,
+          "exit_ms": 100,
+          "voice_ms": 470,
+          "lead_ms": 0,
+          "notes": [
+            {
+              "ms": 80,
+              "hz": [
+                1200,
+                700
+              ],
+              "kind": "chatter",
+              "level": 0.5,
+              "warble": 0.03,
+              "gap_ms": 60
+            },
+            {
+              "ms": 210,
+              "hz": [
+                630,
+                1100,
+                800
+              ],
+              "kind": "whistle",
+              "level": 0.52,
+              "warble": 0.045,
+              "gap_ms": 20
+            }
+          ],
+          "gain": 0.554664
+        },
+        "wake": {
+          "enter_ms": 120,
+          "hold_ms": 420,
+          "exit_ms": 240,
+          "voice_ms": 780,
+          "lead_ms": 60,
+          "notes": [
+            {
+              "ms": 150,
+              "hz": [
+                820,
+                1250,
+                1050
+              ],
+              "kind": "whistle",
+              "level": 0.65,
+              "warble": 0.012,
+              "gap_ms": 45
+            },
+            {
+              "ms": 100,
+              "hz": [
+                1000,
+                1200
+              ],
+              "kind": "chatter",
+              "level": 0.45,
+              "warble": 0.02,
+              "gap_ms": 20
+            }
+          ],
+          "gain": 0.695724
+        }
+      }
+    },
+    {
+      "name": "sleepy",
+      "intent": "A gentle yawn that loses energy and settles",
+      "quiet_by_default": false,
+      "profiles": {
+        "expression": {
+          "enter_ms": 650,
+          "hold_ms": 1040,
+          "exit_ms": 500,
+          "voice_ms": 2190,
+          "lead_ms": 260,
+          "notes": [
+            {
+              "ms": 500,
+              "hz": [
+                410,
+                780,
+                620
+              ],
+              "kind": "whistle",
+              "level": 0.38,
+              "warble": 0.022,
+              "gap_ms": 130
+            },
+            {
+              "ms": 610,
+              "hz": [
+                610,
+                400,
+                245
+              ],
+              "kind": "whistle",
+              "level": 0.3,
+              "warble": 0.028,
+              "gap_ms": 40
+            }
+          ],
+          "gain": 0.804621
+        },
+        "gesture": {
+          "enter_ms": 60,
+          "hold_ms": 300,
+          "exit_ms": 100,
+          "voice_ms": 460,
+          "lead_ms": 0,
+          "notes": [
+            {
+              "ms": 340,
+              "hz": [
+                520,
+                670,
+                290
+              ],
+              "kind": "whistle",
+              "level": 0.3,
+              "warble": 0.025,
+              "gap_ms": 20
+            }
+          ],
+          "gain": 0.760931
+        },
+        "wake": {
+          "enter_ms": 120,
+          "hold_ms": 420,
+          "exit_ms": 240,
+          "voice_ms": 780,
+          "lead_ms": 60,
+          "notes": [
+            {
+              "ms": 150,
+              "hz": [
+                820,
+                1250,
+                1050
+              ],
+              "kind": "whistle",
+              "level": 0.65,
+              "warble": 0.012,
+              "gap_ms": 45
+            },
+            {
+              "ms": 100,
+              "hz": [
+                1000,
+                1200
+              ],
+              "kind": "chatter",
+              "level": 0.45,
+              "warble": 0.02,
+              "gap_ms": 20
+            }
+          ],
+          "gain": 0.695724
+        }
+      }
+    },
+    {
+      "name": "excited",
+      "intent": "Approved rapid chatter opening into bright triumphant swoops",
+      "quiet_by_default": false,
+      "profiles": {
+        "expression": {
+          "enter_ms": 160,
+          "hold_ms": 1360,
+          "exit_ms": 300,
+          "voice_ms": 1820,
+          "lead_ms": 260,
+          "notes": [
+            {
+              "ms": 70,
+              "hz": [
+                780,
+                1100
+              ],
+              "kind": "chatter",
+              "level": 0.6,
+              "warble": 0.04,
+              "gap_ms": 25
+            },
+            {
+              "ms": 80,
+              "hz": [
+                1400,
+                920
+              ],
+              "kind": "chatter",
+              "level": 0.65,
+              "warble": 0.02,
+              "gap_ms": 30
+            },
+            {
+              "ms": 90,
+              "hz": [
+                1000,
+                1550
+              ],
+              "kind": "chatter",
+              "level": 0.7,
+              "warble": 0.02,
+              "gap_ms": 45
+            },
+            {
+              "ms": 230,
+              "hz": [
+                700,
+                1800,
+                1500
+              ],
+              "kind": "whistle",
+              "level": 0.8,
+              "warble": 0.012,
+              "gap_ms": 100
+            },
+            {
+              "ms": 100,
+              "hz": [
+                1200,
+                950
+              ],
+              "kind": "chatter",
+              "level": 0.6,
+              "warble": 0.06,
+              "gap_ms": 25
+            },
+            {
+              "ms": 310,
+              "hz": [
+                1000,
+                1450,
+                1250,
+                1650
+              ],
+              "kind": "whistle",
+              "level": 0.75,
+              "warble": 0.07,
+              "gap_ms": 30
+            }
+          ],
+          "gain": 0.452289
+        },
+        "gesture": {
+          "enter_ms": 60,
+          "hold_ms": 335,
+          "exit_ms": 100,
+          "voice_ms": 495,
+          "lead_ms": 0,
+          "notes": [
+            {
+              "ms": 70,
+              "hz": [
+                780,
+                1100
+              ],
+              "kind": "chatter",
+              "level": 0.6,
+              "warble": 0.04,
+              "gap_ms": 25
+            },
+            {
+              "ms": 80,
+              "hz": [
+                1000,
+                1400
+              ],
+              "kind": "chatter",
+              "level": 0.6,
+              "warble": 0.02,
+              "gap_ms": 40
+            },
+            {
+              "ms": 160,
+              "hz": [
+                1000,
+                1600,
+                1250
+              ],
+              "kind": "whistle",
+              "level": 0.65,
+              "warble": 0.035,
+              "gap_ms": 20
+            }
+          ],
+          "gain": 0.513192
+        },
+        "wake": {
+          "enter_ms": 120,
+          "hold_ms": 420,
+          "exit_ms": 240,
+          "voice_ms": 780,
+          "lead_ms": 60,
+          "notes": [
+            {
+              "ms": 150,
+              "hz": [
+                820,
+                1250,
+                1050
+              ],
+              "kind": "whistle",
+              "level": 0.65,
+              "warble": 0.012,
+              "gap_ms": 45
+            },
+            {
+              "ms": 100,
+              "hz": [
+                1000,
+                1200
+              ],
+              "kind": "chatter",
+              "level": 0.45,
+              "warble": 0.02,
+              "gap_ms": 20
+            }
+          ],
+          "gain": 0.695724
+        }
+      }
+    },
+    {
+      "name": "crying",
+      "intent": "Two small electronic whimpers with a softened finish",
+      "quiet_by_default": false,
+      "profiles": {
+        "expression": {
+          "enter_ms": 420,
+          "hold_ms": 1200,
+          "exit_ms": 480,
+          "voice_ms": 2100,
+          "lead_ms": 260,
+          "notes": [
+            {
+              "ms": 320,
+              "hz": [
+                870,
+                660,
+                440
+              ],
+              "kind": "whistle",
+              "level": 0.48,
+              "warble": 0.07,
+              "gap_ms": 150
+            },
+            {
+              "ms": 390,
+              "hz": [
+                750,
+                560,
+                360
+              ],
+              "kind": "whistle",
+              "level": 0.45,
+              "warble": 0.065,
+              "gap_ms": 130
+            },
+            {
+              "ms": 280,
+              "hz": [
+                420,
+                310
+              ],
+              "kind": "whistle",
+              "level": 0.32,
+              "warble": 0.04,
+              "gap_ms": 30
+            }
+          ],
+          "gain": 0.667865
+        },
+        "gesture": {
+          "enter_ms": 60,
+          "hold_ms": 270,
+          "exit_ms": 100,
+          "voice_ms": 430,
+          "lead_ms": 0,
+          "notes": [
+            {
+              "ms": 310,
+              "hz": [
+                710,
+                390
+              ],
+              "kind": "whistle",
+              "level": 0.4,
+              "warble": 0.055,
+              "gap_ms": 20
+            }
+          ],
+          "gain": 0.579738
+        },
+        "wake": {
+          "enter_ms": 120,
+          "hold_ms": 420,
+          "exit_ms": 240,
+          "voice_ms": 780,
+          "lead_ms": 60,
+          "notes": [
+            {
+              "ms": 150,
+              "hz": [
+                820,
+                1250,
+                1050
+              ],
+              "kind": "whistle",
+              "level": 0.65,
+              "warble": 0.012,
+              "gap_ms": 45
+            },
+            {
+              "ms": 100,
+              "hz": [
+                1000,
+                1200
+              ],
+              "kind": "chatter",
+              "level": 0.45,
+              "warble": 0.02,
+              "gap_ms": 20
+            }
+          ],
+          "gain": 0.695724
+        }
+      }
+    },
+    {
+      "name": "love",
+      "intent": "Warm paired whistles and a soft affectionate warble",
+      "quiet_by_default": false,
+      "profiles": {
+        "expression": {
+          "enter_ms": 340,
+          "hold_ms": 1110,
+          "exit_ms": 380,
+          "voice_ms": 1830,
+          "lead_ms": 260,
+          "notes": [
+            {
+              "ms": 310,
+              "hz": [
+                480,
+                740,
+                620
+              ],
+              "kind": "whistle",
+              "level": 0.51,
+              "warble": 0.025,
+              "gap_ms": 100
+            },
+            {
+              "ms": 440,
+              "hz": [
+                570,
+                780,
+                520
+              ],
+              "kind": "whistle",
+              "level": 0.48,
+              "warble": 0.04,
+              "gap_ms": 70
+            },
+            {
+              "ms": 130,
+              "hz": [
+                610,
+                690
+              ],
+              "kind": "whistle",
+              "level": 0.34,
+              "warble": 0.025,
+              "gap_ms": 20
+            }
+          ],
+          "gain": 0.599019
+        },
+        "gesture": {
+          "enter_ms": 60,
+          "hold_ms": 410,
+          "exit_ms": 100,
+          "voice_ms": 570,
+          "lead_ms": 0,
+          "notes": [
+            {
+              "ms": 190,
+              "hz": [
+                510,
+                710
+              ],
+              "kind": "whistle",
+              "level": 0.46,
+              "warble": 0.022,
+              "gap_ms": 60
+            },
+            {
+              "ms": 200,
+              "hz": [
+                680,
+                520
+              ],
+              "kind": "whistle",
+              "level": 0.4,
+              "warble": 0.035,
+              "gap_ms": 20
+            }
+          ],
+          "gain": 0.56587
+        },
+        "wake": {
+          "enter_ms": 120,
+          "hold_ms": 420,
+          "exit_ms": 240,
+          "voice_ms": 780,
+          "lead_ms": 60,
+          "notes": [
+            {
+              "ms": 150,
+              "hz": [
+                820,
+                1250,
+                1050
+              ],
+              "kind": "whistle",
+              "level": 0.65,
+              "warble": 0.012,
+              "gap_ms": 45
+            },
+            {
+              "ms": 100,
+              "hz": [
+                1000,
+                1200
+              ],
+              "kind": "chatter",
+              "level": 0.45,
+              "warble": 0.02,
+              "gap_ms": 20
+            }
+          ],
+          "gain": 0.695724
+        }
+      }
+    }
+  ]
+}

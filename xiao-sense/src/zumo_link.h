@@ -13,6 +13,7 @@ struct Status {
   int right;
   int batteryMillivolts;
   uint32_t replyAgeMs;
+  uint32_t reactionVersion;
   char fault[24];
   char lastError[32];
   char ledResult[24];
@@ -86,6 +87,9 @@ bool wake();
 bool look(int degrees, uint32_t expectedControlGeneration);
 bool wiggle(uint32_t expectedControlGeneration, bool excited = false);
 bool scene(const char* expression, const char* label);
+// Discard queued presentations and their reply identities without touching motors.
+void cancelScene();
+void cancelWake();
 bool setAcceleration(int acceleration);
 int acceleration();
 void cancelLook();

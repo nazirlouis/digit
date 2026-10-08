@@ -1,17 +1,28 @@
 #pragma once
 #include "audio_cues.h"
+#include "reaction_catalog.h"
 
 AudioCue emotionCueForFace(const char* name);
 bool isEmotionCue(AudioCue cue);
 
 // Full reactions follow the face timeline; gesture chirps follow motor events.
 enum class VoiceTiming : uint8_t { Expression, Gesture, Wake };
-inline uint32_t emotionDurationMs(AudioCue cue, VoiceTiming timing = VoiceTiming::Expression) {
+inline constexpr uint32_t emotionDurationMs(AudioCue cue, VoiceTiming timing = VoiceTiming::Expression) {
   if (cue < AudioCue::Neutral || cue > AudioCue::Love) return 0;
-  constexpr uint16_t expression[] = {240,2920,4300,3110,3570,3420,2010,4050,3880,5550,3160,4700,3720};
-  constexpr uint16_t gesture[] = {180,465,680,445,260,600,330,1050,875,1090,855,1320,900};
   const auto index = static_cast<unsigned>(cue)-static_cast<unsigned>(AudioCue::Neutral);
-  return timing == VoiceTiming::Wake ? 1800 : timing == VoiceTiming::Gesture ? gesture[index] : expression[index];
+  return (timing == VoiceTiming::Wake ? reaction_catalog::wake :
+          timing == VoiceTiming::Gesture ? reaction_catalog::gesture : reaction_catalog::expression)[index].voiceMs;
+}
+inline constexpr uint32_t emotionLeadMs(AudioCue cue, VoiceTiming timing = VoiceTiming::Expression) {
+  if (cue < AudioCue::Neutral || cue > AudioCue::Love) return 0;
+  const auto index = static_cast<unsigned>(cue)-static_cast<unsigned>(AudioCue::Neutral);
+  return (timing == VoiceTiming::Wake ? reaction_catalog::wake :
+          timing == VoiceTiming::Gesture ? reaction_catalog::gesture : reaction_catalog::expression)[index].leadMs;
+}
+inline constexpr uint32_t emotionFaceDurationMs(AudioCue cue, VoiceTiming timing = VoiceTiming::Expression) {
+  // Persistent idle/sleeping eyes use their finite audio audition span here.
+  // Callers that need persistence inspect the generated Timing::persistent flag.
+  return emotionDurationMs(cue, timing);
 }
 
 // Small, allocation-free voice renderer. Only the audio task owns this state.
@@ -19,15 +30,13 @@ class EmotionVoice {
  public:
   void start(AudioCue cue, uint32_t sampleRate, VoiceTiming timing = VoiceTiming::Expression);
   int32_t next();
-  bool playing() const { return count_ != 0; }
+  bool playing() const { return remainingFrames_ != 0; }
 
  private:
-  AudioCue cue_ = AudioCue::None;
-  VoiceTiming timing_ = VoiceTiming::Expression;
-  uint32_t rate_ = 16000, frame_ = 0, phase_ = 0, vibratoPhase_ = 0;
-  uint32_t leadFrames_ = 0;
-  uint32_t bodyFrames_ = 0, weightMs_ = 0, elapsedWeightMs_ = 0;
-  uint32_t noteFrames_ = 0, gapFrames_ = 0, pulsePhase_ = 0;
-  uint8_t note_ = 0, count_ = 0;
+  const reaction_catalog::Phrase* phrase_ = nullptr;
+  uint32_t rate_ = 16000, frame_ = 0, phase_ = 0, modPhase_ = 0;
+  uint32_t leadFrames_ = 0, remainingFrames_ = 0, elapsedMs_ = 0;
+  uint32_t noteFrames_ = 0, gapFrames_ = 0, noise_ = 24;
+  uint8_t note_ = 0;
   void loadNote();
 };
