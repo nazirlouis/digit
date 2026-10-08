@@ -1,5 +1,14 @@
 # Digit voice commands and dashboard Stop
 
+## Current three-action release - local, not installed
+
+The current source exposes **Come say hello** (ID 8), **What's this?** (ID 9),
+and **Find a way out** (ID 14), plus **Stop / Stop moving** (ID 7).
+This replaces the earlier action sets in the historical installation notes
+below. The light dashboard and 100% startup speaker volume are included in
+this same pending release. Neither controller has been updated for it.
+
+
 Say **Digit**, wait for his answering voice, then speak one command within six seconds.
 The existing custom wake model opens English MultiNet 6. Recognition runs on
 the XIAO; no network speech service is used. The dashboard's **Digit actions**
@@ -17,6 +26,25 @@ unmatched command or interrupted audio.
 The model bundle's initial command list and runtime registration share
 `src/speech_phrases.h`. No phoneme mapping or pronunciation converter is needed.
 Adding a phrase requires its text, command ID, and a rebuild/full upload.
+
+When an idle wake has no usable microphone bearing, Digit waits silently for
+up to 500 ms before answering. During this window, the direction still must
+pass the existing stability check and be no older than 300 ms. A valid bearing
+starts one gyro turn (including a rear-facing 180-degree turn), followed by the
+answering voice and command listening. If direction remains unavailable, stale
+or unstable, Digit answers without turning. Disabled turning, incomplete setup,
+playback, motor activity, disconnected or locked Zumo do not get a delayed retry.
+Stop, manual takeover and setup changes prevent a pending turn from starting.
+The dashboard's voice-direction panel and `/api/voice/status` `turn_reason`
+record acquisition, completion, cancellation or the exact skip reason; serial
+logs report the same message. Active-action wake takeover remains stop-and-listen.
+
+Installed 2026-10-07 on XIAO COM7 after desktop direction, wake acquisition,
+action/mission, speech, UART and dashboard tests passed. The build used
+3,534,707 / 3,584,000 application bytes; all five upload hashes verified.
+GET-only checks confirmed voice ready, saved direction setup enabled/calibrated,
+the new diagnostic field and dashboard display, and zero motors. The existing
+Zumo EDGE lock was preserved. No live rear-voice turn was commanded or verified.
 
 ## Audio and recognition flow
 
@@ -53,7 +81,7 @@ prove a selected channel uses every processor: the XVF ASR branch bypasses the
 post-processor, including its noise suppression and AGC. Reading this endpoint
 does not change the microphone configuration or hold the I2C bus during driving.
 
-After the Curious wake voice finishes and a 120 ms echo tail passes, MultiNet
+After the 1.8-second Happy wake voice finishes and a 120 ms echo tail passes, MultiNet
 owns the six-second recognition timeout. A stuck voice prompt aborts after
 2.5 seconds; Stop during the prompt prevents later listening from starting.
 A ten-second wall-clock watchdog only cancels stalled listening. Capture/session
@@ -69,84 +97,65 @@ of memory needed by the dashboard or Wi-Fi.
 
 | Command | Behavior |
 | --- | --- |
-| Follow me | Turn in place to keep the largest confidently detected person centered. Hold still when centered or lost; resume when the person returns. No forward/backward travel. Continues until Stop or another control takes over. |
-| Say hello | One quick left/right/center wiggle with happy eyes and synchronized chirps. The Happy voice begins with motion; the soft closing chirp plays during the return to center. Full 6000 swing targets use a dedicated fast ramp and gyro centering. Requires Zumo `WIGGLE=2` support. |
-| Find me | Enable person detection, scan in 30-degree steps, center a confirmed person, then approach in short ramped steps. Target 100 mm (10 cm) from the front ToF and celebrate with excited eyes, voice and the fast wiggle. Any person counts. |
-| What is this / What's this | Stay still, enable object detection, confirm the central visible object across three results, then show BATTERY, MARKER or SCREWDRIVER beneath happy eyes. Uncertain results show NOT SURE with a confused tone. |
-| Find a battery / marker / screwdriver | Scan in place for the requested class, react with surprised eyes and voice, turn toward the initial heading, switch to person detection, find a person again and approach excitedly. “Find me a…” is also accepted. This first version searches within sight from its starting position; it does not map a room or retrieve the object. |
-| Chase this | Acquire the central recognized object and keep that class as the target. Align and approach to a 50 mm (5 cm) ToF target, then resume at 100 mm (10 cm). Use short 2400-speed steps below 300 mm. On arrival, show happy eyes and chirp while watching the object. A lost target stops translation and triggers a short local scan. Ends after 60 seconds or Stop. Requires Zumo `CLOSE=2` support. |
-| Find a way out | Use a small floor course with a visible Marker at its exit. Compare front ToF readings at several headings, take short forward steps through measured openings, then align with the exit marker and celebrate nearby. Bounded to 18 advances / 150 seconds; this is a local opening search, not a general maze solver. |
+| Come say hello | Find and center a person, approach in short steps to the existing 100 mm front-ToF target, perform an excited wiggle, then finish with LOVE eyes and a soft affectionate voice. Any detected person counts; no identity recognition. |
+| What is this / What's this | Stay still, examine a battery, marker or screwdriver, show a surprised recognition beat, then happy eyes and the object name. Uncertain evidence produces confused eyes and NOT SURE. One result per command. |
+| Find a way out | Explore a simple floor course with a marker at the exit. Compare measured openings, move in bounded steps, align with the marker and celebrate at the existing 550 mm ToF threshold. Maximum 18 exploratory advances / 150 seconds; no general maze-solving guarantee. |
 
-Moving actions require updated Zumo firmware, floor calibration and a working gyro.
-Identification only needs the connected display and detection model. The person
-model's ability to see legs or partial bodies is not assumed; Follow me tracks only the person boxes that the model can detect.
+The dashboard and dispatcher share readiness checks. Moving actions require
+floor calibration, gyro/turn/gesture support, and valid front range younger
+than 250 ms. Identification only needs the connected display and object model;
+it does not require the person model, gyro, ToF or floor calibration.
+The speech registry contains six phrases for these four IDs. Retired IDs
+1-6, 10-13, 15 and 16 are rejected without interrupting an active action.
+Old Say hello, Find me and Follow me phrases are not aliases. The separate
+**Turn with person** camera tool retains its dashboard heartbeat.
 
-The shared action controller coordinates curious search faces/tones, serious
-approach faces, confused loss reactions, surprised discoveries, and excited
-celebrations. The Zumo acknowledges a completed stationary LCD update before
-its matching voice starts. Celebration sound follows actual WIGGLE_START and
-WIGGLE_CENTER events. LCD writes never block a moving control loop. Result
-labels stay visible for eight seconds unless replaced or stopped.
+### Reliability and character behavior
 
-Object recognition needs three successive matching results at 50% confidence.
-Person acquisition uses the same 55% threshold as the camera overlay and two
-matching detections out of three recent results. One missed frame can occur
-between the two matches; a lone box is insufficient. Candidates expire after
-1.6 seconds. While acquiring a person, wait at least 1.8 seconds before the
-next search turn. Results older than 1.2 seconds, images captured before
-the last completed turn, and stale distance reports cannot guide an approach.
-Target loss brakes immediately on the next result. A search is bounded to one
-12-step sweep; chase recovery uses four local steps. Return-to-person uses an
-approximate turn back plus visual reacquisition, not position tracking.
+- Stationary scenes and new motion require a motor STATUS newer than the last
+  stop request, at most 300 ms old, with both motors zero. After braking or
+  turning, allow 120 ms to settle and use only images captured afterward.
+- People require two matching detections out of three at 55% confidence.
+  Objects require three out of four at 50%, allowing one brief miss. Evidence
+  must fall within 1.8 seconds, match spatially and in size, and come from
+  distinct captures. Camera result and capture age must be within 1.2 seconds.
+- Forward motion brakes on target loss, stale camera/range data, local arrival
+  or the end of a bounded step. Stale motor STATUS aborts. The greeting retains
+  its 100 mm local braking target, 80 mm hard guard and arrival latch. Range
+  bounce up to 120 mm still requires visual confirmation before celebrating.
+- Escape scans use three distinct, settled readings per heading and their
+  median at the starting heading, +60, -60 and 180 degrees. A single far
+  outlier cannot invent an opening. An opening must measure at least 500 mm
+  and is rechecked before travel. ToF measures the nearest obstacle, not the
+  identity of a camera target. The 550 mm exit target is not proof of crossing
+  a physical exit line.
+- Display submission waits at most two seconds; acknowledgement waits at most
+  1.5 seconds. Full cue playback has its expression duration plus a 500 ms watchdog margin. Failed final scenes
+  terminate directly. Turns use a deadline derived from the selected ramp;
+  celebration has a 5.5-second outer watchdog.
+- Curious eyes and voice open each action. Seeing the person/exit earns one
+  happy acknowledgement. Losing a target earns one puzzled reaction. Object
+  identification reveals surprise, then happiness. Greeting ends with LOVE;
+  escape ends EXCITED. Faces change while stopped; wiggle sounds use a separate short profile driven
+  by WIGGLING/CENTERING events. Full scene expressions and their voices finish
+  together, returning to neutral; captions retain the eight-second display policy.
 
-**Stop moving** and **Stop** are additional voice controls after the wake word.
-The drive pad's **STOP** and the new **STOP ALL** button use the same cancellation
-path. They cancel every action, the standalone turn-only person tracker, wake turns,
-pending speech results, photo countdown/capture publication, and speaker output.
-They flush a motor STOP to UART before returning the dashboard response.
-Camera streaming and a previously saved photo remain available.
-A newly detected wake word during an action also stops that action before
-opening another command window; a timeout never resumes it. Wake inference
-ignores Digit's own cue playback, so dashboard Stop remains the immediate
-control during a tone.
+Stop, manual takeover, a new wake during an action, edge/safety events and
+connection loss keep cancellation priority. Generation checks prevent delayed
+commands from restarting motion, sounds or expressions after Stop. No action
+starts at boot or reconnect. Voice direction remains part of wake handling;
+an action button does not fabricate a microphone bearing.
 
-Dashboard requests carry a generation number. A request or recognition result
-from before Stop cannot start a later movement. Motor-producing polling and
-HTTP control changes share a mutex; camera downloads and neural inference run
-outside it. Saved-photo downloads use asynchronous HTTP so they do not occupy
-the dashboard control handler.
+### Local validation
 
-Say hello starts only after the updated Zumo reports successful floor
-calibration. Edge detection, Button C, and sensor/gyro faults keep movement
-locked until recalibration. Wi-Fi disconnection also cancels the active routine.
-The Zumo still requires motor refreshes within 300 ms. Automatic translation
-uses `SAFE left right acceleration`: valid front distance samples younger than 250 ms are
-required, and ordinary SAFE forward motion stops at 150 mm. Find me explicitly
-requests `SAFE left right acceleration 100` from a `CLOSE=1` or `CLOSE=2` Zumo. That mode
-starts the existing fixed braking locally at 100 mm and retains an immediate
-80 mm stop while braking. Its ARRIVED acknowledgement prevents continued
-drive refreshes; a small range bounce up to 120 mm after arrival is accepted
-only after the person is visually confirmed again. No reverse correction is
-attempted. Chase this requests `SAFE left right acceleration 50` from a
-`CLOSE=2` Zumo, braking locally at 50 mm with an immediate 30 mm guard.
-Arrival tolerates range bounce up to 70 mm after visual confirmation; once
-caught up, Digit waits until the object is at least 100 mm away before
-chasing again. Missing/invalid readings never count as open space.
-Approach targets are 2800 (above the reported 2000 dead
-zone), with a 3200 automatic cap, the dashboard's 500–6000 acceleration setting,
-and existing fixed braking. Short drive steps include enough time for the
-selected acceleration to reach usable torque. For Find me and Chase this inside 300 mm,
-use 2400 and an 80 ms dwell after the ramp instead of 180 ms. The exact resting
-gap depends on braking and requires physical testing. Manual hold-to-drive retains its
-existing edge-only rule. The front range is an obstacle measurement; it cannot
-identify which visible object produced that distance.
-
-Face changes happen during stopped beats, because LCD transfers must not delay
-moving-robot safety checks. Gyro turns require the existing working IMU and motor sign.
-Say hello retains its existing timing and turn behavior. IDs 2 through 6 are
-rejected by the speech pipeline, action API, and controller; Stop keeps ID 7.
-The new actions use IDs 8–14 and the shared build/runtime registry has 14 phrases.
-The bridge requires `SCENE=1 SAFE2=1` support for the new moving actions.
+Desktop tests cover all three action IDs and retired-ID rejection, model/sensor
+readiness, all object labels, missed/incoherent/old/duplicate evidence, 700 ms
+camera latency, stopped motor acknowledgements, stuck display/turn/audio waits,
+scan outliers, approach arrival, bounded exploration and Stop at 360 mission
+times. Standalone camera tracking retains its own regression tests. Voice,
+speech, UART, audio, dashboard and responsive layout checks also pass.
+The firmware build and model packing pass. Physical approach, object/voice
+recognition accuracy and the exit course remain untested for this revision.
 
 ## Install
 
@@ -164,8 +173,8 @@ The bridge requires `SCENE=1 SAFE2=1` support for the new moving actions.
    is not sufficient for this upgrade.** The offsets changed to fit the larger MultiNet 6 model and both vision models.
 4. Open the dashboard and confirm both boards are connected. With motor power
    off, inspect status only. For user-led physical testing, start with What's this,
-   then calibrate on safe floor and try Find me, an object search, Chase this and
-   the marked exit course individually. Check Stop and target loss during each.
+   then calibrate on safe floor and try Come say hello and the marked exit
+   course individually. Check Stop and target loss during each.
 
 The build packs models automatically with `tools/model_bundle.py`. Layout:
 
@@ -273,7 +282,7 @@ target tracking, person detection from Digit's height, course behavior and
 spoken recognition of the new phrases remain for user testing. A successful
 build, simulation and idle status do not establish those physical outcomes.
 
-### Voice diagnostics and earlier investigations
+### Historical voice diagnostics and earlier investigations
 
 For voice diagnosis, `GET /api/actions` reports `voice_ready`, `listening`,
 `voice_result`, `recognized`, `command_audio_ms`, `command_chunks`,
@@ -373,7 +382,7 @@ a clear floor without allowing Digit to drive off a surface. No routine starts
 automatically at boot, reconnect, or recalibration.
 
 
-## Follow me (ID 16)
+## Historical Follow me release (ID 16, now retired)
 
 Say "Digit", then "Follow me", or press Follow me in the dashboard. The action
 starts person detection and turns in place to keep the largest person box

@@ -15,6 +15,7 @@ struct Status {
   uint16_t micPeak;
   float lastScore;
   char error[96];
+  char turnReason[96];
 };
 void begin();
 // Audio producer never waits for inference. Stereo input is signed 32-bit I2S.

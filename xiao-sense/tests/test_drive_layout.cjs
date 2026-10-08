@@ -22,18 +22,26 @@ const artifacts = path.join(__dirname, '../test-artifacts/drive');
         generation: 1, active: false, action: 'Idle', phase: 'Stopped',
         voice_ready: true, drive_ready: true, connected: true, ready: true,
         identify_ready: true, person_action_ready: true, object_action_ready: true,
+        follow_action_ready: true, chase_action_ready: true,
         fault: 'NONE', last_error: 'NONE', battery_mv: 7600, left: 0, right: 0,
         distance_mm:50, range_valid:true, range_age_ms:10,
         audio_state: 'READY', audio_available: true, camera_ready: true, vision_ready: true,
         vision_enabled: true, person_detected:true, vision_age_ms:10, vision_capture_age_ms:10, follow_enabled: false, follow_state: 'Off',
         captured_ms: 0, max_recording_ms: 10000, psram_free: 4000000,
-        ip: '10.0.0.127', volume: 70, available: true, state: 'Listening',
+        wifi_ip: '10.0.0.127', speaker_volume: 100, available: true, state: 'Listening',
+        battery_ready: true, wake_ready: true, wake_zumo: 'NONE',
+        led_result: 'NONE', calibrated: true, front_set: true, enabled: true,
+        gyro_ready: true, result: 'NONE',
       }) });
     });
     await page.goto('http://digit-preview.test/');
+    assert.equal(await page.locator('#volume').inputValue(), '100');
+    assert.equal(await page.locator('#volumeValue').textContent(), '100');
+    assert.equal(await page.locator('html').evaluate(el => getComputedStyle(el).colorScheme), 'light');
     assert.equal(await page.locator('#driveAcceleration').inputValue(),'6000');
     for (const width of [1280, 980, 390, 320]) {
       await page.setViewportSize({ width, height: 1000 });
+      await page.evaluate(() => window.scrollTo(0, 0));
       const rects = await page.evaluate(() => {
         const rect = selector => {
           const r = document.querySelector(selector).getBoundingClientRect();
@@ -45,6 +53,10 @@ const artifacts = path.join(__dirname, '../test-artifacts/drive');
           scrollWidth: document.documentElement.scrollWidth };
       });
       assert.ok(rects.scrollWidth <= width, `No horizontal overflow at ${width}px`);
+      await page.locator('#voice').scrollIntoViewIfNeeded();
+      const stopBox = await page.locator('#globalStop').boundingBox();
+      assert.ok(stopBox.y >= 0 && stopBox.y + stopBox.height <= 1000, 'Global stop remains visible after scrolling');
+      await page.evaluate(() => window.scrollTo(0, 0));
       assert.equal(await page.locator('#distanceBadge').textContent(),'ToF: 5.0 cm');
       assert.ok(rects.distance.x>=rects.camera.x && rects.distance.right<=rects.camera.right && rects.distance.bottom<=rects.camera.bottom,'Distance badge stays within the camera');
       assert.ok(rects.distance.x>=rects.person.right || rects.distance.y>=rects.person.bottom,'Distance and person badges do not overlap');
@@ -63,7 +75,7 @@ const artifacts = path.join(__dirname, '../test-artifacts/drive');
         assert.equal(await page.locator('#faceVoice').isChecked(),true);
         await facePanel.screenshot({path:path.join(artifacts, `face-voice-${width}.png`)});
         const actions = page.locator('.zumo').filter({has:page.locator('#routineState')});
-        assert.equal(await actions.locator('[data-routine]').count(),9);
+        assert.equal(await actions.locator('[data-routine]').count(),3);
         await actions.screenshot({path:path.join(artifacts, `actions-${width}.png`)});
       }
     }

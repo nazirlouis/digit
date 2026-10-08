@@ -423,7 +423,7 @@ bool AudioEngine::playWakeVoice() {
   return true;
 }
 
-bool AudioEngine::playCue(AudioCue cue) {
+bool AudioEngine::playCue(AudioCue cue, VoiceTiming timing) {
   if (!snapshot().available) return false;
   xSemaphoreTake(mutex_, portMAX_DELAY);
   if (isEmotionCue(cue) && state_ != AudioState::Ready) {
@@ -431,6 +431,7 @@ bool AudioEngine::playCue(AudioCue cue) {
     return false;
   }
   pendingCue_ = cue;
+  pendingCueTiming_ = timing;
   cuePlaying_ = cue != AudioCue::None;
   xSemaphoreGive(mutex_);
   return true;
@@ -474,7 +475,7 @@ void AudioEngine::taskLoop() {
       activeCue = pendingCue_; pendingCue_ = AudioCue::None;
       wakeVoice = false;
       cue = cueSamples(activeCue); cueFrame = 0; cueDecoder = CueDecoder{};
-      emotionVoice.start(activeCue, app_config::kAudioSampleRate);
+      emotionVoice.start(activeCue, app_config::kAudioSampleRate, pendingCueTiming_);
     }
     xSemaphoreGive(mutex_);
     Command command;
@@ -493,8 +494,8 @@ void AudioEngine::taskLoop() {
     }
     const EventBits_t events = xEventGroupClearBits(stopEvents_, kWakeChimeBit | kStopPlaybackBit);
     if (events & kWakeChimeBit) {
-      activeCue = AudioCue::Curious;
-      emotionVoice.start(activeCue, app_config::kAudioSampleRate);
+      activeCue = AudioCue::Happy;
+      emotionVoice.start(activeCue, app_config::kAudioSampleRate, VoiceTiming::Wake);
       wakeVoice = true;
       if (mode == Mode::Play || mode == Mode::Tone) {
         mode = Mode::Idle;

@@ -65,7 +65,7 @@ int main() {
   assert(mono(0x10000000) == 4096); // No artificial x4 gain/clipping.
   assert(mono(-0x10000000) == -4096);
   assert(accepts(1, "stop", 7));
-  assert(accepts(1, "say hello", 1));
+  assert(accepts(1, "come say hello", 8));
   for (int id=2;id<=6;++id) assert(!accepts(1, "retired", id));
   assert(!accepts(0, "stop", 7));
   assert(!accepts(1, "", 7));
@@ -73,12 +73,12 @@ int main() {
   assert(!accepts(1, "stop", 0));
   assert(!accepts(1, "unknown", 8));
   assert(!speech_phrases::find(15,"bump me"));
-  assert(speech_phrases::find(16,"follow me"));
-  assert(sizeof(speech_phrases::phrases)/sizeof(speech_phrases::phrases[0])==15);
+  assert(!speech_phrases::find(16,"follow me"));
+  assert(sizeof(speech_phrases::phrases)/sizeof(speech_phrases::phrases[0])==6);
   for (const auto& phrase : speech_phrases::phrases) assert(accepts(1,phrase.text,phrase.command));
   assert(speech_phrases::find(7, "STOP MOVING"));
   assert(speech_phrases::find(7, "STOP"));
-  assert(speech_phrases::find(1, "Say Hello"));
+  assert(speech_phrases::find(8, "Come Say Hello"));
   assert(!speech_phrases::find(1, "STOP"));
   assert(!speech_phrases::find(7, "stop please"));
   assert(!speech_phrases::find(7, nullptr));

@@ -2,11 +2,10 @@
 #include <cstdint>
 
 namespace robot_actions {
-// Keep wire IDs stable; retired routine IDs 2 through 6 and 15 are rejected.
-enum class Command : uint8_t { None = 0, Hello = 1, Stop = 7,
-  FindMe = 8, Identify = 9, FindBattery = 10, FindMarker = 11,
-  FindScrewdriver = 12, Chase = 13, Escape = 14, FollowMe = 16 };
-inline bool validCommand(int id) { return id == 1 || (id >= 7 && id <= 14) || id == 16; }
+// Preserve the approach/identify/escape wire IDs. All other actions are retired.
+enum class Command : uint8_t { None = 0, Stop = 7,
+  ComeSayHello = 8, Identify = 9, Escape = 14 };
+inline bool validCommand(int id) { return id == 7 || id == 8 || id == 9 || id == 14; }
 struct Status { Command command; const char* phase; bool active; uint32_t generation; };
 // Main-loop producers and HTTP control handlers share this short-lived lock.
 // Camera capture and neural inference never run while holding it.
@@ -25,4 +24,6 @@ void manualOverride();
 void poll();
 Status snapshot();
 const char* name(Command command);
+// Empty when ready. Shared by the dispatcher and dashboard readiness indicators.
+const char* unavailableReason(Command command);
 }  // namespace robot_actions

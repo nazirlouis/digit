@@ -3,6 +3,7 @@
 #include <Arduino.h>
 #include <AudioTools.h>
 #include "audio_cues.h"
+#include "emotion_voice.h"
 #include <freertos/FreeRTOS.h>
 #include <freertos/event_groups.h>
 #include <freertos/queue.h>
@@ -53,7 +54,7 @@ class AudioEngine {
   AudioActionResult playLatest();
   AudioActionResult playTestTone();
   bool playWakeVoice();
-  bool playCue(AudioCue cue);
+  bool playCue(AudioCue cue, VoiceTiming timing = VoiceTiming::Expression);
   void cancelOutput();
   bool cuePlaying();
   AudioActionResult stopPlayback();
@@ -114,6 +115,7 @@ class AudioEngine {
   bool xiaoI2sMaster_ = true;
   bool wakeChimePlaying_ = false;
   AudioCue pendingCue_ = AudioCue::None;
+  VoiceTiming pendingCueTiming_ = VoiceTiming::Expression;
   bool cuePlaying_ = false;
   uint32_t outputGeneration_ = 0;
   uint8_t speakerVolumePercent_ = 0;

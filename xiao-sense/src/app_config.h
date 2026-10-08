@@ -28,8 +28,8 @@ static constexpr uint32_t kI2cFrequencyHz = 100000;
 static constexpr uint8_t kXvf3800I2cAddress = 0x2C;
 static constexpr uint8_t kAic3104I2cAddress = 0x18;
 
-// Conservative power-on volume. The dashboard can change this from 0-100%.
-static constexpr uint8_t kDefaultSpeakerVolumePercent = 70;
+// Start at full speaker volume. The dashboard can change this from 0-100%.
+static constexpr uint8_t kDefaultSpeakerVolumePercent = 100;
 
 static constexpr uint16_t kControlServerPort = 80;
 static constexpr uint16_t kStreamServerPort = 81;

@@ -38,45 +38,61 @@ const char kIndexHtml[] PROGMEM = R"HTML(
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Digit Sense</title>
   <style>
-    :root{color-scheme:dark;--cyan:#36e4ff;--ink:#071014;--panel:#101d23;--muted:#8da4ae;--red:#ff5470}
-    *{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at top,#17343f,var(--ink) 58%);color:#eefcff;font:16px system-ui,sans-serif;min-height:100vh}
-    main{width:min(1280px,100%);margin:auto;padding:22px}.top{display:flex;justify-content:space-between;gap:15px;align-items:center;margin-bottom:16px}
-    h1{font-size:clamp(24px,5vw,40px);margin:0;letter-spacing:.03em}.pill{border:1px solid #35515d;border-radius:999px;padding:8px 13px;color:var(--muted)}
-    .panel{background:rgba(16,29,35,.9);border:1px solid #28434e;border-radius:20px;overflow:hidden;box-shadow:0 22px 70px #0008}
-    .drive-view{display:grid;grid-template-columns:minmax(0,1fr) 400px;align-items:start}.drive-view .zumo{border-top:0;border-left:1px solid #28434e}.drive-view .video{min-width:0}
-    .video{aspect-ratio:4/3;background:#020506;display:grid;place-items:center;position:relative}.video img{width:100%;height:100%;object-fit:contain}
-    .video canvas{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
-    .video span{position:absolute;bottom:12px;left:12px;background:#071014cc;border-radius:999px;padding:7px 11px;font-size:13px}
-    .camera-readouts{position:absolute;top:12px;left:12px;right:12px;display:flex;flex-wrap:wrap;align-items:flex-start;gap:8px;pointer-events:none}
-    .person-badge{padding:9px 14px;border-radius:999px;background:#36e4ff;color:#00151c;font-size:15px;box-shadow:0 4px 20px #0009}
-    .distance-badge{margin-left:auto;padding:9px 12px;border:1px solid #36e4ff;border-radius:12px;background:#071014ed;color:#eefcff;font-size:15px;font-weight:750;font-variant-numeric:tabular-nums;box-shadow:0 4px 20px #0009}.distance-badge.unavailable{border-color:#8da4ae;color:#b7cbd3}
-    [hidden]{display:none!important}
-    .controls{padding:18px;display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px}button{border:0;border-radius:13px;padding:14px 10px;font-weight:750;cursor:pointer;background:#233740;color:#fff}
-    button.primary{background:var(--cyan);color:#00151c}button.danger{background:#4a1d29;color:#ffdbe2}button:disabled{opacity:.35;cursor:not-allowed}
-    .volume{margin:0 18px 18px;padding:14px 16px;background:#0a151a;border-radius:14px}.volume label{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}.volume label span{color:var(--muted)}
-    .volume input{width:100%;accent-color:var(--cyan);cursor:pointer}.volume input:disabled{opacity:.35;cursor:not-allowed}
-    .details{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;padding:0 18px 18px}.metric{background:#0a151a;border-radius:12px;padding:12px}.metric b{display:block;font-size:20px;margin-top:3px}.metric small{color:var(--muted)}
-    .zumo{padding:18px;border-top:1px solid #28434e}.zumo h2{margin:0 0 8px;font-size:22px}.zumo p{color:var(--muted);margin:0 0 14px}
-    .zumo-status{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px}.zumo-status span{background:#0a151a;border-radius:10px;padding:8px 10px}
-    .drive-pad{display:grid;grid-template-columns:repeat(3,minmax(0,110px));gap:8px;justify-content:center;touch-action:none;user-select:none}
-    .drive-pad button{min-height:64px;touch-action:none}.drive-pad .forward{grid-column:2}.drive-pad .left{grid-column:1}.drive-pad .stop{grid-column:2}.drive-pad .right{grid-column:3}.drive-pad .back{grid-column:2}
-    .zumo-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px}.zumo-actions button{flex:1 1 120px}
-    .face-previews{display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:10px;margin:16px 0}.face-previews button{text-align:left;padding:16px;min-height:85px}.face-previews small{display:block;color:#b7cbd3;font-weight:400;margin-top:6px}.face-options{display:flex;align-items:center;flex-wrap:wrap;gap:18px}.face-options label{display:flex;align-items:center;gap:8px}.face-options input{accent-color:var(--cyan);width:18px;height:18px}#faceMessage{margin-top:12px;color:var(--muted)}
-    .speed{display:flex;align-items:center;gap:12px;margin:14px 0}.speed input{flex:1;min-width:0;accent-color:var(--cyan)}.speed b{min-width:48px;text-align:right}.acceleration-hint{font-size:13px}
-    .led-controls{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-top:16px;padding:14px;background:#0a151a;border-radius:14px}.led-controls label{display:flex;align-items:center;gap:8px}.led-controls select,.led-controls input[type=color]{background:#233740;color:#fff;border:1px solid #35515d;border-radius:9px;padding:5px}.led-controls input[type=range]{width:110px;accent-color:var(--cyan)}.led-controls button{padding:10px 16px}
-    #message{min-height:24px;padding:0 18px 18px;color:var(--muted)}#message.error{color:var(--red)}
-    @media(max-width:900px){.drive-view{grid-template-columns:1fr}.drive-view .zumo{border-left:0;border-top:1px solid #28434e}}
-    @media(max-width:650px){.controls{grid-template-columns:1fr 1fr}.details{grid-template-columns:1fr}.top{align-items:flex-start;flex-direction:column}}
+    :root{color-scheme:light;--cyan:#126b60;--ink:#182b2a;--panel:#fff;--muted:#526560;--red:#b52d36;--line:#dce4df;--soft:#f3f6f3}
+    *{box-sizing:border-box}
+    html{scroll-padding-top:150px}
+    body{margin:0;background:#f3f5f1;color:var(--ink);font:16px/1.55 "Segoe UI",system-ui,sans-serif}
+    main{width:min(1400px,100%);margin:auto;padding:0 32px 40px}
+    h1,h2,h3,p{margin-top:0}h1{font-size:30px;line-height:1.15;letter-spacing:-1px;margin-bottom:3px}h2{font-size:23px;letter-spacing:-.5px;line-height:1.3;margin-bottom:8px}h3{font-size:17px;margin-bottom:8px}
+    p{margin-bottom:16px;color:var(--muted)}button,input,select{font:inherit}button,a,input,select,summary{-webkit-tap-highlight-color:transparent}
+    button{border:1px solid var(--line);border-radius:10px;padding:12px 16px;min-height:46px;font-size:15px;font-weight:650;cursor:pointer;background:var(--soft);color:var(--ink);line-height:1.3}
+    button:hover:not(:disabled){background:#e5eeea;border-color:#9cb9ad}button.primary{background:var(--cyan);border-color:var(--cyan);color:#fff}button.primary:hover:not(:disabled){background:#0c574d}
+    button.danger{background:#fff0f0;border-color:#ebc2c4;color:#a0242d}button.danger:hover:not(:disabled){background:#fbdede}
+    button:disabled{color:#64716b;background:#eef1ee;border-color:#e1e6e1;cursor:not-allowed}
+    :focus-visible{outline:3px solid #127467;outline-offset:3px}a{color:var(--cyan)}[hidden]{display:none!important}
+    .top{position:sticky;top:0;z-index:10;display:flex;justify-content:space-between;align-items:center;gap:16px;background:#f3f5f1;min-height:108px;padding:20px 0 16px;border-bottom:1px solid var(--line)}
+    .brand{display:flex;align-items:center;gap:13px}.brand-mark{width:48px;height:48px;background:var(--cyan);border-radius:15px;display:flex;align-items:center;justify-content:center;gap:6px}.brand-mark i{display:block;width:7px;height:17px;border-radius:5px;background:#fff}
+    .subtitle{font-size:14px;color:var(--muted)}.top-actions{display:flex;align-items:center;gap:12px}.pill{border:1px solid #bfd3c8;border-radius:999px;padding:7px 13px;color:#36594a;background:#eaf2eb;font-size:13px;font-weight:700}
+    .top .global-stop{background:#b52d36;border-color:#b52d36;color:#fff;min-width:126px}.top .global-stop:hover{background:#94212b}
+    .section-nav{display:flex;gap:6px;flex-wrap:wrap;padding:16px 0 22px}.section-nav a{padding:7px 13px;border-radius:8px;text-decoration:none;font-size:14px;color:var(--muted);font-weight:650}.section-nav a:hover{background:#e4ebe5;color:var(--ink)}
+    .workspace{display:grid;gap:22px}.panel{background:var(--panel);border:1px solid var(--line);border-radius:18px;overflow:hidden;min-width:0;box-shadow:0 4px 16px #243c2e04}
+    .section-heading{display:flex;justify-content:space-between;align-items:center;gap:16px;padding:22px 24px 18px}.section-heading h2{margin:0}.eyebrow{display:block;font-size:11px;font-weight:750;letter-spacing:1.6px;text-transform:uppercase;color:var(--cyan);margin-bottom:6px}.section-note{font-size:13px;color:var(--muted)}
+    .drive-view{display:grid;grid-template-columns:minmax(0,1fr) 400px;align-items:start;border-top:1px solid var(--line)}.drive-view .zumo{border-left:1px solid var(--line);border-radius:0;padding:24px}.drive-view .video{min-width:0}
+    .video{aspect-ratio:4/3;background:#152422;display:grid;place-items:center;position:relative;color:#e9f5ef}.video img{width:100%;height:100%;object-fit:contain;color:#c3d5cc;font-size:14px}.video canvas{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+    .video>span{position:absolute;bottom:16px;left:16px;right:16px;width:fit-content;background:#152422e8;border:1px solid #51665e;border-radius:8px;padding:7px 11px;font-size:12px}
+    .camera-readouts{position:absolute;top:16px;left:16px;right:16px;display:flex;flex-wrap:wrap;align-items:flex-start;gap:8px;pointer-events:none}.person-badge{padding:8px 12px;border-radius:8px;background:#d8f6e8;color:#154b38;font-size:14px}.distance-badge{margin-left:auto;padding:8px 12px;border:1px solid #9ab7a9;border-radius:8px;background:#f6fbf7;color:#234538;font-size:14px;font-weight:700;font-variant-numeric:tabular-nums}.distance-badge.unavailable{color:#4d6258}
+    .zumo{padding:24px;min-width:0}.zumo>p{max-width:90ch}.zumo h2{margin-bottom:8px}.zumo-status{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin:16px 0}.zumo-status span{background:var(--soft);border-radius:7px;padding:7px 9px;font-size:13px;overflow-wrap:anywhere}
+    .drive-pad{display:grid;grid-template-columns:repeat(3,minmax(0,96px));gap:8px;justify-content:center;touch-action:none;user-select:none;margin:20px 0}.drive-pad button{min-height:58px;touch-action:none;font-size:19px;background:#e9f0eb}.drive-pad .forward{grid-column:2}.drive-pad .left{grid-column:1}.drive-pad .stop{grid-column:2;font-size:14px;background:#fff0f0}.drive-pad .right{grid-column:3}.drive-pad .back{grid-column:2}
+    .speed{display:flex;align-items:center;gap:12px;margin:14px 0;font-size:14px}.speed input{flex:1;min-width:0}.speed b{min-width:43px;text-align:right;font-variant-numeric:tabular-nums}input[type=range]{accent-color:var(--cyan);cursor:pointer;min-height:26px}.acceleration-hint{font-size:13px}
+    .zumo-actions{display:flex;flex-wrap:wrap;gap:10px;margin:16px 0}.zumo-actions button{flex:1 1 140px}#actions .zumo-actions{display:grid;grid-template-columns:repeat(3,minmax(0,1fr))}#actions .zumo-actions button{min-height:100px;text-align:left;padding:18px}#actions .zumo-actions small{display:block;font-size:13px;font-weight:400;line-height:1.5;color:var(--muted);margin-top:8px}
+    .two-column{display:grid;grid-template-columns:1fr 1fr;gap:22px;align-items:start}.controls{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin:18px 0}.vision-controls{grid-template-columns:1fr 1fr}
+    .volume{padding:16px 18px;background:var(--soft);border:1px solid var(--line);border-radius:12px;margin:18px 0}.volume label{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:6px}.volume label>b{font-size:22px;color:var(--cyan)}.volume input{width:100%}.volume input:disabled{cursor:not-allowed}.volume-note{font-size:12px;margin:4px 0 0}
+    .details{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}.metric{background:var(--soft);border:1px solid var(--line);border-radius:10px;padding:14px}.metric b{display:block;font-size:18px;margin-top:4px;overflow-wrap:anywhere;font-variant-numeric:tabular-nums}.metric small{color:var(--muted);font-size:13px}
+    .status-line{background:var(--soft);border-left:3px solid #7fa694;padding:12px 14px;border-radius:0 8px 8px 0;margin:16px 0}#routineState{font-size:18px}.help{border-top:1px solid var(--line);margin-top:18px;padding-top:14px}.help summary{cursor:pointer;font-size:14px;font-weight:650;color:var(--cyan);padding:4px 0}.help[open] summary{margin-bottom:12px}.help p{font-size:14px}.help p:last-child{margin-bottom:0}
+    #followPanel{margin-top:18px;padding:16px;background:var(--soft);border-radius:10px;font-size:14px}#followPanel p{margin:6px 0 0}#batteryState{font-size:14px;margin-bottom:0}
+    .face-previews{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px;margin:20px 0}.face-previews button{text-align:left;padding:18px 16px;min-height:94px;background:#f6f8f5}.face-previews small{display:block;color:var(--muted);font-size:13px;font-weight:400;margin-top:7px;line-height:1.45}.face-options{display:flex;align-items:center;flex-wrap:wrap;gap:16px}.face-options label{display:flex;align-items:center;gap:9px;font-size:14px}.face-options input{accent-color:var(--cyan);width:19px;height:19px}
+    .led-controls{display:flex;flex-wrap:wrap;align-items:center;gap:14px;margin-top:22px;padding:18px;background:var(--soft);border-radius:12px}.led-controls label{display:flex;align-items:center;gap:8px;font-size:14px}.led-controls select,.led-controls input[type=color]{background:#fff;color:var(--ink);border:1px solid #becdc3;border-radius:7px;padding:5px;min-height:36px}.led-controls input[type=range]{width:100px}.led-controls button{padding:10px 16px}#ledResult{font-size:13px;color:var(--muted)}
+    #message,#zumoMessage,#faceMessage,#routineMessage,#voiceResult{font-size:14px;overflow-wrap:anywhere}#message{min-height:24px;color:var(--muted);margin-top:16px}#message.error{color:var(--red)}#faceMessage{color:var(--muted)}#voiceSetup{margin-top:24px;padding-top:24px;border-top:1px solid var(--line)}.footer-note{font-size:12px;color:var(--muted);text-align:center;margin:24px 0 0}
+    @media(max-width:1100px){main{padding-inline:24px}.drive-view{grid-template-columns:minmax(0,1fr) 360px}.drive-view .zumo{padding:20px}#actions .zumo-actions{grid-template-columns:repeat(3,minmax(0,1fr))}.face-previews{grid-template-columns:repeat(4,minmax(0,1fr))}}
+    @media(max-width:900px){.drive-view,.two-column{grid-template-columns:1fr}.drive-view .zumo{border-left:0;border-top:1px solid var(--line)}.drive-pad{grid-template-columns:repeat(3,minmax(0,110px))}.section-note{display:none}.face-previews{grid-template-columns:repeat(3,minmax(0,1fr))}}
+    @media(max-width:600px){html{scroll-padding-top:116px}main{padding:0 14px 24px}.top{min-height:90px;gap:8px;padding:16px 0}.brand{gap:8px}.brand-mark{width:36px;height:38px;border-radius:11px}.brand-mark i{width:5px;height:14px}h1{font-size:25px}.subtitle{font-size:12px}.top-actions{gap:7px}.pill{font-size:10px;padding:6px 8px}.top .global-stop{min-width:0;padding:12px 10px;font-size:12px}.section-nav{gap:2px;padding:10px 0 16px}.section-nav a{font-size:13px;padding:7px 9px}.workspace,.two-column{gap:16px}.panel{border-radius:14px}.zumo,.section-heading{padding:20px 16px}h2{font-size:21px}.controls{grid-template-columns:1fr 1fr}#actions .zumo-actions{grid-template-columns:1fr}.face-previews{grid-template-columns:1fr 1fr}.face-previews button{padding:14px 12px}.details{grid-template-columns:1fr}.led-controls{padding:14px;gap:12px}.video>span{font-size:11px;left:10px;right:10px;bottom:10px}.camera-readouts{top:10px;left:10px;right:10px}.person-badge,.distance-badge{font-size:12px;padding:7px 9px}}
+    @media(prefers-reduced-motion:no-preference){button,a{transition:background .15s,border-color .15s}}
   </style>
 </head>
 <body>
 <main>
-  <div class="top"><div><h1>Digit Sense</h1><div style="color:var(--muted)">Live camera + ReSpeaker recorder</div></div><div class="pill" id="state">CONNECTING</div></div>
-  <section class="panel">
+  <header class="top">
+    <div class="brand"><span class="brand-mark" aria-hidden="true"><i></i><i></i></span><div><h1>Digit</h1><div class="subtitle">Your robot, at a glance</div></div></div>
+    <div class="top-actions"><div class="pill" id="state" aria-label="Audio status">CONNECTING</div><button class="danger global-stop" id="globalStop" onclick="stopZumo()" aria-label="Stop all movement, audio and actions">■ STOP ALL</button></div>
+  </header>
+  <nav class="section-nav" aria-label="Dashboard sections"><a href="#drive">Drive</a><a href="#actions">Actions</a><a href="#audio">Audio</a><a href="#vision">Vision</a><a href="#expressions">Face &amp; lights</a><a href="#voice">Voice setup</a></nav>
+  <div class="workspace">
+    <section class="panel" id="drive" aria-labelledby="driveTitle">
+      <div class="section-heading"><div><span class="eyebrow">01 / Live view</span><h2 id="driveTitle">See &amp; drive</h2></div><span class="section-note">Hold to move · Release to stop</span></div>
     <div class="drive-view">
     <div class="video"><img id="stream" alt="Digit camera stream"><canvas id="boxes" width="640" height="480" aria-hidden="true"></canvas><div class="camera-readouts"><strong class="person-badge" id="personBadge" hidden>Naz Detected</strong><output class="distance-badge unavailable" id="distanceBadge" title="Distance from the front ToF sensor">ToF: connecting</output></div><span id="camera">Camera starting...</span></div>
     <aside class="zumo" id="zumoDrive" aria-label="Zumo drive controls">
-      <h2>Zumo drive</h2><p>Hold a direction to move. Release to stop. Calibrate on safe floor first.</p>
+      <h3>Manual drive</h3><p>Hold a direction to move. Release to stop. Calibrate on safe floor first.</p>
       <div class="zumo-status"><span id="zumoLink">Zumo: connecting</span><span id="zumoReady">Drive: locked</span><span id="zumoBattery">Battery: --</span><span id="zumoFault">Fault: --</span></div>
       <div class="drive-pad" id="drivePad">
         <button class="forward" data-drive="forward" aria-label="Hold to drive forward">▲</button>
@@ -87,39 +103,88 @@ const char kIndexHtml[] PROGMEM = R"HTML(
       </div>
       <label class="speed" for="driveSpeed">Drive speed <input id="driveSpeed" type="range" min="500" max="6000" step="100" value="4000"><b id="driveSpeedValue">4000</b></label>
       <label class="speed" for="driveAcceleration">Acceleration <input id="driveAcceleration" type="range" min="500" max="6000" step="100" value="6000" aria-describedby="accelerationHint"><b id="driveAccelerationValue">6000</b></label>
-      <p class="acceleration-hint" id="accelerationHint">Applies to driving and voice turns. Lower is gentler; higher reaches speed sooner. Say hello uses its own quick, ramped wiggle. Normal stops use a fixed deceleration rate.</p>
+      <p class="acceleration-hint" id="accelerationHint">Lower acceleration feels gentler. Applies to driving and voice turns; greeting wiggles use their own ramp.</p>
       <div class="zumo-actions"><button id="zumoCalibrate">Calibrate floor</button></div>
       <div id="zumoMessage" role="status">Connecting to Zumo...</div>
     </aside>
     </div>
-    <div class="controls">
-      <button class="primary" id="record" onclick="action('/api/record/start')">Record</button>
+
+    </section>
+    <section class="panel zumo" id="actions" aria-labelledby="actionsTitle"><span class="eyebrow">02 / Do something</span><h2 id="actionsTitle">Digit actions</h2>
+
+      <p id="commandState">Checking voice commands...</p>
+      <p class="status-line"><strong id="routineState">Idle</strong></p>
+      <p id="actionAvailability" role="status"></p>
+      <div class="zumo-actions">
+        <button data-routine="8" onclick="startRoutine(8)">Come say hello<small>Find you, come closer, and greet you</small></button>
+        <button data-routine="9" onclick="startRoutine(9)">What's this?<small>Show Digit a battery, marker, or screwdriver</small></button>
+        <button data-routine="14" onclick="startRoutine(14)">Find a way out<small>Explore a small course toward its exit marker</small></button>
+      </div>
+      <details class="help"><summary>Meet Digit's three tricks</summary>
+      <p>Say “Digit”, wait for his reply, then say the action. Come say hello looks for a person, approaches to 10 cm using the front distance sensor, and finishes with a wiggle and affectionate eyes.</p>
+      <p>For What's this, hold one battery, marker, or screwdriver clearly in front of the camera. Digit stays still, takes a good look, then shows the name. If he is unsure, he lets you know.</p>
+      <p>For Find a way out, use a simple floor course with a marker at the exit. Digit checks openings, moves in short steps, and celebrates at the exit marker. Moving actions need floor calibration and a working distance sensor.</p>
+      <p>STOP ALL cancels movement, sounds, and pending commands. Saying “Digit” during an action stops it to listen.</p>
+      </details>
+      <p id="routineMessage" role="status"></p>
+
+    </section>
+    <div class="two-column">
+      <section class="panel zumo" id="audio" aria-labelledby="audioTitle"><span class="eyebrow">03 / Sound</span><h2 id="audioTitle">Audio &amp; speaker</h2><p>Record up to 10 seconds, play it back, or test the speaker.</p>
+        <div class="volume">
+      <label for="volume"><span>Speaker volume</span><b><span id="volumeValue">100</span>%</b></label>
+      <input id="volume" type="range" min="0" max="100" step="1" value="100" oninput="queueVolume(this.value)" aria-label="Speaker volume">
+      <p class="volume-note">Starts at 100% when Digit powers on.</p>
+    </div>
+
+        <div class="controls"><button class="primary" id="record" onclick="action('/api/record/start')">Record</button>
       <button class="danger" id="stopRecord" onclick="action('/api/record/stop')">Stop &amp; play</button>
       <button id="replay" onclick="action('/api/play')">Replay</button>
       <button id="tone" onclick="action('/api/tone')">Test speaker</button>
-      <button id="stopPlay" onclick="action('/api/play/stop')">Stop playback</button>
-      <button id="takePhoto" onclick="takePhoto()" disabled>Take picture</button>
+      <button id="stopPlay" onclick="action('/api/play/stop')">Stop playback</button></div>
+        <div class="metric"><small>Recording length</small><b id="duration">0.0 s</b></div>
+        <div id="message" role="status">Waiting for device status...</div>
+      </section>
+      <section class="panel zumo" id="vision" aria-labelledby="visionTitle"><span class="eyebrow">04 / Camera</span><h2 id="visionTitle">Vision tools</h2><p>Take a picture or explore what Digit can see.</p>
+        <div class="controls vision-controls">      <button id="takePhoto" onclick="takePhoto()" disabled>Take picture</button>
       <button id="visionToggle" onclick="toggleVision()" disabled>Start person detection</button>
       <button id="batteryToggle" onclick="toggleBattery()" disabled>Test object model</button>
-      <button id="followToggle" onclick="toggleFollow()" disabled>Turn with person</button>
+      <button id="followToggle" onclick="toggleFollow()" disabled>Turn with person</button></div>
+        <p id="batteryState" role="status">Object model: checking...</p>
+<div class="zumo" id="followPanel">Person turning: <strong id="followState">Off</strong><p>Tracks rotate in place toward the largest person box. Stops when centered or the person is lost.</p></div>
+      </section>
     </div>
-    <div class="volume">
-      <p id="batteryState" role="status">Object model: checking...</p>
-      <label for="volume"><span>Speaker volume</span><b><span id="volumeValue">70</span>%</b></label>
-      <input id="volume" type="range" min="0" max="100" step="1" value="70" oninput="queueVolume(this.value)" aria-label="Speaker volume">
-    </div>
-    <div class="details">
-      <div class="metric"><small>Recording</small><b id="duration">0.0 s</b></div>
-      <div class="metric"><small>PSRAM free</small><b id="memory">--</b></div>
-      <div class="metric"><small>Network address</small><b id="network">--</b></div>
-    </div>
-    <div class="zumo">
-      <h2>Digit wake word</h2>
+    <section class="panel zumo" id="expressions" aria-labelledby="facePreviewTitle"><span class="eyebrow">05 / Personality</span><h2 id="facePreviewTitle">Digit face &amp; voice</h2><p>Tap an emotion to preview Digit's eyes and voice while stopped. Each phrase plays once through his speaker. Try another to replace it.</p>
+      <div class="face-options">
+        <label><input id="faceVoice" type="checkbox" checked>Play voice with face</label>
+        <button class="danger" id="faceStop" onclick="stopFacePreview()">Stop preview / wake up</button>
+      </div>
+      <div class="face-previews" id="faceButtons">
+        <button data-face="NEUTRAL" disabled>Neutral<small>Soft acknowledgment</small></button>
+        <button data-face="HAPPY" disabled>Happy<small>A bright, bouncing greeting</small></button><button data-face="SAD" disabled>Sad<small>A long, falling sigh</small></button>
+        <button data-face="MAD" disabled>Mad<small>Three rumbling grumbles</small></button><button data-face="SERIOUS" disabled>Serious<small>A firm, steady hum</small></button>
+        <button data-face="CURIOUS" disabled>Curious<small>A searching, rising whistle</small></button><button data-face="SURPRISED" disabled>Surprised<small>A gasp, then a soft recovery</small></button>
+        <button data-face="SLEEPING" disabled>Sleeping<small>One slow, sleepy breath</small></button><button data-face="CONFUSED" disabled>Confused<small>A wavering, puzzled question</small></button>
+        <button data-face="SLEEPY" disabled>Sleepy<small>A long yawn and drowsy sigh</small></button><button data-face="EXCITED" disabled>Excited<small>A bouncing series of trills</small></button>
+        <button data-face="CRYING" disabled>Crying<small>Three trembling sobs</small></button><button data-face="LOVE" disabled>Love<small>A warm, pulsing two-note coo</small></button>
+      </div>
+      <p>Adjust loudness in Audio &amp; speaker. Sleeping keeps the eyes closed until another face is chosen; its sound does not loop.</p>
+      <div id="faceMessage" role="status">Connect Digit and stop movement to preview. Floor calibration is not required.</div>
+      <div class="led-controls">
+        <strong>RGB LEDs</strong>
+        <label for="ledTarget">LED <select id="ledTarget"><option value="ALL">All six</option><option value="0">1</option><option value="1">2</option><option value="2">3</option><option value="3">4</option><option value="4">5</option><option value="5">6</option></select></label>
+        <label for="ledColor">Color <input id="ledColor" type="color" value="#36e4ff"></label>
+        <label for="ledBrightness">Brightness <input id="ledBrightness" type="range" min="1" max="31" value="5"><span id="ledBrightnessValue">5</span></label>
+        <button id="ledApply">Apply</button><button id="ledOff">Off</button><span id="ledResult">--</span>
+      </div>
+
+    </section>
+    <section class="panel zumo" id="voice" aria-labelledby="voiceTitle"><span class="eyebrow">06 / Listening</span><h2 id="voiceTitle">Voice &amp; wake word</h2>
       <p>Say “Digit”, wait for his answering voice, then give a command within six seconds. Person detection briefly yields while listening for a command.</p>
       <p><strong id="wakeState">Starting...</strong> <span id="wakeLast"></span></p>
       <p id="wakeResult"></p>
       <button id="wakeTest" onclick="action('/api/wake/test')" disabled>Test wake reaction</button>
-      <h3>Turn toward my voice</h3>
+      <div id="voiceSetup"><h3>Turn toward my voice</h3>
       <p>Fasten the circular microphone array to Digit so they turn together. With Digit still, speak from directly in front and press Set front. Then speak from Digit's left side and press Set left. Say “hello” during setup.</p>
       <p><strong id="voiceState">Checking direction...</strong> <span id="voiceAngle"></span></p>
       <div class="zumo-actions">
@@ -132,57 +197,16 @@ const char kIndexHtml[] PROGMEM = R"HTML(
       <p id="voiceResult"></p>
       <p>Once enabled, “Digit” requests one turn, then the lights, face and answering voice. If the direction is unclear, Digit only reacts. The reaction test above never turns the tracks.</p>
     </div>
-    <div id="message">Waiting for device status...</div>
-    <div class="zumo">
-      <h2>Digit actions</h2>
-      <p id="commandState">Checking voice commands...</p>
-      <p><strong id="routineState">Idle</strong></p>
-      <p id="actionAvailability" role="status"></p>
-      <div class="zumo-actions">
-        <button data-routine="1" onclick="startRoutine(1)">Say hello</button>
-        <button data-routine="16" onclick="startRoutine(16)">Follow me</button>
-        <button data-routine="8" onclick="startRoutine(8)">Find me</button>
-        <button data-routine="9" onclick="startRoutine(9)">What's this?</button>
-        <button data-routine="10" onclick="startRoutine(10)">Find a battery</button>
-        <button data-routine="11" onclick="startRoutine(11)">Find a marker</button>
-        <button data-routine="12" onclick="startRoutine(12)">Find a screwdriver</button>
-        <button data-routine="13" onclick="startRoutine(13)">Chase this</button>
-        <button data-routine="14" onclick="startRoutine(14)">Find a way out</button>
-        <button class="danger" onclick="stopZumo()">STOP ALL</button>
-      </div>
-      <p>Say “Digit”, then a command. Moving actions need floor calibration. “What's this?” stays still and shows the object name on Digit's screen.</p>
-      <p>Follow me turns in place to keep you centered in the camera. It stays still when you are centered or out of view, and resumes tracking when you reappear. It never drives closer. Press Stop to finish.</p>
-      <p>For Chase this, hold a battery, marker, or screwdriver in view. For Find a way out, use a small floor course and place a marker at its exit. Object searches turn in place, then look for you again.</p>
-      <p>STOP cancels movement, speech, and pending commands. Saying “Digit” during an action stops it to listen.</p>
-      <p id="routineMessage" role="status"></p>
+
+    </section>
+    <section class="panel zumo" aria-labelledby="deviceTitle"><h2 id="deviceTitle">Device details</h2><div class="details">
+      <div class="metric"><small>PSRAM free</small><b id="memory">--</b></div>
+      <div class="metric"><small>Network address</small><b id="network">--</b></div>
     </div>
-    <div class="zumo" id="followPanel">Person turning: <strong id="followState">Off</strong><p>Tracks rotate in place toward the largest person box. Stops when centered or the person is lost.</p></div>
-    <div class="zumo">
-      <h2 id="facePreviewTitle">Digit face &amp; voice</h2><p>Tap an emotion to preview Digit's eyes and voice while stopped. Each phrase plays once through his speaker. Try another to replace it.</p>
-      <div class="face-options">
-        <label><input id="faceVoice" type="checkbox" checked>Play voice with face</label>
-        <button class="danger" id="faceStop" onclick="stopFacePreview()">Stop preview / wake up</button>
-      </div>
-      <div class="face-previews" id="faceButtons">
-        <button data-face="NEUTRAL" disabled>Neutral<small>Soft acknowledgment</small></button>
-        <button data-face="HAPPY" disabled>Happy<small>Two rising chirps</small></button><button data-face="SAD" disabled>Sad<small>A gentle falling sigh</small></button>
-        <button data-face="MAD" disabled>Mad<small>Two low grumbles</small></button><button data-face="SERIOUS" disabled>Serious<small>One firm note</small></button>
-        <button data-face="CURIOUS" disabled>Curious<small>A questioning whistle</small></button><button data-face="SURPRISED" disabled>Surprised<small>A quick startled chirp</small></button>
-        <button data-face="SLEEPING" disabled>Sleeping<small>A soft settling hum</small></button><button data-face="CONFUSED" disabled>Confused<small>An uncertain wobble</small></button>
-        <button data-face="SLEEPY" disabled>Sleepy<small>A slow electronic yawn</small></button><button data-face="EXCITED" disabled>Excited<small>A bubbling rising trill</small></button>
-        <button data-face="CRYING" disabled>Crying<small>Three wavering sighs</small></button><button data-face="LOVE" disabled>Love<small>A warm two-note coo</small></button>
-      </div>
-      <p>Use Speaker volume above to adjust loudness. Sleeping keeps the eyes closed until another face is chosen; its sound does not loop.</p>
-      <div id="faceMessage" role="status">Connect Digit and stop movement to preview. Floor calibration is not required.</div>
-      <div class="led-controls">
-        <strong>RGB LEDs</strong>
-        <label for="ledTarget">LED <select id="ledTarget"><option value="ALL">All six</option><option value="0">1</option><option value="1">2</option><option value="2">3</option><option value="3">4</option><option value="4">5</option><option value="5">6</option></select></label>
-        <label for="ledColor">Color <input id="ledColor" type="color" value="#36e4ff"></label>
-        <label for="ledBrightness">Brightness <input id="ledBrightness" type="range" min="1" max="31" value="5"><span id="ledBrightnessValue">5</span></label>
-        <button id="ledApply">Apply</button><button id="ledOff">Off</button><span id="ledResult">--</span>
-      </div>
-    </div>
-  </section>
+
+    </section>
+  </div>
+  <p class="footer-note">Digit Sense · XIAO camera &amp; audio + Zumo drive controller</p>
 </main>
 <script>
 const $=id=>document.getElementById(id);
@@ -191,11 +215,11 @@ let heldDirection=null,driveTimer=null,driveInFlight=false,zumoReady=false,camer
 let voiceEnabled=false,voicePending=false,batteryEnabled=false,batteryPending=false,batteryNotice='';
 let controlGeneration=0,routinePending=false,stopPending=false,hardStopPending=false,stopRequests=0,actionActive=false;
 const routineButtons=[...document.querySelectorAll('[data-routine]')];
-const actionNames={1:'Say hello',7:'Stop',8:'Find me',9:"What's this?",10:'Find a battery',11:'Find a marker',12:'Find a screwdriver',13:'Chase this',14:'Find a way out',16:'Follow me'};
-async function refreshActions(){try{const response=await fetch('/api/actions',{cache:'no-store'});if(!response.ok)throw Error('Action status unavailable');const s=await response.json();controlGeneration=Math.max(controlGeneration,s.generation);actionActive=s.active;$('routineState').textContent=s.action+' · '+s.phase;$('commandState').textContent=s.listening?(s.voice_result==='Wake voice'?'Digit is answering…':'Listening for your command…'):s.voice_ready?(s.voice_result==='No command recognized'?'No command heard. Say Digit and try again.':(s.voice_result==='Audio queue overflow'||s.voice_result==='Audio interrupted')?'Listening interrupted. Say Digit and try again.':s.voice_result==='Recognized'?'Heard: '+(actionNames[s.last_command]||'command'):'Say Digit, then a command'):s.voice_error||'Voice commands unavailable';$('actionAvailability').textContent=s.movement_reason||'';for(const b of routineButtons){const id=Number(b.dataset.routine);const ready=id===9?s.identify_ready:id===1?s.drive_ready:id===8?s.person_action_ready:id===16?s.follow_action_ready:id===13?s.chase_action_ready:s.object_action_ready;b.disabled=!ready||routinePending||stopPending;}}catch(error){$('commandState').textContent=error.message;for(const b of routineButtons)b.disabled=true}}
+const actionNames={7:'Stop',8:'Come say hello',9:"What's this?",14:'Find a way out'};
+async function refreshActions(){try{const response=await fetch('/api/actions',{cache:'no-store'});if(!response.ok)throw Error('Action status unavailable');const s=await response.json();controlGeneration=Math.max(controlGeneration,s.generation);actionActive=s.active;$('routineState').textContent=s.action+' · '+s.phase;$('commandState').textContent=s.listening?(s.voice_result==='Wake voice'?'Digit is answering…':'Listening for your command…'):s.voice_ready?(s.voice_result==='No command recognized'?'No command heard. Say Digit and try again.':(s.voice_result==='Audio queue overflow'||s.voice_result==='Audio interrupted')?'Listening interrupted. Say Digit and try again.':s.voice_result==='Recognized'?'Heard: '+(actionNames[s.last_command]||'command'):'Say Digit, then a command'):s.voice_error||'Voice commands unavailable';$('actionAvailability').textContent=s.movement_reason||'';for(const b of routineButtons){const id=Number(b.dataset.routine);const ready=id===9?s.identify_ready:id===8?s.person_action_ready:s.object_action_ready;b.disabled=!ready||routinePending||stopPending;}}catch(error){$('commandState').textContent=error.message;for(const b of routineButtons)b.disabled=true}}
 async function startRoutine(id){if(!actionNames[id]||id===7||routinePending||stopPending||!controlGeneration)return;routinePending=true;try{const response=await fetch('/api/actions?command='+id+'&generation='+controlGeneration+'&acceleration='+Number($('driveAcceleration').value),{method:'POST'});const s=await response.json();if(!response.ok)throw Error(s.message);controlGeneration=Math.max(controlGeneration,s.generation);$('routineMessage').textContent=s.message}catch(error){$('routineMessage').textContent=error.message}finally{routinePending=false;await refreshActions()}}
 async function voiceAction(value){if(voicePending)return;voicePending=true;try{const response=await fetch('/api/voice/setup?action='+value,{method:'POST'});const data=await response.json();if(!response.ok)throw Error(data.message);$('voiceMessage').textContent=data.message}catch(error){$('voiceMessage').textContent=error.message}finally{voicePending=false;await refreshVoice()}}
-async function refreshVoice(){try{const response=await fetch('/api/voice/status',{cache:'no-store'});if(!response.ok)throw Error('Unavailable');const s=await response.json();voiceEnabled=s.enabled;$('voiceState').textContent=s.turning?'Turning toward saved voice direction':s.paused?'Paused for vision':s.error||(!s.available?'Direction unavailable':!s.front_set?'Set the front direction':!s.calibrated?'Now set Digit’s left side':s.enabled?(!s.gyro_ready?'Voice turning on · update Zumo turn files':!s.drive_ready?'Voice turning on · calibrate the floor':'Voice turning enabled'):'Direction ready · turning off');$('voiceAngle').textContent=s.stable?` · ${Math.round(s.degrees)}° at array`+(s.calibrated?` · ${Math.round(Math.abs(s.relative))}° ${s.relative>=0?'left':'right'}`:''):' · waiting for clear speech';const setup=s.stable&&!s.paused&&!s.turning&&!voicePending;$('voiceFront').disabled=!setup;$('voiceLeft').disabled=!setup||!s.front_set;$('voiceToggle').textContent=s.enabled?'Disable voice turning':'Enable voice turning';$('voiceToggle').disabled=voicePending;$('voiceResult').textContent=s.result==='NONE'?'':s.result==='DONE'?'Last turn completed':`Last turn: ${s.result}`;if(!s.gyro_ready)$('voiceResult').textContent+=' · Check Zumo connection, updated turn files, and gyro'}catch(error){$('voiceState').textContent='Direction unavailable';$('voiceFront').disabled=$('voiceLeft').disabled=$('voiceToggle').disabled=true}}
+async function refreshVoice(){try{const response=await fetch('/api/voice/status',{cache:'no-store'});if(!response.ok)throw Error('Unavailable');const s=await response.json();voiceEnabled=s.enabled;$('voiceState').textContent=s.turning?'Turning toward saved voice direction':s.paused?'Paused for vision':s.error||(!s.available?'Direction unavailable':!s.front_set?'Set the front direction':!s.calibrated?'Now set Digit’s left side':s.enabled?(!s.gyro_ready?'Voice turning on · update Zumo turn files':!s.drive_ready?'Voice turning on · calibrate the floor':'Voice turning enabled'):'Direction ready · turning off');$('voiceAngle').textContent=s.stable?` · ${Math.round(s.degrees)}° at array`+(s.calibrated?` · ${Math.round(Math.abs(s.relative))}° ${s.relative>=0?'left':'right'}`:''):' · waiting for clear speech';const setup=s.stable&&!s.paused&&!s.turning&&!voicePending;$('voiceFront').disabled=!setup;$('voiceLeft').disabled=!setup||!s.front_set;$('voiceToggle').textContent=s.enabled?'Disable voice turning':'Enable voice turning';$('voiceToggle').disabled=voicePending;$('voiceResult').textContent=s.turn_reason||(s.result==='NONE'?'':s.result==='DONE'?'Last turn completed':`Last turn: ${s.result}`);if(!s.gyro_ready)$('voiceResult').textContent+=' · Check Zumo connection, updated turn files, and gyro'}catch(error){$('voiceState').textContent='Direction unavailable';$('voiceFront').disabled=$('voiceLeft').disabled=$('voiceToggle').disabled=true}}
 const driveButtons=[...document.querySelectorAll('[data-drive]')];
 const faceButtons=[...document.querySelectorAll('[data-face]')];
 let accelerationDirty=false,accelerationSending=false;
@@ -484,18 +508,13 @@ esp_err_t actionsStatusHandler(httpd_req_t* request) {
   const auto action = robot_actions::snapshot();
   const auto speech = speech_commands::snapshot();
   const auto z = zumo_link::snapshot();
-  const auto vision = vision_service::snapshot();
-  const bool driveReady = z.connected && z.ready && !z.calibrating && !z.edge && !strcmp(z.fault,"NONE") &&
-      z.actionCapable && z.voiceCapable && z.rampedLookCapable && z.wiggleCapable;
-  const bool personReady = driveReady && z.sceneCapable && z.autoRampCapable && vision.ready;
-  const bool identifyReady = z.connected && !z.calibrating && z.sceneCapable && vision.ready && vision.batteryReady;
-  const char* movementReason = !z.connected ? "Connect the Zumo to use moving actions" :
-      z.edge ? "Edge stop: place Digit fully on the surface, then recalibrate" :
-      z.calibrating ? "Waiting for floor calibration" :
-      !z.ready || strcmp(z.fault,"NONE") ? "Movement is locked; check the Zumo status and recalibrate" :
-      !driveReady ? "Gyroscope or updated movement firmware unavailable" :
-      !z.closeApproachCapable ? "Update Zumo to use Find me at 10 cm" :
-      !z.chaseCloseCapable ? "Update Zumo to use Chase this at 5 cm" : "";
+  const char* helloReason = robot_actions::unavailableReason(robot_actions::Command::ComeSayHello);
+  const char* escapeReason = robot_actions::unavailableReason(robot_actions::Command::Escape);
+  const bool personReady = !helloReason[0];
+  const bool escapeReady = !escapeReason[0];
+  const bool identifyReady = !robot_actions::unavailableReason(robot_actions::Command::Identify)[0];
+  const bool driveReady = personReady || escapeReady;
+  const char* movementReason = helloReason[0] ? helloReason : escapeReason;
   char error[192], phase[192], result[64], decoder[768], json[2400];
   escapeJsonString(speech.error,error,sizeof(error));
   escapeJsonString(action.phase,phase,sizeof(phase));
@@ -506,7 +525,6 @@ esp_err_t actionsStatusHandler(httpd_req_t* request) {
       "\"voice_ready\":%s,\"listening\":%s,\"voice_error\":\"%s\",\"recognized\":%lu,"
       "\"last_command\":%d,\"score\":%.3f,\"drive_ready\":%s,\"range_valid\":%s,"
       "\"identify_ready\":%s,\"person_action_ready\":%s,\"object_action_ready\":%s,"
-      "\"follow_action_ready\":%s,\"chase_action_ready\":%s,\"chase_stop_mm\":50,\"chase_resume_mm\":100,"
       "\"movement_reason\":\"%s\",\"find_me_stop_mm\":100,\"person_confirm_percent\":%u,"
       "\"distance_mm\":%d,\"photo_revision\":%lu,\"voice_result\":\"%s\","
       "\"command_audio_ms\":%lu,\"command_chunks\":%lu,\"command_mic_peak\":%u,"
@@ -517,10 +535,8 @@ esp_err_t actionsStatusHandler(httpd_req_t* request) {
       robot_actions::name(action.command),phase,action.active?"true":"false",(unsigned long)action.generation,
       speech.ready?"true":"false",speech.listening?"true":"false",error,(unsigned long)speech.recognized,
       speech.lastCommand,speech.score,driveReady?"true":"false",
-      z.rangeValid?"true":"false",identifyReady?"true":"false",personReady&&z.closeApproachCapable?"true":"false",
-      personReady&&vision.batteryReady?"true":"false",
-      z.connected&&z.ready&&!z.calibrating&&!z.edge&&!strcmp(z.fault,"NONE")&&z.actionCapable&&vision.ready?"true":"false",
-      personReady&&vision.batteryReady&&z.chaseCloseCapable?"true":"false",movementReason,vision_service::kPersonConfidencePercent,
+      z.rangeValid?"true":"false",identifyReady?"true":"false",personReady?"true":"false",
+      escapeReady?"true":"false",movementReason,vision_service::kPersonConfidencePercent,
       z.distanceMm,(unsigned long)photo_store::revision(),result,
       (unsigned long)(speech.samples/16),(unsigned long)speech.chunks,speech.micPeak,
       (unsigned long)speech.inferenceUs,speech.candidateCommand,speech.candidateScore,
@@ -642,15 +658,16 @@ esp_err_t voiceStatusHandler(httpd_req_t* request) {
   const auto direction = voice_direction::snapshot();
   const auto zumo = zumo_link::snapshot();
   const auto wake = wake_word::snapshot();
-  char error[160], result[48], json[720];
+  char error[160], result[48], turnReason[200], json[1024];
   escapeJsonString(direction.error, error, sizeof(error));
   escapeJsonString(zumo.lookResult, result, sizeof(result));
+  escapeJsonString(wake.turnReason, turnReason, sizeof(turnReason));
   snprintf(json, sizeof(json),
            "{\"available\":%s,\"stable\":%s,\"front_set\":%s,\"calibrated\":%s,"
            "\"enabled\":%s,\"degrees\":%.1f,\"relative\":%.1f,\"age_ms\":%lu,"
            "\"source\":\"%s\",\"read_resource\":%u,\"read_command\":%u,\"read_status\":%u,"
            "\"error\":\"%s\",\"turning\":%s,\"result\":\"%s\","
-           "\"drive_ready\":%s,\"gyro_ready\":%s,\"paused\":%s}",
+           "\"drive_ready\":%s,\"gyro_ready\":%s,\"paused\":%s,\"turn_reason\":\"%s\"}",
            direction.available ? "true" : "false", direction.stable ? "true" : "false",
            direction.frontSet ? "true" : "false", direction.calibrated ? "true" : "false",
            direction.enabled ? "true" : "false", direction.degrees, direction.relative,
@@ -659,7 +676,7 @@ esp_err_t voiceStatusHandler(httpd_req_t* request) {
            zumo.lookActive ? "true" : "false", result,
            zumo.connected && zumo.ready && !zumo.calibrating ? "true" : "false",
            zumo.connected && zumo.voiceCapable && zumo.rampedLookCapable ? "true" : "false",
-           wake.pausedForVision ? "true" : "false");
+           wake.pausedForVision ? "true" : "false", turnReason);
   return sendJson(request, json);
 }
 

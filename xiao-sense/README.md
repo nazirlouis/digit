@@ -4,10 +4,12 @@ This is the XIAO ESP32-S3 Sense dashboard built with ESP-IDF 5.5 through
 PlatformIO. This is the active XIAO project to open in VS Code. The previous
 Arduino application is preserved in `../xiao-sense-arduino-legacy`.
 
-The **Digit actions** dashboard panel and MultiNet commands now include Find me,
-What's this, Find a battery/marker/screwdriver, Chase this, and Find a way out,
-with coordinated emotion voices, faces and gestures. See
-[action behavior and testing](VOICE_ACTIONS.md). Follow me and Go to bed are deferred.
+The **Digit actions** panel and MultiNet commands expose **Come say hello**,
+**What's this?**, and **Find a way out**, plus Stop. The current local release
+adds coordinated character reactions and stricter freshness/timeout checks.
+See [action behavior and testing](VOICE_ACTIONS.md) for behavior, validation,
+and installation status. The light dashboard and 100% startup speaker volume
+are included in the same pending release.
 
 The camera stays at 640 × 480 JPEG with the existing 180° rotation, live
 stream, and picture download. The on-demand pedestrian detector is Espressif's
@@ -67,9 +69,7 @@ extend the deadline; centered, lost or opposite-side detections can stop it earl
 After stopping, it requires a new Zumo status showing zero motor output, allows
 120 ms to settle, then waits for an image captured after settling. The mode never asks for forward or
 reverse travel, and it does not use ToF distance. When no person is detected,
-turning stops until a fresh person detection returns. The **Follow me** action
-(voice or dashboard) keeps tracking until Stop or another control takes over.
-The separate **Turn with person** control uses a 1.5-second dashboard lease;
+turning stops until a fresh person detection returns. The **Turn with person** control uses a 1.5-second dashboard lease;
 closing that dashboard or losing its connection stops that mode. The Zumo still applies its
 own 300 ms motor timeout, edge stop, button C stop, and calibration gate.
 
@@ -87,9 +87,26 @@ port's initial hardware check, use Zumo PING/STATUS and FACE commands only.
 The dashboard's **Digit face & voice** section previews all 13 expressions:
 neutral, happy, sad, mad, serious, curious, surprised, sleeping, confused, sleepy,
 excited, crying, and love/heart eyes. **Play voice with face** starts checked;
-each button sends the face over UART and plays a matching synthesized phrase
-through the ReSpeaker speaker after a 90 ms lead-in. This is approximate timing,
-not a display acknowledgement. Use the existing **Speaker volume** slider.
+each button sends the face over UART and plays a matching synthesized reaction.
+The thirteen full voices span the corresponding face timelines (0.24-5.55 s),
+with distinct contours, breathing/pulsing dynamics, pauses and soft fades.
+The existing 90 ms UART lead-in remains approximate; physical screen/audio
+latency still needs checking. Use the **Speaker volume** slider (startup 100%).
+
+Action scenes now settle to neutral at the end of their finite expression,
+while captions stay readable for eight seconds. Sleeping keeps its closed eyes
+and gives one 4.05-second settling breath; it never loops the sound. Gesture
+chirps use a separate short timing profile with no lead-in because actual motor
+events trigger them. Wake uses a matched 1.8-second happy face/voice response,
+within the speech prompt watchdog. Stop cancels all audio and pending work.
+
+Run `tests/run_emotions.ps1` to test/export the real synthesized WAVs, then
+`../zumo-controller/tools/render_expression_audio.py` with Pillow and FFmpeg to
+render paired face/sound review clips. Outputs are under
+`test-artifacts/expression-sync/`. A cross-controller timeline test detects
+face/voice duration drift. This revision is local only: installation requires
+XIAO firmware plus the updated `digit_face_engine.py` and `wake_reaction.py` on
+Zumo. Neither the new sound nor panel timing has been tested on the device.
 Uncheck the switch to compare faces without sound. A new preview replaces the
 previous voice; **Stop preview / wake up** cancels actions/audio and requests
 neutral eyes. **STOP ALL** also cancels audio and pending previews.
@@ -257,8 +274,8 @@ Calibration/enable are session-only. Once enabled, wake listening and voice
 turning work without keeping the browser open; browser visibility still
 controls the separate turn-only person tracker. The approved voice actions own
 their detection modes and cancel through the same dashboard Stop path.
-Follow me and Go to bed remain deferred. See [current actions](VOICE_ACTIONS.md)
-for Find me, What's this, object search, Chase this and Find a way out.
+See [current actions](VOICE_ACTIONS.md) for Come say hello, What's this and
+Find a way out. Older object-search, Follow me and Chase commands are retired.
 
 ## Build
 
@@ -298,16 +315,12 @@ by Git because the image contains device configuration.
 
 ## Hello voice and ramped wiggle
 
-MultiNet **Say hello** and the dashboard **Say hello** use the same sequence:
-one continuous left/right/center gyro wiggle with happy eyes and robot chirps
-timed to the motion. After stationary gyro preparation, the Zumo draws the
-complete happy pose before the tracks start and sends `OK WIGGLE_START`;
-the XIAO starts the Happy voice on that event. The pose stays visible while
-LCD updates yield to motor control. `OK WIGGLE_CENTER` triggers the soft Neutral
-chirp during the return to center. Completion restores neutral eyes and cancels
-remaining audio; there is no separate face or sound replay afterward.
-STOP ALL, manual takeover, link loss, and safety faults cancel the
-sequence. Delayed audio or motion cannot resume it.
+**Come say hello** finds and approaches a person before its excited greeting
+wiggle. Zumo sends WIGGLE_START and WIGGLE_CENTER events; XIAO times Excited
+and Neutral chirps to those phases. The completed gesture is followed by LOVE
+eyes and a soft affectionate phrase. The standalone Say hello action is retired.
+STOP ALL, manual takeover, connection loss and safety faults cancel the sequence,
+including pending sounds and expressions.
 
 The dashboard **Acceleration** slider applies to driving and wake turns.
 It sends `POST /api/zumo/acceleration?value=500..6000`; the

@@ -1,6 +1,7 @@
 """Render and timeline regressions; no device or motor access."""
 
 import pathlib
+import re
 import sys
 import time
 import unittest
@@ -31,6 +32,32 @@ class Display(FrameBuffer):
 
 
 class FaceTests(unittest.TestCase):
+    def test_speaker_timelines_match_face_timelines(self):
+        root = pathlib.Path(__file__).resolve().parents[2]
+        source = (root / "xiao-sense/src/emotion_voice.h").read_text(encoding="utf-8")
+        durations = [int(value) for value in re.search(r'expression\[\] = \{([^}]+)\}', source)[1].split(",")]
+        self.assertEqual(len(durations), len(EXPRESSIONS))
+        for name, duration in zip(EXPRESSIONS, durations):
+            _, enter, hold, exit_ms = STYLES[name]
+            expected = enter+3200 if name == "sleeping" else enter if hold is None else enter+hold+exit_ms
+            self.assertEqual(duration, expected, name)
+        from wake_reaction import DURATION_MS
+        wake = int(re.search(r'VoiceTiming::Wake \? (\d+)', source)[1])
+        self.assertEqual(wake, DURATION_MS)
+
+    def test_action_scene_finishes_its_reaction_but_keeps_the_caption(self):
+        for name in EXPRESSIONS:
+            if name in ("neutral", "sleeping"):
+                continue
+            self.face.show_scene(name, "FOUND")
+            _, enter, hold, exit_ms = STYLES[name]
+            self.advance(enter + hold + exit_ms + 30)
+            self.assertEqual(self.face.expression, "neutral", name)
+            self.assertEqual(self.face.caption, "FOUND", name)
+        self.face.show_scene("sleeping", "NONE")
+        self.advance(20000)
+        self.assertEqual(self.face.expression, "sleeping")
+
     def test_scene_labels_fit_stay_visible_and_clear_on_stop_or_expiry(self):
         for label in ("BATTERY", "MARKER", "SCREWDRIVER", "NOT_SURE"):
             self.face.show_scene("happy", label)

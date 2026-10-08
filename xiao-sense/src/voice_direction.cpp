@@ -205,15 +205,32 @@ bool configure(const char* action) {
   if (accepted) { zumo_link::cancelLook(); saveSettings(); }
   return accepted;
 }
-bool target(int& degrees, uint32_t& generation) {
+bool target(int& degrees, uint32_t& generation, const char** reason, bool* retryable) {
   const auto s = snapshot();
   const auto audio = audioEngine.snapshot();
   const auto zumo = zumo_link::snapshot();
-  if (!audio.available || audio.state == AudioState::Playing || audio.wakeChimePlaying || audio.cuePlaying ||
-      !zumo.connected || !zumo.ready || !zumo.voiceCapable || !zumo.rampedLookCapable ||
-      zumo.calibrating || zumo.edge || strcmp(zumo.fault, "NONE") ||
-      zumo.manualDriving || zumo.lookActive || zumo.left || zumo.right) return false;
-  if (!s.enabled || !s.calibrated || !s.available || !s.stable) return false;
+  if (reason) *reason = "Direction ready";
+  if (retryable) *retryable = false;
+  const auto reject = [&](const char* why, bool retry = false) {
+    if (reason) *reason = why;
+    if (retryable) *retryable = retry;
+    return false;
+  };
+  if (!s.enabled) return reject("Voice turning disabled");
+  if (!s.calibrated) return reject("Voice direction setup incomplete");
+  if (!audio.available) return reject("Microphone unavailable");
+  if (audio.state == AudioState::Playing || audio.wakeChimePlaying || audio.cuePlaying)
+    return reject("Audio playback in progress");
+  if (!zumo.connected) return reject("Zumo disconnected");
+  if (zumo.edge) return reject("Zumo edge stop");
+  if (zumo.calibrating) return reject("Floor calibration in progress");
+  if (!zumo.ready || strcmp(zumo.fault, "NONE")) return reject("Zumo movement locked");
+  if (!zumo.voiceCapable || !zumo.rampedLookCapable) return reject("Zumo gyro turning unavailable");
+  if (zumo.manualDriving || zumo.lookActive || zumo.left || zumo.right)
+    return reject("Zumo moving or busy");
+  if (!s.available) return reject("Microphone direction unavailable", true);
+  if (s.ageMs > 300) return reject("Voice direction too old", true);
+  if (!s.stable) return reject("Voice direction not stable", true);
   degrees = static_cast<int>(std::lround(s.relative));
   generation = s.generation;
   return true;

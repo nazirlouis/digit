@@ -15,6 +15,7 @@ Status snapshot();
 // front/left capture fresh speech without moving motors. on/off/reset.
 bool configure(const char* action);
 // Captures one fresh, stable, calibrated bearing (positive = robot left).
-bool target(int& degrees, uint32_t& generation);
+bool target(int& degrees, uint32_t& generation, const char** reason = nullptr,
+            bool* retryable = nullptr);
 bool accepts(uint32_t generation);
 }

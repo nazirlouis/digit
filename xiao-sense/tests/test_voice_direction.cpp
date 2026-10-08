@@ -16,6 +16,21 @@ int main(){
   speech(80);assert(!voice_direction::target(angle,generation)); // Floor is still locked.
   zumo_link::state.ready=true;
   assert(voice_direction::target(angle,generation)&&angle==90&&voice_direction::accepts(generation));
+  const char* reason=nullptr;bool retryable=false;
+  speech(170);assert(voice_direction::target(angle,generation,&reason,&retryable)&&std::abs(angle)==180);
+  nowMs+=301;
+  assert(!voice_direction::target(angle,generation,&reason,&retryable)&&retryable);
+  assert(!strcmp(reason,"Voice direction too old"));
+  speech(80);state.stable=false;
+  assert(!voice_direction::target(angle,generation,&reason,&retryable)&&retryable);
+  assert(!strcmp(reason,"Voice direction not stable"));
+  state.available=false;
+  assert(!voice_direction::target(angle,generation,&reason,&retryable)&&retryable);
+  assert(!strcmp(reason,"Microphone direction unavailable"));
+  zumo_link::state.edge=true;
+  assert(!voice_direction::target(angle,generation,&reason,&retryable)&&!retryable);
+  assert(!strcmp(reason,"Zumo edge stop"));
+  zumo_link::state.edge=false;speech(80);
   audioEngine.cuePlaying=true;assert(!voice_direction::target(angle,generation));audioEngine.cuePlaying=false;
   zumo_link::state.rampedLookCapable=false;assert(!voice_direction::target(angle,generation));zumo_link::state.rampedLookCapable=true;
   zumo_link::state.manualDriving=true;assert(!voice_direction::target(angle,generation));zumo_link::state.manualDriving=false;

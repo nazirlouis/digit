@@ -82,6 +82,13 @@ const context = vm.createContext({
   assert.equal(nodes.get('voiceFront').disabled, true);
   await context.voiceAction('off');
   assert.ok(calls.some(c=>c.url==='/api/voice/setup?action=off'&&c.options.method==='POST'));
+  voice.turning=false;voice.result='DONE';
+  voice.turn_reason='Skipped: Voice direction too old';
+  await context.refreshVoice();
+  assert.equal(nodes.get('voiceResult').textContent,voice.turn_reason);
+  voice.turn_reason='Acquiring voice direction';
+  await context.refreshVoice();
+  assert.equal(nodes.get('voiceResult').textContent,voice.turn_reason);
 
   // Media operations must not misreport listening as paused.
   for (const mode of ['RECORDING', 'PLAYING']) {

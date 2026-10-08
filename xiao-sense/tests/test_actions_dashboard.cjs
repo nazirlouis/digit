@@ -10,8 +10,8 @@ const nodes = new Map([...html.matchAll(/\bid="([^"]+)"/g)].map(m=>[m[1],{
   listeners:{},addEventListener(name,fn){this.listeners[name]=fn;},getContext:()=>({clearRect(){},strokeRect(){},fillText(){}}),
 }]));
 const routineIds = [...html.matchAll(/data-routine="(\d+)"/g)].map(m=>Number(m[1]));
-assert.deepEqual(routineIds,[1,16,8,9,10,11,12,13,14]);
-assert.ok(html.includes('>Follow me</button>'));
+assert.deepEqual(routineIds,[8,9,14]);
+assert.ok(html.includes('>Come say hello<small>'));
 assert.ok(!html.includes('Bump me'));
 const buttons = routineIds.map(id=>({disabled:false,dataset:{routine:String(id)}}));
 const driveButtons=['forward','back','left','right'].map(drive=>({dataset:{drive},listeners:{},setPointerCapture(){},addEventListener(name,fn){this.listeners[name]=fn;}}));
@@ -111,7 +111,7 @@ const testTimeout=setTimeout(()=>{console.error('FAIL: dashboard test did not co
     assert.equal(active,false);
   }
   deferNext=true;
-  const pending=context.startRoutine(1);
+  const pending=context.startRoutine(8);
   await new Promise(resolve=>setImmediate(resolve));
   await context.stopZumo();
   release();await pending;
@@ -125,13 +125,13 @@ const testTimeout=setTimeout(()=>{console.error('FAIL: dashboard test did not co
   await context.stopZumo();release();await drive;
   assert.equal(active,false,'A delayed hold-to-drive request must not restart');
   const beforeRetired=calls.length;
-  for(let id=2;id<=6;++id)await context.startRoutine(id);
+  for(const id of [1,2,3,4,5,6,10,11,12,13,15,16])await context.startRoutine(id);
   assert.equal(calls.length,beforeRetired,'Retired actions must not send requests');
   assert.equal(nodes.has('voicePhoto'),false);
   for(const [status,message] of [
     [{listening:true},'Listening for your command…'],
     [{voice_result:'Recognized',last_command:7},'Heard: Stop'],
-    [{voice_result:'Recognized',last_command:1},'Heard: Say hello'],
+    [{voice_result:'Recognized',last_command:8},'Heard: Come say hello'],
     [{voice_result:'No command recognized'},'No command heard. Say Digit and try again.'],
     [{voice_result:'Audio interrupted'},'Listening interrupted. Say Digit and try again.'],
     [{voice_result:'Audio queue overflow'},'Listening interrupted. Say Digit and try again.'],
@@ -140,14 +140,14 @@ const testTimeout=setTimeout(()=>{console.error('FAIL: dashboard test did not co
     voice=status; await context.refreshActions();
     assert.equal(nodes.get('commandState').textContent,message);
   }
-  voice={follow_action_ready:false};
+  voice={person_action_ready:false};
   await context.refreshActions();
-  assert.equal(buttons.find(b=>b.dataset.routine==='16').disabled,true);
-  assert.ok(buttons.filter(b=>b.dataset.routine!=='16').every(b=>!b.disabled));
-  voice={chase_action_ready:false};
+  assert.equal(buttons.find(b=>b.dataset.routine==='8').disabled,true);
+  assert.ok(buttons.filter(b=>b.dataset.routine!=='8').every(b=>!b.disabled));
+  voice={object_action_ready:false};
   await context.refreshActions();
-  assert.equal(buttons.find(b=>b.dataset.routine==='13').disabled,true);
-  assert.ok(buttons.filter(b=>b.dataset.routine!=='13').every(b=>!b.disabled));
+  assert.equal(buttons.find(b=>b.dataset.routine==='14').disabled,true);
+  assert.ok(buttons.filter(b=>b.dataset.routine!=='14').every(b=>!b.disabled));
   voice={follow_action_ready:false,drive_ready:false,person_action_ready:false,object_action_ready:false,chase_action_ready:false,identify_ready:true,movement_reason:'Edge stop: place Digit fully on the surface, then recalibrate'};
   await context.refreshActions();
   assert.equal(nodes.get('actionAvailability').textContent,voice.movement_reason);

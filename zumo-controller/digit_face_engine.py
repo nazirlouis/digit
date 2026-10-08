@@ -199,7 +199,10 @@ class FaceEngine:
 
     def show_scene(self, expression, caption):
         """Render a complete stationary action pose and a short readable label."""
-        self.play(expression, hold_ms=-1)
+        # The caption can remain readable after a finite emotional reaction.
+        # Only sleeping persists; other faces settle to idle with their voice.
+        _, enter, hold, _ = STYLES[expression]
+        self.play(expression, hold_ms=None if hold is None else enter + hold)
         self.enter_ms = 0
         self.pose = STYLES[expression][0]
         self.caption = caption.replace("_", " ") if caption != "NONE" else ""
@@ -296,7 +299,9 @@ class FaceEngine:
     def update(self):
         now = time.ticks_ms()
         if self.caption_until is not None and time.ticks_diff(now, self.caption_until) >= 0:
-            self.play("neutral")
+            self.caption = ""
+            self.caption_until = None
+            self.caption_dirty = True
         if self.move_prompt_until is not None:
             if time.ticks_diff(now, self.move_prompt_until) < 0:
                 return

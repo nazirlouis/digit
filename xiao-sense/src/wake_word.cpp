@@ -52,6 +52,9 @@ bool hasReaction = false;
 bool reactionActive = false;
 bool detectionLatched = false;
 bool turning = false, pendingBearing = false;
+bool waitingForBearing = false;
+uint32_t bearingWaitAt = 0;
+constexpr uint32_t kBearingWaitMs = 500;
 int pendingDegrees = 0;
 uint32_t bearingGeneration = 0, controlGeneration = 0;
 uint32_t actionGeneration = 0;
@@ -183,7 +186,7 @@ void processFeature(const int8_t features[kFeatureCount], uint32_t frameEpoch) {
   const uint32_t now = millis();
   const float score = total / (255.0f * kProbabilityWindow);
   int degrees = 0;
-  uint32_t directionGeneration = 0;
+  uint32_t directionGeneration = voice_direction::snapshot().generation;
   const bool bearing = voice_direction::target(degrees, directionGeneration);
   const auto zumo = zumo_link::snapshot();
   portENTER_CRITICAL(&stateLock);
@@ -326,7 +329,10 @@ void beginInference() { if (modelGate) xSemaphoreTake(modelGate, portMAX_DELAY);
 void endInference() { if (modelGate) xSemaphoreGive(modelGate); }
 void cancel() {
   portENTER_CRITICAL(&stateLock);
+  const bool hadTurn = waitingForBearing || turning;
   ++epoch; reactionPending = false; turning = false; pendingBearing = false;
+  if (hadTurn) snprintf(state.turnReason, sizeof(state.turnReason), "Wake turn cancelled");
+  waitingForBearing = false;
   reactionActive = false;
   // Keep detection cooldown separate from an actual reaction. A drive refresh
   // cancels wake work, but must not look like new wake work and queue STOP again.
@@ -338,14 +344,20 @@ void poll() {
   const bool wasTurning = turning;
   const bool paused = !state.ready;
   const bool hasBearing = pendingBearing;
-  const int degrees = pendingDegrees;
-  const uint32_t directionGeneration = bearingGeneration;
+  int degrees = pendingDegrees;
+  uint32_t directionGeneration = bearingGeneration;
   const uint32_t manualGeneration = controlGeneration;
   const uint32_t routineGeneration = actionGeneration;
   const bool pending = reactionPending && state.ready &&
                        millis() - lastReaction < 500;
   reactionPending = false;
   portEXIT_CRITICAL(&stateLock);
+  const auto report = [](const char* reason) {
+    portENTER_CRITICAL(&stateLock);
+    snprintf(state.turnReason, sizeof(state.turnReason), "%s", reason);
+    portEXIT_CRITICAL(&stateLock);
+    Serial.printf("Wake turn: %s\n", reason);
+  };
   if (wasTurning) {
     const bool allowed = !paused && voice_direction::accepts(directionGeneration);
     if (!allowed) zumo_link::cancelLook();
@@ -357,36 +369,73 @@ void poll() {
     portEXIT_CRITICAL(&stateLock);
     if (allowed && zumo.controlGeneration == manualGeneration && !strcmp(zumo.lookResult, "DONE") &&
         routineGeneration == robot_actions::generation()) {
+      report("Turn completed");
       react(); speech_commands::listen(routineGeneration);
     }
-    else Serial.printf("Voice turn ended: %s\n", zumo.lookResult);
+    else {
+      char reason[96]; snprintf(reason, sizeof(reason), "Turn ended: %s", zumo.lookResult);
+      report(reason);
+    }
     return;
   }
   if (pending && routineGeneration == robot_actions::generation()) {
     if (robot_actions::snapshot().active) {
       // A fresh wake is a takeover: never keep approaching while listening.
       robot_actions::stop("Listening for your next command");
+      report("Skipped: active action stopped to listen");
       react();
       speech_commands::listen(robot_actions::generation());
       return;
     }
-    if (!robot_actions::snapshot().active && hasBearing && voice_direction::accepts(directionGeneration) &&
-        zumo_link::look(degrees, manualGeneration)) {
-      portENTER_CRITICAL(&stateLock);
-      turning = true;
-      portEXIT_CRITICAL(&stateLock);
-      Serial.printf("Voice turn: saved bearing %d degrees (positive=left)\n", degrees);
-    } else {
-      Serial.println("Voice turn skipped: disabled, uncertain direction, or Zumo unavailable/busy");
-      react();
-      speech_commands::listen(routineGeneration);
-    }
+    portENTER_CRITICAL(&stateLock);
+    waitingForBearing = true;
+    bearingWaitAt = millis();
+    portEXIT_CRITICAL(&stateLock);
+    report("Acquiring voice direction");
   }
+  portENTER_CRITICAL(&stateLock);
+  const bool waiting = waitingForBearing;
+  const uint32_t waitStarted = bearingWaitAt;
+  portEXIT_CRITICAL(&stateLock);
+  if (!waiting) return;
+  const auto z = zumo_link::snapshot();
+  if (paused || routineGeneration != robot_actions::generation() || z.controlGeneration != manualGeneration) {
+    cancel(); report("Cancelled by newer control or unavailable wake listener"); return;
+  }
+  const char* reason = "Voice direction setup changed";
+  bool retryable = false;
+  const bool sameSetup = voice_direction::snapshot().generation == directionGeneration;
+  // The bearing saved with this wake may be used immediately, never on later
+  // retries. Subsequent polls require a new target that passes all normal gates.
+  bool acquired = sameSetup && pending && hasBearing && voice_direction::accepts(directionGeneration);
+  if (sameSetup && !acquired) acquired = voice_direction::target(degrees, directionGeneration, &reason, &retryable);
+  if (acquired && millis()-waitStarted <= kBearingWaitMs) {
+    if (zumo_link::look(degrees, manualGeneration)) {
+      portENTER_CRITICAL(&stateLock);
+      waitingForBearing = false;
+      turning = true;
+      bearingGeneration = directionGeneration;
+      portEXIT_CRITICAL(&stateLock);
+      report("Turning toward voice");
+      Serial.printf("Voice turn: saved bearing %d degrees (positive=left)\n", degrees);
+      return;
+    }
+    reason = "Zumo rejected the turn"; retryable = false;
+  } else if (acquired) { reason = "Voice direction arrived too late"; retryable = false; }
+  if (retryable && millis()-waitStarted < kBearingWaitMs) return;
+  portENTER_CRITICAL(&stateLock);
+  waitingForBearing = false;
+  lastReaction = millis();
+  portEXIT_CRITICAL(&stateLock);
+  char detail[96]; snprintf(detail, sizeof(detail), "Skipped: %s", reason);
+  report(detail);
+  react();
+  speech_commands::listen(routineGeneration);
 }
 bool testReaction() {
   const uint32_t now = millis();
   portENTER_CRITICAL(&stateLock);
-  const bool allowed = !turning &&
+  const bool allowed = !turning && !waitingForBearing &&
                        (!hasReaction || now - lastReaction >= kReactionMs);
   if (allowed) { lastReaction = now; hasReaction = true; reactionActive = true; }
   portEXIT_CRITICAL(&stateLock);
@@ -396,7 +445,7 @@ Status snapshot() {
   portENTER_CRITICAL(&stateLock);
   Status copy = state;
   copy.pausedForVision = false;
-  copy.reacting = turning || (reactionActive && millis() - lastReaction < kReactionMs);
+  copy.reacting = turning || waitingForBearing || (reactionActive && millis() - lastReaction < kReactionMs);
   portEXIT_CRITICAL(&stateLock);
   return copy;
 }

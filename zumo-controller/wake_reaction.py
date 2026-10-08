@@ -1,6 +1,6 @@
 """Timed wake expression and six-LED sweep; no motor or blocking calls."""
 
-DURATION_MS = 2200
+DURATION_MS = 1800  # Matches VoiceTiming::Wake, including the face lead-in.
 FRAME_MS = 30
 COLORS = ((0, 60, 255), (0, 230, 255), (155, 25, 255))
 
@@ -27,7 +27,7 @@ class WakeReaction:
                       for i in range(6)]
         self.started = now
         self.last_frame = None
-        self.face.play("happy", hold_ms=1680)
+        self.face.play("happy", hold_ms=1280)
         self.update(now)
         return True
 

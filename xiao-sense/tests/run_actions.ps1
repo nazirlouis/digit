@@ -2,12 +2,13 @@ $ErrorActionPreference = 'Stop'
 $project = Split-Path $PSScriptRoot
 $output = Join-Path $project 'test-artifacts\actions'
 New-Item -ItemType Directory -Force (Join-Path $output 'freertos') | Out-Null
-foreach ($file in 'robot_actions.cpp','robot_actions.h','audio_cues.h','action_mission.cpp','action_mission.h','person_follow.cpp') {
+foreach ($file in 'robot_actions.cpp','robot_actions.h','audio_cues.h','emotion_voice.h','action_mission.cpp','action_mission.h','person_follow.cpp') {
     Copy-Item -LiteralPath (Join-Path $project "src\$file") -Destination (Join-Path $output $file)
 }
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'action_mocks.h') -Destination (Join-Path $output 'action_mocks.h')
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'test_robot_actions.cpp') -Destination (Join-Path $output 'test_robot_actions.cpp')
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'test_action_missions.cpp') -Destination (Join-Path $output 'test_action_missions.cpp')
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'test_person_follow.cpp') -Destination (Join-Path $output 'test_person_follow.cpp')
 # Exercise the actual wake cancellation/status functions alongside the action
 # controller. The model/audio task remains mocked for these desktop tests.
 $wakeSource = Get-Content -Raw -LiteralPath (Join-Path $project 'src\wake_word.cpp')
@@ -77,6 +78,10 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Mission tests compilation failed' }
     & .\test_action_missions.exe
     if ($LASTEXITCODE -ne 0) { throw 'Mission tests failed' }
+    & cl /nologo /std:c++17 /EHsc /W4 /I. /D_CRT_SECURE_NO_WARNINGS /Fe:test_person_follow.exe /Fo:test_person_follow.obj test_person_follow.cpp action_mission.obj person_follow.obj
+    if ($LASTEXITCODE -ne 0) { throw 'Person tracking tests compilation failed' }
+    & .\test_person_follow.exe
+    if ($LASTEXITCODE -ne 0) { throw 'Person tracking tests failed' }
     & cl /nologo /std:c++17 /EHsc /W4 "/I$project\src" /D_CRT_SECURE_NO_WARNINGS /Fe:test_speech_pipeline.exe /Fo:test_speech_pipeline.obj "$PSScriptRoot\test_speech_pipeline.cpp"
     if ($LASTEXITCODE -ne 0) { throw 'Speech pipeline test compilation failed' }
     & .\test_speech_pipeline.exe

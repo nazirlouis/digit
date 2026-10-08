@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 #include "audio_cues.h"
+#include "emotion_voice.h"
 inline uint32_t nowMs = 1000;
 inline uint32_t millis() { return nowMs; }
 using SemaphoreHandle_t = std::recursive_mutex*;
@@ -29,18 +30,21 @@ struct AudioEngine {
   unsigned plays = 0;
   AudioCue lastCue = AudioCue::None;
   uint32_t playUntil = 0;
-  bool playCue(AudioCue cue) { if(!available)return false;playing=true;++plays;lastCue=cue;playUntil=nowMs+(cue==AudioCue::Happy?555:270);return true; }
+  bool playCue(AudioCue cue, VoiceTiming timing=VoiceTiming::Expression) { if(!available)return false;playing=true;++plays;lastCue=cue;playUntil=nowMs+emotionDurationMs(cue,timing);return true; }
   bool cuePlaying() { return playing; }
   void cancelOutput() { playing=false; }
 };
 inline AudioEngine audioEngine;
 namespace wake_word {
-struct Status { bool reacting=false,pausedForVision=false,ready=true; };
+struct Status { bool reacting=false,pausedForVision=false,ready=true; char turnReason[96]=""; };
 inline Status state;
 inline uint32_t epoch=0,lastReaction=0;
 inline uint32_t bearingGeneration=0,controlGeneration=0,actionGeneration=0;
 inline int pendingDegrees=0;
 inline bool reactionPending=false,turning=false,pendingBearing=false;
+inline bool waitingForBearing=false;
+inline uint32_t bearingWaitAt=0;
+constexpr uint32_t kBearingWaitMs=500;
 inline bool hasReaction=false,reactionActive=false;
 inline int stateLock=0;
 constexpr uint32_t kReactionMs=2600;
@@ -107,7 +111,7 @@ inline bool lastStopSmooth=false;
 inline uint32_t turnAt=0;
 inline int selectedAcceleration=6000;
 inline int lastStopDistance=150;
-inline bool gesture=false,excitedGesture=false,sceneAvailable=true;
+inline bool gesture=false,excitedGesture=false,sceneAvailable=true,sceneAcknowledged=true;
 inline std::vector<int> angles;
 inline std::vector<std::string> scenes;
 inline Status snapshot() { return state; }
@@ -118,6 +122,6 @@ inline bool look(int angle,uint32_t) { gesture=false;angles.push_back(angle);sta
 inline bool wiggle(uint32_t generation,bool excited=false) { look(15,generation);gesture=true;excitedGesture=excited;std::strcpy(state.lookResult,"PREPARING");return true; }
 inline bool face(const char*) { return true; }
 inline void cancelLook() { stop(); }
-inline bool scene(const char* face,const char* label) { if(!sceneAvailable)return false;scenes.push_back(std::string(face)+" "+label);std::strcpy(state.sceneResult,"APPLIED");return true; }
+inline bool scene(const char* face,const char* label) { if(!sceneAvailable)return false;scenes.push_back(std::string(face)+" "+label);std::strcpy(state.sceneResult,sceneAcknowledged?"APPLIED":"SENDING");return true; }
 inline int acceleration() { return selectedAcceleration; }
 }
