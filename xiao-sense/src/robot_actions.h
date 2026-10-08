@@ -7,6 +7,18 @@ enum class Command : uint8_t { None = 0, Stop = 7,
   ComeSayHello = 8, Identify = 9, Escape = 14 };
 inline bool validCommand(int id) { return id == 7 || id == 8 || id == 9 || id == 14; }
 struct Status { Command command; const char* phase; bool active; uint32_t generation; };
+struct DebugEvent {
+  uint32_t id, timestampMs, generation, rangeAgeMs, replyAgeMs;
+  Command command;
+  char kind[12], reason[112], fault[24], turn[24];
+  int distanceMm, rawDistanceMm, rangeStatus, left, right, encoderLeft, encoderRight;
+  bool rangeValid, connected, ready, encoderControl;
+  uint32_t motionJob, motionSession, controlMaxGapMs, controlOverruns, displayMaxSliceUs;
+  int targetLeftCps, targetRightCps, headingDeciDeg;
+  char motionState[16], motionResult[24];
+};
+uint32_t latestDebugId();
+bool debugEvent(uint32_t id, DebugEvent* result);
 // Main-loop producers and HTTP control handlers share this short-lived lock.
 // Camera capture and neural inference never run while holding it.
 class Guard {

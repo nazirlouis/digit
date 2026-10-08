@@ -6,7 +6,7 @@
 #include <cstring>
 using std::max;
 enum esp_mn_state_t { ESP_MN_STATE_DETECTING, ESP_MN_STATE_DETECTED, ESP_MN_STATE_TIMEOUT };
-struct esp_mn_results_t { int num; int command_id[5]; float prob[5]; char string[256]; };
+struct esp_mn_results_t { int num; int command_id[5]; int phrase_id[5]; float prob[5]; char string[256]; };
 speech_commands::Status state{};
 speech_commands::AudioTestStatus testState{};
 uint32_t session = 1, controlGeneration = 0, opensAt = 0, pendingGeneration = 0, nowMs = 0;
@@ -60,7 +60,8 @@ int main() {
   speech_pipeline::Tag tag{session, nowMs};
   esp_mn_results_t result{};
   result.num = 1; result.command_id[0] = 7; result.prob[0] = 0.40f;
-  strcpy(result.string, "stop");
+  result.phrase_id[0] = 5;
+  strcpy(result.string, " STOP"); // Exact decoder text observed on the installed device.
   publishResult(tag, ESP_MN_STATE_DETECTED, &result, 11000, 12000);
   assert(!snapshot().listening && snapshot().recognized == 1 && pendingCommand == 7);
   assert(snapshot().score == 0.40f); // Demo acceptance has no extra 0.70 cutoff.
@@ -91,7 +92,7 @@ int main() {
   result.string[0] = '\0';
   publishResult(tag, ESP_MN_STATE_DETECTED, &result, 11000, 12000);
   assert(snapshot().listening && pendingCommand == 0);
-  strcpy(result.string, "stop"); result.command_id[0] = 8;
+  strcpy(result.string, "stop"); result.command_id[0] = 99;
   publishResult(tag, ESP_MN_STATE_DETECTED, &result, 11000, 12000);
   assert(snapshot().listening && pendingCommand == 0);
   for (int id=2;id<=6;++id) {
@@ -106,5 +107,14 @@ int main() {
   nowMs = opensAt + 6000; poll(); assert(snapshot().listening); // Normal timeout belongs to the model.
   nowMs = opensAt + 10000; poll(); assert(!snapshot().listening && pendingCommand == 0);
   assert(!strcmp(snapshot().result, "Audio interrupted"));
+  // A matched phrase can contain an acoustic restart in the transcript.
+  listen(42); poll(); nowMs = opensAt; tag = {session,nowMs};
+  result.command_id[0] = 8; result.phrase_id[0] = 0;
+  strcpy(result.string," CO COME SAY HELLO");
+  publishResult(tag, ESP_MN_STATE_DETECTING, &result, 11000, 12000);
+  assert(snapshot().listening && pendingCommand == 0);
+  publishResult(tag, ESP_MN_STATE_DETECTED, &result, 11000, 12000);
+  assert(!snapshot().listening && pendingCommand == 8);
+  cancel(); poll(); assert(robot_actions::dispatched == 1);
   puts("Speech results: acceptance, single dispatch, Stop during/after inference, new wake, timeout and stalls passed");
 }

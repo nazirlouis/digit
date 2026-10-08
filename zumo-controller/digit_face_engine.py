@@ -104,6 +104,16 @@ class FaceEngine:
         self.caption = ""
         self.caption_until = None
         self.caption_dirty = False
+        self.cooperative = False
+        self._render_steps = None
+        self._render_tear_elapsed = None
+        self._render_prompt = False
+        self.scene_sequence = 0
+        self.visible_scene_sequence = 0
+        self._scene_frame_id = None
+        self._render_scene_sequence = 0
+        self.last_slice_us = 0
+        self.max_slice_us = 0
         self._schedule_idle(self.started)
         self._set_color(COLORS["neutral"])
         self._draw(self.pose)
@@ -165,8 +175,14 @@ class FaceEngine:
         name = expression.lower()
         if name not in STYLES:
             raise ValueError("unknown face: " + expression)
+        # An interrupted drawing must never later submit its old expression.
+        self._render_steps = None
+        self._scene_frame_id = None
+        self._render_scene_sequence = 0
+        if self.cooperative:
+            self.display.cancel_frame()
         _, enter, hold, exit_ms = STYLES[name]
-        self.caption_dirty = bool(self.caption)
+        self.caption_dirty = self.cooperative or bool(self.caption)
         self.caption = ""
         self.caption_until = None
         self.from_pose = self.pose
@@ -198,23 +214,43 @@ class FaceEngine:
         self._draw(self.pose)
 
     def show_scene(self, expression, caption):
-        """Render a complete stationary action pose and a short readable label."""
+        """Accept a scene; cooperative callers observe visible_scene_sequence.
+
+        Acceptance does not mean the panel has received the frame. The visible
+        sequence advances only after its complete first frame is transferred.
+        """
         # The caption can remain readable after a finite emotional reaction.
         # Only sleeping persists; other faces settle to idle with their voice.
         _, enter, hold, _ = STYLES[expression]
         self.play(expression, hold_ms=None if hold is None else enter + hold)
+        self.scene_sequence += 1
+        self._render_scene_sequence = self.scene_sequence
         self.enter_ms = 0
         self.pose = STYLES[expression][0]
         self.caption = caption.replace("_", " ") if caption != "NONE" else ""
         self.caption_until = time.ticks_add(time.ticks_ms(), 8000)
         self._set_color(COLORS[expression])
         self._draw(self.pose)
+        if not self.cooperative:
+            self.visible_scene_sequence = self.scene_sequence
 
     def show_move_prompt(self):
         self.play("neutral")
         self._set_color(COLORS["neutral"])
         self.move_prompt_until = time.ticks_add(time.ticks_ms(), self.MOVE_PROMPT_MS)
+        if self.cooperative:
+            self._render_steps = self._draw_prompt_steps()
+            self._render_prompt = True
+            self._render_tear_elapsed = None
+            return
+        for _ in self._draw_prompt_steps():
+            pass
+        self.display.show()
+        self.last_draw_prompt = True
+
+    def _draw_prompt_steps(self):
         self.display.fill(0)
+        yield
         x0, y0 = (self.CANVAS_WIDTH - 116) // 2, (self.CANVAS_HEIGHT - 28) // 2
         for index, character in enumerate("move?"):
             for row, pixels in enumerate(self.MOVE_FONT[character]):
@@ -222,8 +258,7 @@ class FaceEngine:
                     if pixel == "1":
                         self.display.fill_rect(x0 + index * 24 + column * 4,
                                                y0 + row * 4, 4, 4, 1)
-        self.display.show()
-        self.last_draw_prompt = True
+                        yield
 
     def _hold_pose(self, elapsed):
         name = self.expression
@@ -296,7 +331,62 @@ class FaceEngine:
                 pose = self._close(pose, self._blink_height(elapsed))
         return pose
 
-    def update(self):
+    def enable_cooperative(self):
+        """Opt in only with a transport supporting bounded, released-bus flush."""
+        enable = getattr(self.display, "enable_cooperative", None)
+        if (enable is None or not hasattr(self.display, "flush") or
+                not hasattr(self.display, "cancel_frame")):
+            return False
+        enable()
+        self.cooperative = True
+        return True
+
+    @property
+    def frame_pending(self):
+        return self._render_steps is not None or bool(getattr(self.display, "frame_pending", False))
+
+    def update(self, max_units=8, max_us=1500):
+        if not self.cooperative:
+            self._update_pose()
+            return
+        started = time.ticks_us()
+        try:
+            if self._render_steps is not None:
+                # A unit is one native drawing primitive or eye column. The
+                # primitive itself cannot be interrupted; measure max_slice_us
+                # on hardware rather than treating max_us as a hard deadline.
+                for _ in range(max_units):
+                    try:
+                        next(self._render_steps)
+                    except StopIteration:
+                        self._render_steps = None
+                        frame_id = self.display.show()
+                        if self._render_scene_sequence:
+                            self._scene_frame_id = frame_id
+                        self.caption_dirty = False
+                        self.last_draw_prompt = self._render_prompt
+                        self.last_draw_tears = self._render_tear_elapsed is not None
+                        break
+                    if time.ticks_diff(time.ticks_us(), started) >= max_us:
+                        break
+                return
+            if self.display.frame_pending:
+                self.display.flush(max_rows=max_units, max_us=max_us)
+                if (self._scene_frame_id is not None and
+                        self.display.completed_frame_id >= self._scene_frame_id):
+                    self.visible_scene_sequence = self._render_scene_sequence
+                    # Start a scene's audible hold at visibility, so the
+                    # transfer time does not silently consume the reaction.
+                    self.started = time.ticks_ms()
+                    self._scene_frame_id = None
+                    self._render_scene_sequence = 0
+                return
+            self._update_pose()
+        finally:
+            self.last_slice_us = time.ticks_diff(time.ticks_us(), started)
+            self.max_slice_us = max(self.max_slice_us, self.last_slice_us)
+
+    def _update_pose(self):
         now = time.ticks_ms()
         if self.caption_until is not None and time.ticks_diff(now, self.caption_until) >= 0:
             self.caption = ""
@@ -343,6 +433,10 @@ class FaceEngine:
             self._draw(pose, hold_elapsed if tears else None)
 
     def _draw_question(self, x0, y0, width, height):
+        for _ in self._draw_question_steps(x0, y0, width, height):
+            pass
+
+    def _draw_question_steps(self, x0, y0, width, height):
         # Round-ended hook and detached dot, drawn with the same framebuffer
         # primitives on LCD and OLED. No font files or extra image buffers.
         points = ((8, 17), (8, 13), (10, 9), (14, 6), (20, 5),
@@ -356,10 +450,16 @@ class FaceEngine:
                 y = start[1] + (end[1] - start[1]) * step // steps
                 self.display.ellipse(x0 + x * width // 48, y0 + y * height // 70,
                                      rx, ry, 1, True)
+                yield
         self.display.ellipse(x0 + width // 2, y0 + 61 * height // 70,
                              max(1, width * 6 // 48), max(1, height * 6 // 70), 1, True)
+        yield
 
     def _draw_eye(self, index, eye):
+        for _ in self._draw_eye_steps(index, eye):
+            pass
+
+    def _draw_eye_steps(self, index, eye):
         dx, dy, width, height, outer, inner, curve, heart, tilt, question = eye
         width = max(4, width * self.CANVAS_WIDTH // 136)
         height = max(3, height * self.CANVAS_HEIGHT // 112)
@@ -367,7 +467,7 @@ class FaceEngine:
         center_y = (56 + dy) * self.CANVAS_HEIGHT // 112
         x0, y0 = center_x - width // 2, center_y - height // 2
         if question >= 512:
-            self._draw_question(x0, y0, width, height)
+            yield from self._draw_question_steps(x0, y0, width, height)
             return
         radius = min((width - 1) // 2, (height - 1) // 2)
         outer = outer * self.CANVAS_HEIGHT // 112
@@ -399,11 +499,26 @@ class FaceEngine:
                 slant = tilt * (2 * column - width + 1) // (2 * (width - 1))
                 self.display.fill_rect(x0 + column, y0 + top + slant,
                                        1, bottom - top + 1, 1)
+            yield
 
     def _draw(self, pose, tear_elapsed=None):
+        if self.cooperative:
+            self._render_steps = self._draw_steps(pose, tear_elapsed)
+            self._render_prompt = False
+            self._render_tear_elapsed = tear_elapsed
+            return
+        for _ in self._draw_steps(pose, tear_elapsed):
+            pass
+        self.caption_dirty = False
+        self.display.show()
+        self.last_draw_prompt = False
+        self.last_draw_tears = tear_elapsed is not None
+
+    def _draw_steps(self, pose, tear_elapsed=None):
         self.display.fill(0)
+        yield
         for index, eye in enumerate(pose):
-            self._draw_eye(index, eye)
+            yield from self._draw_eye_steps(index, eye)
         if tear_elapsed is not None:
             for x, delay in ((18, 0), (118, 550)):
                 age = tear_elapsed - delay
@@ -415,11 +530,10 @@ class FaceEngine:
                                              y * self.CANVAS_HEIGHT // 112,
                                              max(1, 3 * self.CANVAS_WIDTH // 136),
                                              max(2, 5 * self.CANVAS_HEIGHT // 112), 1, True)
+                        yield
         if self.caption:
             y = self.CANVAS_HEIGHT - 12
             self.display.fill_rect(0, y, self.CANVAS_WIDTH, 12, 0)
+            yield
             self.display.text(self.caption, max(0, (self.CANVAS_WIDTH - len(self.caption) * 8) // 2), y + 2, 1)
-        self.caption_dirty = False
-        self.display.show()
-        self.last_draw_prompt = False
-        self.last_draw_tears = tear_elapsed is not None
+            yield

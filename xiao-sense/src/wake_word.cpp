@@ -11,6 +11,7 @@
 #include <frontend_util.h>
 #include <freertos/queue.h>
 #include <freertos/semphr.h>
+#include <freertos/idf_additions.h>
 #include <tensorflow/lite/micro/micro_allocator.h>
 #include <tensorflow/lite/micro/micro_interpreter.h>
 #include <tensorflow/lite/micro/micro_mutable_op_resolver.h>
@@ -276,7 +277,11 @@ void begin() {
   portENTER_CRITICAL(&stateLock);
   state.ready = true;
   portEXIT_CRITICAL(&stateLock);
-  if (xTaskCreatePinnedToCore(task, "digit-wake", 8192, nullptr, 2, nullptr, 0) != pdPASS) {
+  // This worker performs queue/feature/model computation only. Model setup
+  // stays on app_main; flash/NVS operations must not be added to this worker.
+  // Keep the full stack size while reserving internal RAM for DMA/networking.
+  if (xTaskCreatePinnedToCoreWithCaps(task, "digit-wake", 8192, nullptr, 2, nullptr, 0,
+                                    MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
     fail("Could not start Digit listener"); return;
   }
   Serial.println("Wake: listening for Digit; inference serialized with vision and commands");

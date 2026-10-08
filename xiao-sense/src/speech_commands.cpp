@@ -12,6 +12,7 @@
 #include <esp_partition.h>
 #include <freertos/queue.h>
 #include <freertos/semphr.h>
+#include <freertos/idf_additions.h>
 
 namespace {
 constexpr uint32_t kVoiceTailMs = 120, kVoiceWaitTimeoutMs = 2500;
@@ -85,6 +86,8 @@ void runAudioTest(int16_t* samples, size_t count, uint8_t gain) {
       if (decoded) {
         snprintf(result.text, sizeof(result.text), "%.127s", decoded->string);
         if (decoded->num) { result.command = decoded->command_id[0]; result.score = decoded->prob[0]; }
+        result.accepted = detected == ESP_MN_STATE_DETECTED &&
+            speech_pipeline::accepts(decoded->num, decoded->string, decoded->command_id[0]);
       }
     }
     wake_word::endInference();
@@ -276,11 +279,15 @@ void begin() {
   if (outputStorage) outputQueue = xQueueCreateStatic(32, sizeof(Chunk), outputStorage, &outputControl);
   if (!inputQueue || !outputQueue) { fail("Cannot allocate speech queues"); return; }
   TaskHandle_t feedTaskHandle = nullptr;
-  if (xTaskCreatePinnedToCore(feedTask, "speech-feed", 8192, nullptr, 5, &feedTaskHandle, 0) != pdPASS) {
+  // These workers only assemble samples and run the already-loaded model.
+  // Keep flash/NVS work on internal-stack tasks and retain the full stack sizes.
+  if (xTaskCreatePinnedToCoreWithCaps(feedTask, "speech-feed", 8192, nullptr, 5, &feedTaskHandle, 0,
+                                    MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
     fail("Cannot start speech feed task"); return;
   }
-  if (xTaskCreatePinnedToCore(detectTask, "speech-detect", 8192, nullptr, 5, nullptr, 1) != pdPASS) {
-    vTaskDelete(feedTaskHandle);
+  if (xTaskCreatePinnedToCoreWithCaps(detectTask, "speech-detect", 8192, nullptr, 5, nullptr, 1,
+                                    MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
+    vTaskDeleteWithCaps(feedTaskHandle);
     fail("Cannot start speech detection task"); return;
   }
   portENTER_CRITICAL(&lock); state.ready = true; portEXIT_CRITICAL(&lock);

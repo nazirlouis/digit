@@ -21,7 +21,7 @@ Status snapshot();
 struct AudioCapture { int16_t* samples; size_t count; uint32_t session; };
 AudioCapture copyAudio();
 struct AudioTestStatus {
-  bool busy, complete; uint8_t gain; uint32_t chunks;
+  bool busy, complete, accepted; uint8_t gain; uint32_t chunks;
   int decoderState, command; float score; char text[128];
 };
 // Ownership transfers only on success. Decoder-only: never dispatches actions.

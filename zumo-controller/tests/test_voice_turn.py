@@ -199,7 +199,7 @@ class VoiceTurnTests(unittest.TestCase):
         self.assertEqual(self.send("2 LOOK 90 500"), "2 OK LOOKING")
         last = 0
         reached = False
-        for _ in range(1250):
+        for _ in range(1500):
             self.step()
             speed = abs(self.motors.speeds[0])
             self.assertLessEqual(speed - last, 3)  # 500 units/s over a 5 ms tick.
@@ -341,6 +341,66 @@ class VoiceTurnTests(unittest.TestCase):
         self.assertIn("2 ERR LOOK_FACE", self.uart.outgoing)
         self.assertNotIn("2 OK WIGGLE_START", self.uart.outgoing)
         self.assertFalse(self.controller.ready)
+
+    def test_cooperative_wiggle_waits_for_visible_scene_without_blocking_updates(self):
+        for expression in ("HAPPY", "EXCITED"):
+            with self.subTest(expression=expression):
+                self.setUp()
+                face = self.controller.face
+                face.cooperative = True
+                face.scene_sequence = face.visible_scene_sequence = 0
+                scheduled = []
+                draws = []
+                def show_scene(expression, caption):
+                    face.scene_sequence += 1
+                    scheduled.append((expression, caption, self.clock.now))
+                def update(**kwargs):
+                    draws.append(self.clock.now)
+                    if scheduled and self.clock.now - scheduled[0][2] >= 550:
+                        face.visible_scene_sequence = face.scene_sequence
+                face.show_scene, face.update = show_scene, update
+                self.send("2 WIGGLE " + expression)
+                for _ in range(240):
+                    self.step()
+                    if "2 OK WIGGLE_START" in self.uart.outgoing:
+                        break
+                    self.assertEqual(self.motors.speeds, (0, 0))
+                    self.assertIsNotNone(self.controller.look_id)
+                self.assertEqual(len(scheduled), 1)
+                self.assertGreaterEqual(self.clock.now-scheduled[0][2], 550)
+                self.assertGreater(len(draws), 100)
+                self.assertEqual(self.uart.outgoing.count("2 OK WIGGLE_START"), 1)
+                self.assertEqual(self.motors.speeds, (0, 0))
+                self.step()
+                self.step()  # First accepted target establishes the ramp origin.
+                self.assertNotEqual(self.motors.speeds, (0, 0))
+                self.assertEqual(self.controller.voice_turn.last_sample, self.clock.now)
+                self.send("3 STOP")
+
+    def test_cooperative_wiggle_wait_keeps_lease_and_stop_authoritative(self):
+        for failure in ("lease", "stop", "display_timeout"):
+            with self.subTest(failure=failure):
+                self.setUp()
+                face = self.controller.face
+                face.cooperative = True
+                face.scene_sequence = face.visible_scene_sequence = 0
+                def show_scene(expression, caption):
+                    face.scene_sequence += 1
+                face.show_scene = show_scene
+                face.update = lambda **kwargs: None
+                self.send("2 WIGGLE EXCITED")
+                for _ in range(90): self.step()
+                self.assertIsNotNone(self.controller.wiggle_scene)
+                if failure == "stop":
+                    self.send("3 STOP")
+                else:
+                    for _ in range(320 if failure == "display_timeout" else 65):
+                        self.step(keep=failure == "display_timeout")
+                self.assertEqual(self.motors.speeds, (0, 0))
+                self.assertIsNone(self.controller.look_id)
+                self.assertNotIn("2 OK WIGGLE_START", self.uart.outgoing)
+                if failure == "display_timeout":
+                    self.assertIn("2 ERR LOOK_FACE", self.uart.outgoing)
 
     def test_quick_wiggle_cancellation_and_faults_during_each_leg(self):
         for leg in (0, 1, 2):

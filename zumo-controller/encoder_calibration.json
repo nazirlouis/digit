@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "description": "User-supervised raised-track calibration 2026-10-07; counts per second",
+  "low_cps": [
+    1540.23,
+    1294.03
+  ],
+  "reverse_low_cps": [
+    1578.92,
+    1418.47
+  ],
+  "high_cps": [
+    3929.71,
+    3674.99
+  ],
+  "reverse_high_cps": [
+    4106.05,
+    3694.26
+  ]
+}

@@ -15,18 +15,18 @@ class AutomaticDriveTests(unittest.TestCase):
     def test_close_approach_passes_15cm_and_brakes_locally_at_10cm(self):
         command = "2 SAFE 2400 2400 6000 100"
         self.assertEqual(self.send(command), "2 OK SAFE")
-        self.fixture.advance(420, command)
-        self.assertEqual(self.fixture.motors.speeds, (2400, 2400))
+        self.fixture.advance(520, command)
+        self.assertEqual(self.fixture.motors.speeds, (3000, 3000))
         self.tof.distance_mm = 140
         self.advance(20)
-        self.assertEqual(self.fixture.motors.speeds, (2400, 2400))
+        self.assertEqual(self.fixture.motors.speeds, (3000, 3000))
         self.tof.distance_mm = 100
         self.advance(20)
         self.assertTrue(self.fixture.control.braking)
         self.assertIn("0 EVENT ARRIVED", self.fixture.uart.outgoing)
         self.tof.distance_mm = 110
         self.assertEqual(self.send(command), "2 OK ARRIVED")
-        self.fixture.advance(220)
+        self.fixture.advance(260)
         self.assertEqual(self.fixture.motors.speeds, (0, 0))
         self.assertTrue(self.fixture.control.ready)
         self.assertNotIn("0 EVENT OBSTACLE", self.fixture.uart.outgoing)
@@ -39,7 +39,7 @@ class AutomaticDriveTests(unittest.TestCase):
             with self.subTest(failure=failure):
                 self.setUp()
                 self.send("2 SAFE 2400 2400 6000 100")
-                self.fixture.advance(420, "2 SAFE 2400 2400 6000 100")
+                self.fixture.advance(520, "2 SAFE 2400 2400 6000 100")
                 if failure == "near":
                     self.tof.distance_mm = 80
                     self.advance(20)
@@ -67,18 +67,18 @@ class AutomaticDriveTests(unittest.TestCase):
     def test_chase_passes_10cm_and_brakes_locally_at_5cm(self):
         command = "2 SAFE 2400 2400 6000 50"
         self.assertEqual(self.send(command), "2 OK SAFE")
-        self.fixture.advance(420, command)
+        self.fixture.advance(520, command)
         for distance in (140, 100, 80, 60, 51):
             self.tof.distance_mm = distance
             self.advance(20)
-            self.assertEqual(self.fixture.motors.speeds, (2400, 2400))
+            self.assertEqual(self.fixture.motors.speeds, (3000, 3000))
         self.tof.distance_mm = 50
         self.advance(20)
         self.assertTrue(self.fixture.control.braking)
         self.assertIn("0 EVENT ARRIVED", self.fixture.uart.outgoing)
         self.tof.distance_mm = 60
         self.assertEqual(self.send(command), "2 OK ARRIVED")
-        self.fixture.advance(220)
+        self.fixture.advance(260)
         self.assertEqual(self.fixture.motors.speeds, (0, 0))
         self.assertTrue(self.fixture.control.ready)
         self.assertNotIn("0 EVENT OBSTACLE", self.fixture.uart.outgoing)
@@ -86,8 +86,8 @@ class AutomaticDriveTests(unittest.TestCase):
         self.tof.distance_mm = 100
         self.advance(20)
         self.assertEqual(self.send(command), "2 OK SAFE")
-        self.fixture.advance(420, command)
-        self.assertEqual(self.fixture.motors.speeds, (2400, 2400))
+        self.fixture.advance(520, command)
+        self.assertEqual(self.fixture.motors.speeds, (3000, 3000))
 
     def test_chase_keeps_hard_stop_while_braking_and_sensor_safeties(self):
         for failure in ("near", "stale", "edge", "timeout"):
@@ -95,7 +95,7 @@ class AutomaticDriveTests(unittest.TestCase):
                 self.setUp()
                 command = "2 SAFE 2400 2400 6000 50"
                 self.send(command)
-                self.fixture.advance(420, command)
+                self.fixture.advance(520, command)
                 if failure == "near":
                     self.tof.distance_mm = 50
                     self.advance(20)
@@ -126,7 +126,7 @@ class AutomaticDriveTests(unittest.TestCase):
                 self.fixture.advance(100, command)
                 self.assertEqual(self.fixture.motors.speeds, (acceleration // 10,) * 2)
                 self.fixture.advance(6000, command)
-                self.assertEqual(self.fixture.motors.speeds, (2800, 2800))
+                self.assertEqual(self.fixture.motors.speeds, (3000, 3000))
                 self.send("3 BRAKE")
                 self.fixture.advance(250)
                 self.assertEqual(self.fixture.motors.speeds, (0, 0))
@@ -142,7 +142,7 @@ class AutomaticDriveTests(unittest.TestCase):
         self.assertEqual(self.fixture.motors.speeds, (0, 0))
         status = self.send("6 STATUS")
         self.assertIn("SCENE=1 SAFE2=1", status)
-        self.assertLess(len(status), 192)
+        self.assertLess(len(status), 320)
 
     def setUp(self):
         self.fixture = fixtures.UARTControlTests()
@@ -225,7 +225,7 @@ class AutomaticDriveTests(unittest.TestCase):
                 self.setUp()
                 self.send("2 SAFE 1200 1200")
                 self.fixture.advance(410, "2 SAFE 1200 1200")
-                self.assertEqual(self.fixture.motors.speeds, (1200, 1200))
+                self.assertEqual(self.fixture.motors.speeds, (1230, 1230))
                 self.send("3 BRAKE")
                 self.assertTrue(self.fixture.control.safe_motion)
                 if failure == "obstacle":

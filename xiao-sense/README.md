@@ -5,11 +5,12 @@ PlatformIO. This is the active XIAO project to open in VS Code. The previous
 Arduino application is preserved in `../xiao-sense-arduino-legacy`.
 
 The **Digit actions** panel and MultiNet commands expose **Come say hello**,
-**What's this?**, and **Find a way out**, plus Stop. The current local release
+**What's this?**, and **Find a way out**, plus Stop. The current release
 adds coordinated character reactions and stricter freshness/timeout checks.
 See [action behavior and testing](VOICE_ACTIONS.md) for behavior, validation,
 and installation status. The light dashboard and 100% startup speaker volume
-are included in the same pending release.
+were installed together on 2026-10-07. Both controllers passed startup and
+GET-only idle checks; physical action and speaker/screen timing acceptance remains pending.
 
 The camera stays at 640 × 480 JPEG with the existing 180° rotation, live
 stream, and picture download. The on-demand pedestrian detector is Espressif's
@@ -104,9 +105,10 @@ Run `tests/run_emotions.ps1` to test/export the real synthesized WAVs, then
 `../zumo-controller/tools/render_expression_audio.py` with Pillow and FFmpeg to
 render paired face/sound review clips. Outputs are under
 `test-artifacts/expression-sync/`. A cross-controller timeline test detects
-face/voice duration drift. This revision is local only: installation requires
-XIAO firmware plus the updated `digit_face_engine.py` and `wake_reaction.py` on
-Zumo. Neither the new sound nor panel timing has been tested on the device.
+face/voice duration drift. Installed on 2026-10-07: XIAO firmware and bundled
+models on COM7, plus hash-verified `digit_face_engine.py` and `wake_reaction.py`
+on Zumo COM6. The remaining nine checked runtime files already matched local
+source. Neither the new sound nor panel timing has been auditioned on the device.
 Uncheck the switch to compare faces without sound. A new preview replaces the
 previous voice; **Stop preview / wake up** cancels actions/audio and requests
 neutral eyes. **STOP ALL** also cancels audio and pending previews.
@@ -326,7 +328,7 @@ The dashboard **Acceleration** slider applies to driving and wake turns.
 It sends `POST /api/zumo/acceleration?value=500..6000`; the
 selected value lasts until XIAO reboot (default 6000). Each turn snapshots it,
 so an in-progress turn is not changed by a later slider update. Turns use the
-Zumo's existing ramp and fixed braking rate. Nonzero turn targets are 2400–3200
+Zumo's existing ramp and fixed braking rate. Nonzero turn targets are 3000–3200
 to address the reported motor dead zone below 2000; actual ramp output still
 passes through lower values when starting and stopping. This is an initial
 hardware tuning choice, not a measured universal torque threshold.
@@ -351,3 +353,36 @@ acceleration settings, face-before-motion ordering, phase-triggered audio,
 cancellation, saved direction settings, and command
 listening after playback. Physical heading, torque, sound, and display timing
 must still be checked on the robot.
+
+### Desk maze exploration, 2026-10-07
+
+Find a way out drives continuously while fresh front distance exceeds 50 mm.
+At a wall it compares settled median readings ahead, 90 degrees left and
+90 degrees right, chooses the longest opening, and repeats. It never samples
+the rear heading; a dead end stops for help. A battery remains the exit target,
+with stationary visual confirmation and bounded approach to 100 mm. The
+18-segment / 150-second mission limits and edge/Stop/stale-data guards remain.
+All active nonzero movement targets are at least 3000; ramps and braking
+still pass through lower values. Physical performance needs a supervised test.
+
+
+## Two-controller motion jobs (MicroPython Zumo)
+
+Hello and Find a way out now send persistent, checksummed motion jobs. A
+separate XIAO UART task services the link while the mission decides what to do.
+The task cannot keep a stalled mission alive: mission supervision and the
+Zumo heartbeat have separate deadlines. Autonomous actions do not require an
+open dashboard or a Wi-Fi connection; manual hold-to-drive retains its lease.
+
+The Zumo completes wall approaches and gyro turns locally. Maze decisions use
+three fresh settled measurements bound to their job/heading. Small visual
+steering corrections update the existing drive job. New movement actions
+require MOTION=1 and calibrated encoder feedback; old firmware is not silently
+used as an autonomous fallback. Legacy manual driving and the short greeting
+wiggle remain supported.
+
+The Actions debug log now includes job state/result, session, desired and actual
+encoder speeds, heading, maximum control gap, overruns and display slice timing.
+Scene audio waits for the first visible frame and cancels when a different scene
+replaces it. See [the wire protocol](../docs/TWO_BRAIN_PROTOCOL.md) and
+[physical acceptance](../docs/TWO_BRAIN_ACCEPTANCE.md).

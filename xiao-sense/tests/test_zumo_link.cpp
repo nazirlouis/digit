@@ -16,9 +16,33 @@ void assertCommand(const char* expected, const char* forbidden) {
   assert(zumoUart.outgoing.find(line)!=std::string::npos);
   assert(zumoUart.outgoing.find(other)==std::string::npos);
 }
+std::string m2Reply(uint32_t boot,uint32_t session,unsigned job,const char* phase,
+                    const char* reason,int distance=500,int heading=0) {
+  char body[256],frame[300];
+  snprintf(body,sizeof(body),"M2 %08lx %lu %u %s %s %d %d 25 GAP=8 OVERRUN=0 DSUS=1490 TL=1579 TR=1579",
+      static_cast<unsigned long>(boot),static_cast<unsigned long>(session),job,phase,reason,distance,heading);
+  snprintf(frame,sizeof(frame),"0 %s *%04X",body,motionCrc(body,strlen(body)));
+  return frame;
+}
 int main() {
   zumo_link::begin();
+  handleLine("1 OK READY=1 FAULT=NONE L=0 R=0 BAT=5800 EDGE=0 VOICE=1 DIST=350 RANGE=1 AUTO=1 BRAKE=1 SAFE2=1 CLOSE=2 RA=220 RS=0 RAW=350 ENC=1 VL=1540 VR=1535",nowMs);
+  assert(zumo_link::snapshot().rangeAgeMs==220);
+  assert(zumo_link::snapshot().encoderControl && zumo_link::snapshot().encoderLeftCps==1540);
+  assert(zumo_link::snapshot().rangeStatus==0 && zumo_link::snapshot().rawDistanceMm==350);
+  nowMs+=35;
+  assert(zumo_link::snapshot().rangeAgeMs==255);
+  assert(!zumo_link::safeDrive(3000,3000,50));
+  handleLine("0 EVENT ENCODER",nowMs);
+  assert(!zumo_link::snapshot().ready);
+  assert(!strcmp(zumo_link::snapshot().fault,"ENCODER"));
+  handleLine("0 EVENT OBSTACLE",nowMs);
+  assert(!strcmp(zumo_link::snapshot().lastError,"OBSTACLE"));
+  handleLine("0 EVENT TIMEOUT",nowMs);
+  assert(!strcmp(zumo_link::snapshot().lastError,"TIMEOUT"));
+  zumo_link::stop(); zumo_link::poll();
   reply(false);
+  assert(!zumo_link::snapshot().encoderControl); // Legacy peer cannot inherit stale capability.
   const auto motorStatusAt=zumo_link::snapshot().statusTimestampMs;
   nowMs+=25;handleLine("2 OK STOPPED",nowMs);
   assert(zumo_link::snapshot().statusTimestampMs==motorStatusAt);
@@ -35,6 +59,10 @@ int main() {
   assert(zumo_link::drive(4000,4000));
   nowMs+=100; zumo_link::poll();
   assert(zumoUart.outgoing.find(" DRIVE 4000 4000 6000\n")!=std::string::npos);
+  reply(); assert(zumo_link::drive(1,-2500)); nowMs+=100; zumo_link::poll();
+  assert(zumoUart.outgoing.find(" DRIVE 3000 -3000 6000\n")!=std::string::npos);
+  reply(); assert(zumo_link::turn(-1)); nowMs+=100; zumo_link::poll();
+  assert(zumoUart.outgoing.find(" TURN -3000\n")!=std::string::npos);
   reply();
   assert(zumo_link::drive(0,0)); zumo_link::poll();
   assertCommand("BRAKE","STOP");
@@ -122,7 +150,7 @@ int main() {
   assert(zumo_link::setAcceleration(500));
   assert(!zumo_link::safeDrive(-2800,2800) && !zumo_link::safeDrive(3201,3201));
   assert(zumo_link::safeDrive(2800,2800)); nowMs+=100; zumoUart.outgoing.clear(); zumo_link::poll();
-  assertCommand("SAFE 2800 2800 500","DRIVE 2800 2800 500");
+  assertCommand("SAFE 3000 3000 500","DRIVE 3000 3000 500");
   zumo_link::stop(); zumo_link::poll(); handleLine(modern,nowMs);
   nowMs+=251; handleLine("555 OK KEEP",nowMs);
   assert(zumo_link::snapshot().replyAgeMs==0 && zumo_link::snapshot().rangeAgeMs==251);
@@ -151,7 +179,7 @@ int main() {
   assert(!zumo_link::safeDrive(2400,2400,20));
   assert(zumo_link::safeDrive(2400,2400,100));
   nowMs+=100; zumoUart.outgoing.clear(); zumo_link::poll();
-  assertCommand("SAFE 2400 2400 500 100","SAFE 2400 2400 500");
+  assertCommand("SAFE 3000 3000 500 100","SAFE 3000 3000 500");
   const auto safetyBefore=zumo_link::snapshot().safetyEvents;
   handleLine("0 EVENT ARRIVED",nowMs);
   assert(zumo_link::snapshot().approachArrived && !driveWanted);
@@ -171,7 +199,7 @@ int main() {
   zumo_link::stop(); zumo_link::poll();
   assert(zumo_link::safeDrive(2400,2400,50));
   nowMs+=100; zumoUart.outgoing.clear(); zumo_link::poll();
-  assertCommand("SAFE 2400 2400 500 50","SAFE 2400 2400 500 100");
+  assertCommand("SAFE 3000 3000 500 50","SAFE 3000 3000 500 100");
   handleLine("0 EVENT ARRIVED",nowMs);
   assert(zumo_link::snapshot().approachArrived && !driveWanted);
   assert(zumo_link::snapshot().safetyEvents==safetyBefore);
@@ -195,5 +223,105 @@ int main() {
   std::cout<<"PASS production UART bridge: default 6000, BRAKE support, older peer fallback, edge and lease priority\n";
   zumo_link::stop(); zumo_link::poll();
   nowMs+=100;
-
+  assert(motionCrc("123456789",9)==0x29b1); // Standard CCITT-FALSE test vector.
+  reply();zumo_link::superviseMotion();assert(!zumo_link::armMotion());
+  assert(!motionWanted); // No autonomous fallback to an older controller.
+  const std::string jobs=std::string(modern)+" CLOSE=2 ENC=1 VL=0 VR=0 MOTION=1 BOOT=1234abcd SESSION=9 GAP=12 OVERRUN=2 DSUS=4300 TL=0 TR=0";
+  handleLine(jobs.c_str(),nowMs);zumo_link::superviseMotion();
+  assert(zumo_link::snapshot().controlMaxGapMs==12 && zumo_link::snapshot().controlOverruns==2 && zumo_link::snapshot().displayMaxSliceUs==4300);
+  assert(zumo_link::snapshot().motionCapable && !zumo_link::armMotion());
+  assert(motionSession==10); // A restarted XIAO advances the peer's high-water mark.
+  zumoUart.outgoing.clear();zumo_link::poll();
+  assert(zumoUart.outgoing.find("M2 1234abcd 10 0 ARM *")!=std::string::npos);
+  auto armed=m2Reply(0x1234abcd,10,0,"ARMED","NONE");
+  auto broken=armed;broken.back()=broken.back()=='0'?'1':'0';
+  handleLine(broken.c_str(),nowMs);assert(!zumo_link::snapshot().motionArmed);
+  nowMs+=200;zumo_link::superviseMotion();zumo_link::poll();
+  assert(motionWanted && armPending); // Lost ACK retries exactly the same session.
+  handleLine(armed.c_str(),nowMs);assert(zumo_link::armMotion());
+  auto job=zumo_link::driveJob(3000,3000,50,30000);assert(job==1);
+  zumoUart.outgoing.clear();zumo_link::poll();
+  assert(zumoUart.outgoing.find("M2 1234abcd 10 1 DRIVE 3000 3000 500 50 30000 *")!=std::string::npos);
+  auto accepted=m2Reply(0x1234abcd,10,job,"RUNNING","ACCEPTED");
+  handleLine(accepted.c_str(),nowMs);
+  zumoUart.outgoing.clear();
+  for(int i=0;i<10;++i){nowMs+=100;zumo_link::superviseMotion();zumo_link::poll();}
+  assert(zumoUart.outgoing.find(" DRIVE ")==std::string::npos);
+  assert(zumoUart.outgoing.find(" 0 HB 2 *")!=std::string::npos);
+  assert(zumoUart.outgoing.find(" 0 HB 11 *")!=std::string::npos);
+  assert(zumo_link::snapshot().motionActive); // Browser lease does not govern jobs.
+  assert(zumo_link::updateDriveJob(job,3100,3000));zumo_link::poll();
+  assert(zumoUart.outgoing.find("1 UPDATE 1 3100 3000 *")!=std::string::npos);
+  assert(zumo_link::updateDriveJob(job,3000,3050));zumo_link::poll();
+  assert(zumoUart.outgoing.find("1 UPDATE 2 3000 3050 *")!=std::string::npos);
+  const auto previousUpdateWire=motionWires[(motionWireCursor-1)%16].wire;
+  // A correction queued just before arrival belongs only to this drive job.
+  assert(zumo_link::updateDriveJob(job,3200,3000));
+  auto done=m2Reply(0x1234abcd,10,job,"DONE","WALL_STOPPED",52,7);
+  broken=done;broken.back()=broken.back()=='0'?'1':'0';handleLine(broken.c_str(),nowMs);
+  assert(zumo_link::snapshot().motionActive);
+  handleLine(m2Reply(0x1234abcd,9,job,"DONE","WALL_STOPPED").c_str(),nowMs);
+  assert(zumo_link::snapshot().motionActive); // An old session cannot finish this job.
+  handleLine(done.c_str(),nowMs);handleLine(accepted.c_str(),nowMs);
+  auto completion=zumo_link::snapshot();
+  assert(!completion.motionActive && !strcmp(completion.motionResult,"WALL_STOPPED"));
+  assert(completion.motionDistanceMm==52 && completion.motionHeadingDeciDeg==7);
+  assert(completion.controlMaxGapMs==8 && completion.displayMaxSliceUs==1490 && completion.targetLeftCps==1579);
+  assert(zumo_link::ackMotion(job));
+  auto measure=zumo_link::measureJob();assert(measure==2);
+  zumoUart.outgoing.clear();zumo_link::poll();zumo_link::poll();zumo_link::poll();
+  assert(zumoUart.outgoing.find(" UPDATE ")==std::string::npos);
+  assert(zumoUart.outgoing.find(" 2 MEASURE 2500 *")!=std::string::npos);
+  const auto beforeOldJobError=zumo_link::snapshot().safetyEvents;
+  handleLine((std::to_string(previousUpdateWire)+" ERR M2_ERR_STALE").c_str(),nowMs);
+  assert(zumo_link::snapshot().motionActive && motionWanted);
+  assert(zumo_link::snapshot().safetyEvents==beforeOldJobError);
+  handleLine(done.c_str(),nowMs);assert(zumo_link::snapshot().motionJob==2 && zumo_link::snapshot().motionActive);
+  handleLine(m2Reply(0x1234abcd,10,measure,"DONE","MEASURED",750,905).c_str(),nowMs);
+  completion=zumo_link::snapshot();
+  assert(completion.motionSample==measure && completion.motionDistanceMm==750 && completion.motionHeadingDeciDeg==905);
+  assert(zumo_link::scene("CURIOUS","SEARCHING"));zumo_link::poll();
+  const auto visibleId=sceneId;
+  handleLine((std::to_string(visibleId)+" OK SCENE").c_str(),nowMs);
+  assert(!strcmp(zumo_link::snapshot().sceneResult,"RENDERING"));
+  handleLine((std::to_string(visibleId)+" OK SCENE_VISIBLE").c_str(),nowMs);
+  assert(!strcmp(zumo_link::snapshot().sceneResult,"APPLIED"));
+  zumo_link::stop();zumo_link::poll();handleLine(accepted.c_str(),nowMs);
+  assert(!zumo_link::snapshot().motionActive && !motionWanted);
+  zumo_link::poll(); // A late RUNNING event prompts an additional safe STOP.
+  // A living UART task must stop a dead mission, not heartbeat it forever.
+  handleLine(jobs.c_str(),nowMs);zumo_link::superviseMotion();zumo_link::armMotion();zumo_link::poll();
+  auto session=motionSession;handleLine(m2Reply(0x1234abcd,session,0,"ARMED","NONE").c_str(),nowMs);
+  job=zumo_link::driveJob(3000,3000,50);zumo_link::poll();
+  handleLine(m2Reply(0x1234abcd,session,job,"RUNNING","ACCEPTED").c_str(),nowMs);
+  zumoUart.outgoing.clear();nowMs+=601;zumo_link::poll();
+  assert(!motionWanted && !strcmp(zumo_link::snapshot().lastError,"SUPERVISOR_TIMEOUT"));
+  assertCommand("STOP","BRAKE");assert(zumoUart.outgoing.find(" HB ")==std::string::npos);
+  // A peer restart invalidates pending jobs and previous-boot events.
+  handleLine(jobs.c_str(),nowMs);zumo_link::superviseMotion();zumo_link::armMotion();zumo_link::poll();
+  session=motionSession;handleLine(m2Reply(0x1234abcd,session,0,"ARMED","NONE").c_str(),nowMs);
+  const auto restarted=std::string(modern)+" ENC=1 MOTION=1 BOOT=1234abce SESSION=0";
+  handleLine(restarted.c_str(),nowMs);handleLine(m2Reply(0x1234abcd,session,0,"ARMED","NONE").c_str(),nowMs);
+  assert(!motionWanted && !zumo_link::snapshot().motionArmed);
+  assert(!strcmp(zumo_link::snapshot().lastError,"PEER_RESTART"));
+  zumo_link::poll();
+  // The mission task may queue ARM after the UART iteration began but before
+  // it takes stateLock. Its new timestamp must not wrap to a false 49-day age.
+  handleLine(jobs.c_str(),nowMs);zumo_link::superviseMotion();
+  zumoUart.outgoing.clear();
+  beforeCritical=[] { ++nowMs; assert(!zumo_link::armMotion()); };
+  zumo_link::poll();
+  assert(motionWanted && armPending);
+  assert(zumoUart.outgoing.find(" 0 ARM *")!=std::string::npos);
+  assert(strcmp(zumo_link::snapshot().lastError,"JOB_ACK_TIMEOUT"));
+  // The same race must not expire a freshly renewed supervisor lease.
+  beforeCritical=[] { ++nowMs; zumo_link::superviseMotion(); };
+  zumo_link::poll();assert(motionWanted);
+  // A status update arriving while a caller waits for stateLock is age zero,
+  // not UINT32_MAX. Real timeout and wraparound behavior remains unchanged.
+  beforeCritical=[] { ++nowMs; handleLine("1 OK READY=1 FAULT=NONE L=0 R=0 BAT=5800 EDGE=0 VOICE=1 DIST=350 RANGE=1 AUTO=1",nowMs); };
+  assert(zumo_link::snapshot().replyAgeMs==0);
+  zumo_link::stop();zumo_link::poll();
+  std::cout<<"PASS shared clocks sampled after state lock: queued ARM, supervisor lease and fresh snapshot races\n";
+  std::cout<<"PASS persistent M2 jobs, CRC, retry, monotonic sessions, completion latching, heading-specific measurement, independent heartbeat, supervisor timeout and restart cancellation\n";
 }

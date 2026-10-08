@@ -221,7 +221,7 @@ and robot library. Restart so the updated modules are loaded.
 
 Run `face_test.py` directly in Thonny: **A = next expression, B = replay,
 C = exit**. The Shell prints each selected expression. This test keeps the
-motors stopped and does not need the XIAO or floor calibration. The normal
+motors stopped and does not need the XIAO or surface calibration. The normal
 `main.py` button shortcuts remain A = sad, B = happy, C = motor stop.
 
 Build/upload the active `xiao-sense` project using environment
@@ -273,7 +273,7 @@ silent buzzer library with factory files.
 The XIAO dashboard provides **Set front**, **Set left**, and **Enable voice
 turning**. See `../xiao-sense/README.md` for mounting and setup. Direction setup
 does not move motors and is saved on the XIAO across restarts. Voice turning
-defaults on, but waits for valid direction and floor calibration; an explicit
+defaults on, but waits for valid direction and surface calibration; an explicit
 off choice is also saved. Floor calibration is
 still required. Wake listening remains on unless vision is enabled.
 
@@ -306,15 +306,15 @@ completion or cancellation releases the held face to neutral. The XIAO uses
 these events instead of estimated delays, and does not replay sound afterward.
 
 `voice_turn.py` samples the stationary gyro bias for at least 400 ms (80
-samples), then uses gyro Z feedback with nonzero targets of 2400–3200.
+samples), then uses gyro Z feedback with nonzero targets of 3000–3200.
 All track output passes through the same acceleration ramp and fixed braking
 as manual driving; the optional LOOK acceleration is 500–6000, default 6000.
 The XIAO sends the dashboard setting. Lower output values occur only as ramp
-transients or while braking; 2400 is an initial breakaway target based on the
+transients or while braking; 3000 is the minimum nonzero movement target based on the
 reported dead zone, pending physical tuning. It stops within 3 degrees for
 turns of 30 degrees or less, or 8 degrees for larger turns, and settles for
-150 ms. The total timeout is 6000 ms plus twice the ramp time to 2400; stall
-detection waits until actual output reaches 2400. STATUS advertises LOOKRAMP=1. Missing
+150 ms. The total timeout is 6000 ms plus twice the ramp time to 3000; stall
+detection waits until actual output reaches 3000. STATUS advertises LOOKRAMP=1. Missing
 or invalid gyro data, reversed yaw,
 or no heading progress stops the motors and reports a `LOOK_*` error followed
 by `0 EVENT TURN_FAULT`. Reposition and recalibrate the floor before trying
@@ -348,12 +348,12 @@ wait delay is required.
 Save `uart_control.py`, `wake_reaction.py`, `voice_turn.py`, `digit_config.py`, and the updated `main.py` to the Zumo device root. Keep
 the existing `digit_face.py`, matching face/display files,
 and `/zumo_2040_robot` library. Reset the Zumo. Once `main.py` starts, it
-prints `UART CONTROL` and automatically starts stationary floor calibration.
+prints `UART CONTROL` and automatically starts stationary surface calibration.
 Power on with Digit stationary on safe floor: the five downward sensors are
 sampled for about 600 ms, with motors stopped and driving locked until success.
 Calibration runs once per Zumo startup, even if the XIAO has not started yet.
 An unsuitable baseline, sensor fault, Button C, or Stop leaves driving locked;
-reposition Digit and use the dashboard's **Calibrate floor** button to retry.
+reposition Digit and use the dashboard's **Calibrate surface** button to retry.
 Later safety faults still require manual recalibration. Opening Thonny can interrupt the running
 program and leave the REPL prompt; use a power cycle with Thonny disconnected
 when checking automatic startup.
@@ -382,7 +382,7 @@ events and uncorrelated errors. Commands are uppercase.
 | `22 LED 2 0 0 255 5` | Set LED 3 blue; indices are 0-5 |
 | `23 LED ALL 0 0 0 0` | Turn all RGB LEDs off |
 | `26 WAKE` | Happy face and LED effect while stationary; sound is played by XIAO |
-| `27 LOOK 90` | One measured left turn, then `27 OK LOOK_DONE`; requires floor calibration and gyro |
+| `27 LOOK 90` | One measured left turn, then `27 OK LOOK_DONE`; requires surface calibration and gyro |
 | `29 WIGGLE` | One quick left/right/center greeting, then `29 OK LOOK_DONE`; renew with `KEEP 29` |
 | `29 WIGGLE EXCITED` | Same fast ramped gesture and timing events, with excited eyes and FOUND caption |
 | `30 SCENE HAPPY BATTERY` | Render a complete face and short label while stationary, then acknowledge `30 OK SCENE`; label clears after eight seconds or Stop |
@@ -493,3 +493,73 @@ Follow me targets 3000 motor units; TURN uses 6000 units/s acceleration,
 reaching that target from rest in about 500 ms.
 The old BUMP/BKEEP commands and accelerometer nudge implementation are removed.
 Edge detection, Button C, STOP, calibration and the UART lease still apply.
+
+### Desk movement minimum, 2026-10-07
+
+All active UART movement targets preserve zero and raise smaller nonzero values
+to magnitude 3000, keeping their sign. This covers DRIVE, TURN, SAFE and gyro
+turns. Larger targets retain their existing limits. Acceleration and braking
+outputs can still pass through values below 3000; emergency Stop remains zero.
+The dashboard speed slider starts at 3000; acceleration is a separate setting.
+
+### Encoder velocity control and ToF diagnostics, 2026-10-07
+
+The XIAO sends normalized signed velocity targets (zero or magnitude 3000-6000),
+not direct motor duty. `encoder_speed.py` runs on the Zumo, measures encoder
+counts/second every 50 ms, and independently adjusts each motor using measured
+feedforward calibration plus proportional/integral correction. Equal targets
+mean equal track velocity, including equal/opposite velocities for pivots.
+The gyro still closes the turn-angle loop; this update does not add gyro heading
+hold for straight travel or global position tracking. Track slip remains possible.
+
+`encoder_calibration.json` stores this robot's raised-track measurements at
+motor powers +/-3000 and +/-6000. Forward and reverse calibration are separate.
+Target 3000 maps to approximately 1579 counts/s; 6000 maps to approximately 3675
+counts/s. No physical mm/s conversion is claimed. Steady motor power remains
+bounded to 3000-6000, which limits speed accuracy when a track already exceeds
+the requested velocity at minimum power. Smooth ramping/braking still passes
+through lower power. Feedback cannot reverse a requested direction or start a
+zero target. Integral state resets on Stop, braking, and direction changes.
+Encoder I/O failure, stale control, implausible counts, sustained wrong direction,
+or a stalled track latch ENCODER and stop both motors. Missing calibration is
+explicitly reported and retains legacy control; malformed calibration or an
+encoder initialization failure does not silently bypass feedback.
+
+STATUS adds ENC (feedback enabled), VL/VR (measured counts/s), RA (actual sensor
+sample age in ms), RS (sensor status), and RAW (unfiltered distance). XIAO adds
+transport age before judging freshness. Distance and validity are read in one
+sensor register transaction. Invalid readings remain unavailable, never clear.
+The immediate obstacle guard is not delayed by a smoothing filter.
+
+The user-supervised raised-track baseline at power 3000 was 1540/1294 counts/s
+(left/right). With feedback, final-second averages were 1689/1651 at target 3000,
+-1664/-1616 at -3000, and 2338/2365 at 4000: about 1-3% mismatch. These bench
+measurements do not establish loaded desk trajectory or braking distance.
+
+
+## Persistent autonomous motion, 2026-10-07
+
+The current default controller remains MicroPython. `motion_jobs.py` adds
+boot/session identities, CRC-protected commands, monotonic job/heartbeat IDs,
+retained completion events, local deadlines, straight-drive gyro correction,
+ToF approach braking and encoder-confirmed rest. `main.py` schedules a 5 ms
+control period when work fits and feeds a hardware watchdog after each completed
+tick. The watchdog is disabled only after motors are off when entering USB
+maintenance. No job resumes after Stop, lease expiry, fault or restart.
+
+Install `motion_jobs.py`, `uart_control.py`, `main.py`, `digit_face_engine.py`
+and `digit_display_lcd.py` together with the existing calibrated encoder and
+gyro modules. Pair them with the matching XIAO application. The LCD and face
+renderer now work in bounded cooperative slices while motors move; shared SPI
+pins are released between slices. SCENE acceptance and first-frame visibility
+are separate acknowledgements.
+
+A 50 mm job brakes before the wall using recent measured ToF closing speed.
+One range discontinuity cannot alone establish closing speed. Completion needs
+encoder-confirmed rest and range within the target arrival band; a conservative
+short stop can continue the same bounded job. It does not claim physically
+calibrated millimetres/second or guarantee exactly 50 mm clearance. Current
+encoder calibration remains the prior raised-track calibration.
+
+See [the current protocol](../docs/TWO_BRAIN_PROTOCOL.md) for commands and limits,
+and [acceptance stages](../docs/TWO_BRAIN_ACCEPTANCE.md) before physical use.

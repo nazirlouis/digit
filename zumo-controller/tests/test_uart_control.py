@@ -293,7 +293,7 @@ class UARTControlTests(unittest.TestCase):
         self.advance(240)
         for name in EXPRESSIONS:
             self.assertEqual(self.command("3 FACE " + name.upper()), "3 ERR MOVING")
-            self.assertEqual(self.motors.speeds, (700, 700))
+            self.assertEqual(self.motors.speeds, (720, 720))
         self.assertEqual(self.face.actions, [])
 
     def test_xiao_can_start_long_after_zumo(self):
@@ -313,10 +313,25 @@ class UARTControlTests(unittest.TestCase):
         self.advance(100, "2 DRIVE 4000 -2000 3000")
         self.assertEqual(self.motors.speeds, (300, -300))
         self.advance(900, "2 DRIVE 4000 -2000 3000")
-        self.assertEqual(self.motors.speeds, (3000, -2000))
+        self.assertEqual(self.motors.speeds, (3000, -3000))
         self.advance(500, "2 DRIVE 4000 -2000 3000")
-        self.assertEqual(self.motors.speeds, (4000, -2000))
-        self.assertIn("L=4000 R=-2000", self.command("3 STATUS"))
+        self.assertEqual(self.motors.speeds, (4000, -3000))
+        self.assertIn("L=4000 R=-3000", self.command("3 STATUS"))
+
+    def test_minimum_target_preserves_sign_zero_and_higher_speeds(self):
+        self.calibrate()
+        for requested, expected in ((1, 3000), (2999, 3000), (3000, 3000),
+                                    (4000, 4000), (-1, -3000),
+                                    (-2999, -3000), (-4000, -4000), (0, 0)):
+            with self.subTest(requested=requested):
+                self.command("2 STOP")
+                self.assertEqual(self.command("3 DRIVE {} 0".format(requested)), "3 OK DRIVE")
+                self.assertEqual((self.control.target_left, self.control.target_right), (expected, 0))
+                self.assertEqual(self.motors.speeds, (0, 0))
+        self.command("4 TURN -1")
+        self.assertEqual((self.control.target_left, self.control.target_right), (-3000, 3000))
+        self.command("5 STOP")
+        self.assertEqual((self.control.target_left, self.control.target_right), (0, 0))
 
     def test_acceleration_validation_and_live_change(self):
         self.calibrate()
@@ -342,10 +357,10 @@ class UARTControlTests(unittest.TestCase):
         self.command("3 DRIVE 500 500")
         self.assertEqual(self.motors.speeds, (1500, 1500))
         self.advance(100)
-        self.assertEqual(self.motors.speeds, (500, 500))
+        self.assertEqual(self.motors.speeds, (1800, 1800))
         self.command("4 DRIVE -2000 -2000")
-        self.assertEqual(self.motors.speeds, (500, 500))
-        self.advance(45)
+        self.assertEqual(self.motors.speeds, (1800, 1800))
+        self.advance(150)
         self.assertEqual(self.motors.speeds, (0, 0))
         self.advance(100)
         self.assertEqual(self.motors.speeds, (-300, -300))
@@ -458,7 +473,7 @@ class UARTControlTests(unittest.TestCase):
         self.control.tick()
         self.assertEqual(self.face.actions, [])
         self.assertEqual(self.command("7 FACE HAPPY"), "7 ERR MOVING")
-        self.assertEqual(self.motors.speeds, (700, 700))
+        self.assertEqual(self.motors.speeds, (900, 900))
         self.command("8 STOP")
         self.b.event = True
         self.control.tick()

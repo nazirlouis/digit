@@ -1,6 +1,8 @@
 #include "zumo_link.h"
 
 #include <cstring>
+#include <algorithm>
+#include <cstdlib>
 
 namespace {
 
@@ -14,6 +16,12 @@ constexpr uint32_t kDrivePeriodMs = 100;
 constexpr uint32_t kBrowserLeaseMs = 250;
 constexpr uint32_t kStatusPeriodMs = 100;
 constexpr uint32_t kLinkTimeoutMs = 2000;
+constexpr int kMinimumMovementSpeed = 3000;
+int movementTarget(int speed) {
+  if (speed > 0 && speed < kMinimumMovementSpeed) return kMinimumMovementSpeed;
+  if (speed < 0 && speed > -kMinimumMovementSpeed) return -kMinimumMovementSpeed;
+  return speed;
+}
 constexpr const char* kFaceNames[] = {
     "NEUTRAL", "HAPPY", "SAD", "MAD", "SERIOUS", "CURIOUS", "SURPRISED",
     "SLEEPING", "CONFUSED", "SLEEPY", "EXCITED", "CRYING", "LOVE"};
@@ -26,8 +34,16 @@ int faceIndex(const char* name) {
   return 0;
 }
 
-zumo_link::Status status = {false, false, false, false, 0, 0, -1, 0,
-                            "NONE", "NONE", "NONE", "NONE", false, false, 0, "NONE", false, false, false, -1, 0, false, false, false, false, false, "NONE", UINT32_MAX, false, false, false, 0};
+zumo_link::Status status = [] {
+  zumo_link::Status value{};
+  value.batteryMillivolts = value.distanceMm = value.rawDistanceMm = value.rangeStatus = -1;
+  value.rangeAgeMs = value.motionRangeAgeMs = UINT32_MAX;
+  strcpy(value.fault, "NONE"); strcpy(value.lastError, "NONE");
+  strcpy(value.ledResult, "NONE"); strcpy(value.wakeResult, "NONE");
+  strcpy(value.lookResult, "NONE"); strcpy(value.sceneResult, "NONE");
+  strcpy(value.motionState, "DISARMED"); strcpy(value.motionResult, "NONE");
+  return value;
+}();
 int desiredLeft = 0;
 int desiredRight = 0;
 int desiredAcceleration = 6000;
@@ -61,17 +77,138 @@ uint32_t lookStarted = 0, lastKeepSent = 0;
 uint32_t lastBrowserDrive = 0;
 uint32_t lastReply = 0;
 uint32_t lastRangeReply = 0;
+uint32_t reportedRangeAge = 0;
 uint32_t lastDriveSent = 0;
 uint32_t lastStatusSent = 0;
 uint16_t nextId = 1;
 uint16_t calibrationId = 0;
-char receiveLine[192];
+char receiveLine[768];
 size_t received = 0;
 bool dropping = false;
 
-uint16_t sendPrefix() {
+constexpr uint32_t kSupervisorLeaseMs = 600;
+constexpr uint32_t kMotionRetryMs = 180;
+uint32_t motionSession = 0, nextMotionSession = 0, supervisorAt = 0;
+uint32_t motionSentAt = 0, motionQueuedAt = 0, heartbeatAt = 0;
+uint16_t nextMotionJob = 1, pendingMotionJob = 0, ackMotionJob = 0;
+uint32_t driveRevision = 0;
+uint32_t heartbeatCounter = 0;
+bool motionWanted = false, armPending = false;
+char motionPending[128] = {};
+char motionUpdate[128] = {};
+struct MotionWire { uint16_t wire; uint32_t session; uint16_t job; bool heartbeat; };
+MotionWire motionWires[16] = {};
+unsigned motionWireCursor = 0;
+
+uint16_t motionCrc(const char* data, size_t length) {
+  uint16_t crc = 0xffff;
+  for (size_t i = 0; i < length; ++i) {
+    crc ^= static_cast<uint16_t>(static_cast<uint8_t>(data[i])) << 8;
+    for (unsigned bit = 0; bit < 8; ++bit)
+      crc = static_cast<uint16_t>((crc & 0x8000) ? (crc << 1) ^ 0x1021 : crc << 1);
+  }
+  return crc;
+}
+
+bool terminalMotion(const char* value) {
+  return !strcmp(value, "DONE") || !strcmp(value, "FAULT") || !strcmp(value, "DISARMED");
+}
+
+void discardMotion(const char* reason) {
+  motionWanted = armPending = false;
+  motionPending[0] = motionUpdate[0] = 0;
+  pendingMotionJob = ackMotionJob = 0;
+  motionSession = 0;
+  status.motionArmed = status.motionActive = false;
+  snprintf(status.motionState, sizeof(status.motionState), "DISARMED");
+  snprintf(status.motionResult, sizeof(status.motionResult), "%.23s", reason);
+}
+
+void queueMotion(const char* verb, uint16_t job, const char* args = "") {
+  snprintf(motionPending, sizeof(motionPending), "M2 %08lx %lu %u %s%s%s",
+      static_cast<unsigned long>(status.motionBoot), static_cast<unsigned long>(motionSession),
+      job, verb, args[0] ? " " : "", args);
+  pendingMotionJob = job;
+  motionQueuedAt = millis(); motionSentAt = 0;
+}
+
+bool handleMotionLine(const char* line, uint32_t now) {
+  const char* body = strstr(line, " M2 ");
+  if (!body) return false;
+  ++body;
+  const char* checksum = strstr(body, " *");
+  if (!checksum || strlen(checksum + 2) != 4) return true;
+  char* end = nullptr;
+  const unsigned long supplied = strtoul(checksum + 2, &end, 16);
+  if (*end || supplied != motionCrc(body, static_cast<size_t>(checksum-body))) return true;
+  unsigned long boot = 0, session = 0, age = 0;
+  unsigned job = 0;
+  char state[16] = {}, result[24] = {};
+  int distance = -1, heading = 0;
+  if (sscanf(body, "M2 %lx %lu %u %15s %23s %d %d %lu",
+      &boot, &session, &job, state, result, &distance, &heading, &age) != 8 || job > 65535) return true;
+  portENTER_CRITICAL(&stateLock);
+  if (status.motionCapable && boot == status.motionBoot && session > nextMotionSession)
+    nextMotionSession=session;
+  if (status.motionCapable && boot == status.motionBoot && !motionWanted &&
+      strcmp(state,"DISARMED") && strcmp(state,"FAULT") && strcmp(state,"DONE")) {
+    // A restarted XIAO never adopts a movement left over from its prior boot.
+    stopPending=true; brakePending=false;
+  }
+  if (!status.motionCapable || boot != status.motionBoot || !motionWanted || session != motionSession ||
+      (job && job != status.motionJob) || (job == 0 && status.motionJob && !armPending)) {
+    portEXIT_CRITICAL(&stateLock); return true;
+  }
+  // A retry or delayed ACK must never regress a completed job back to RUNNING.
+  if (job && status.motionJob == job && terminalMotion(status.motionState) &&
+      !terminalMotion(state)) { portEXIT_CRITICAL(&stateLock); return true; }
+  lastReply = now;
+  status.connected = true;
+  status.motionSession = session;
+  status.motionTimestampMs = now;
+  status.motionJob = job;
+  status.motionDistanceMm = distance;
+  status.motionHeadingDeciDeg = heading;
+  status.motionRangeAgeMs = age;
+  status.motionSample = job;
+  snprintf(status.motionState, sizeof(status.motionState), "%s", state);
+  snprintf(status.motionResult, sizeof(status.motionResult), "%s", result);
+  status.motionArmed = strcmp(state,"DISARMED") && strcmp(state,"FAULT");
+  status.motionActive = !strcmp(state,"RUNNING") || !strcmp(state,"CALIBRATING") ||
+      !strcmp(state,"BRAKING") || !strcmp(state,"SETTLING");
+  if (!strcmp(state,"DONE")) {
+    motionUpdate[0]=0;
+    // M2 completion certifies encoder-confirmed rest, unlike legacy ARRIVED.
+    status.left=status.right=0;
+    status.statusTimestampMs=now;
+  }
+  const char* diagnostics = strstr(body, " GAP=");
+  if (diagnostics) {
+    unsigned long gap=0, overruns=0, slice=0;
+    if (sscanf(diagnostics, " GAP=%lu OVERRUN=%lu DSUS=%lu TL=%d TR=%d", &gap, &overruns,
+        &slice, &status.targetLeftCps, &status.targetRightCps) >= 3) {
+      status.controlMaxGapMs=gap; status.controlOverruns=overruns; status.displayMaxSliceUs=slice;
+    }
+  }
+  if (job == pendingMotionJob) motionPending[0] = 0;
+  if (!job && status.motionArmed) armPending = false;
+  if (!strcmp(state,"FAULT") || !strcmp(state,"DISARMED")) {
+    ++status.safetyEvents;
+    snprintf(status.lastError, sizeof(status.lastError), "%.23s", result);
+    discardMotion(result);
+  }
+  portEXIT_CRITICAL(&stateLock);
+  return true;
+}
+
+uint16_t reserveWireId() {
   const uint16_t id = nextId;
   nextId = nextId == 65535 ? 1 : nextId + 1;
+  return id;
+}
+
+uint16_t sendPrefix() {
+  const uint16_t id = reserveWireId();
   zumoUart.print(id);
   zumoUart.print(' ');
   return id;
@@ -102,6 +239,7 @@ void finishLook(const char* result, bool sendStop) {
 }
 
 void manualOverride() {
+  if (motionWanted) { discardMotion("CANCELLED"); queueStop(); }
   ++status.controlGeneration;
   status.approachArrived = false;
   scenePending = 0;
@@ -110,6 +248,7 @@ void manualOverride() {
 }
 
 void handleLine(const char* line, uint32_t now) {
+  if (handleMotionLine(line, now)) return;
   unsigned id = 0;
   int ready = 0, left = 0, right = 0, battery = -1, edge = 0, voice = 0;
   char fault[24] = {};
@@ -129,6 +268,47 @@ void handleLine(const char* line, uint32_t now) {
     const char* range = strstr(line, " DIST=");
     if (range) sscanf(range, " DIST=%d RANGE=%d AUTO=%d", &distance, &valid, &capable);
     lastRangeReply = range ? now : 0;
+    unsigned age = 0;
+    const char* ageField = strstr(line, " RA=");
+    if (ageField && sscanf(ageField, " RA=%u", &age) != 1) age = 65535;
+    reportedRangeAge = std::min(age, 65535U);
+    status.rangeStatus = -1;
+    status.rawDistanceMm = distance;
+    const char* diagnostic = strstr(line, " RS=");
+    if (diagnostic) sscanf(diagnostic, " RS=%d RAW=%d", &status.rangeStatus, &status.rawDistanceMm);
+    int encoder = 0;
+    status.encoderLeftCps = status.encoderRightCps = 0;
+    const char* enc = strstr(line, " ENC=");
+    if (enc) sscanf(enc, " ENC=%d VL=%d VR=%d", &encoder, &status.encoderLeftCps, &status.encoderRightCps);
+    status.encoderControl = encoder == 1;
+    const char* loop = strstr(line, " GAP=");
+    if (loop) {
+      unsigned long gap=0, overruns=0, slice=0;
+      if (sscanf(loop," GAP=%lu OVERRUN=%lu DSUS=%lu TL=%d TR=%d",&gap,&overruns,&slice,
+          &status.targetLeftCps,&status.targetRightCps) >= 3) {
+        status.controlMaxGapMs=gap;status.controlOverruns=overruns;status.displayMaxSliceUs=slice;
+      }
+    } else {
+      status.controlMaxGapMs=status.controlOverruns=status.displayMaxSliceUs=0;
+      status.targetLeftCps=status.targetRightCps=0;
+    }
+    const bool capableMotion = strstr(line, " MOTION=1") != nullptr;
+    unsigned long boot = 0;
+    unsigned long sessionFloor = 0;
+    const char* bootField = strstr(line, " BOOT=");
+    if (bootField) sscanf(bootField, " BOOT=%lx", &boot);
+    const char* sessionField = strstr(line, " SESSION=");
+    if (sessionField) sscanf(sessionField," SESSION=%lu",&sessionFloor);
+    if (motionWanted && (!capableMotion || !boot || boot != status.motionBoot)) {
+      discardMotion("PEER_RESTART");
+      ++status.safetyEvents;
+      snprintf(status.lastError, sizeof(status.lastError), "PEER_RESTART");
+      queueStop();
+    }
+    if (boot != status.motionBoot) nextMotionSession=0;
+    nextMotionSession=std::max(nextMotionSession,static_cast<uint32_t>(sessionFloor));
+    status.motionCapable = capableMotion && boot && sessionField;
+    status.motionBoot = boot;
     status.distanceMm = distance;
     status.rangeValid = valid == 1;
     status.actionCapable = capable == 1;
@@ -158,8 +338,10 @@ void handleLine(const char* line, uint32_t now) {
   if (id == sceneId && sceneId) {
     const char* error = strstr(line, " ERR ");
     snprintf(status.sceneResult, sizeof(status.sceneResult), "%s",
-             strstr(line, " OK SCENE") ? "APPLIED" : error ? error + 5 : "BAD_REPLY");
-    sceneId = 0;
+             strstr(line, " OK SCENE_VISIBLE") ? "APPLIED" : strstr(line, " OK SCENE") ? "RENDERING" : error ? error + 5 : "BAD_REPLY");
+    if (!status.motionCapable && !strcmp(status.sceneResult,"RENDERING"))
+      snprintf(status.sceneResult,sizeof(status.sceneResult),"APPLIED");
+    if (strcmp(status.sceneResult,"RENDERING")) sceneId = 0;
   }
   if (id == lookId && lookId != 0) {
     const char* error = strstr(line, " ERR ");
@@ -203,7 +385,8 @@ void handleLine(const char* line, uint32_t now) {
              strcmp(line, "0 EVENT EDGE") == 0 ||
              strcmp(line, "0 EVENT BUTTON_C") == 0 ||
              strcmp(line, "0 EVENT TURN_FAULT") == 0 ||
-             strcmp(line, "0 EVENT SENSOR") == 0) {
+             strcmp(line, "0 EVENT SENSOR") == 0 ||
+             strcmp(line, "0 EVENT ENCODER") == 0) {
     const char* reason = line + strlen("0 EVENT ");
     ++status.safetyEvents;
     status.ready = false;
@@ -211,6 +394,7 @@ void handleLine(const char* line, uint32_t now) {
     status.edge = strcmp(reason, "EDGE") == 0;
     status.left = status.right = 0;
     snprintf(status.fault, sizeof(status.fault), "%.23s", reason);
+    snprintf(status.lastError, sizeof(status.lastError), "%.31s", reason);
     clearDrive();
     finishLook(reason, true);
     queueStop();
@@ -221,16 +405,27 @@ void handleLine(const char* line, uint32_t now) {
     clearDrive();
   } else if (strcmp(line, "0 EVENT TIMEOUT") == 0 ||
              strcmp(line, "0 EVENT OBSTACLE") == 0) {
+    const char* reason = line + strlen("0 EVENT ");
+    snprintf(status.lastError,sizeof(status.lastError),"%.31s",reason);
     ++status.safetyEvents;
     status.left = status.right = 0;
     clearDrive();
-    finishLook("TIMEOUT", true);
+    finishLook(reason, true);
     queueStop();
   } else if (strstr(line, " OK CALIBRATING") != nullptr) {
     status.calibrating = true;
     status.ready = false;
   } else if (strstr(line, " ERR ") != nullptr) {
     const char* reason = strstr(line, " ERR ") + 5;
+    if (!strncmp(reason,"M2_",3)) {
+      bool current = false;
+      for (const auto& wire : motionWires) {
+        if (wire.wire==id && wire.session==motionSession &&
+            (wire.heartbeat || (wire.job==status.motionJob && !terminalMotion(status.motionState)))) current=true;
+      }
+      if (!motionWanted || !current) { portEXIT_CRITICAL(&stateLock); return; }
+      discardMotion(reason); ++status.safetyEvents; queueStop();
+    }
     if (!strcmp(reason,"OBSTACLE") || !strcmp(reason,"RANGE_UNAVAILABLE") || !strcmp(reason,"NOT_READY")) {
       ++status.safetyEvents; clearDrive(); queueStop();
     }
@@ -245,7 +440,7 @@ void handleLine(const char* line, uint32_t now) {
 
 void pollReceive(uint32_t now) {
   // A bound keeps a busy or malformed peer from delaying motor control.
-  for (int count = 0; count < 128 && zumoUart.available(); ++count) {
+  for (int count = 0; count < 512 && zumoUart.available(); ++count) {
     const char character = static_cast<char>(zumoUart.read());
     if (character == '\r') {
       continue;
@@ -278,15 +473,111 @@ void begin() {
 }
 
 Status snapshot() {
-  const uint32_t now = millis();
   portENTER_CRITICAL(&stateLock);
+  const uint32_t now = millis();
   Status result = status;
   result.replyAgeMs = lastReply == 0 ? UINT32_MAX : now - lastReply;
-  result.rangeAgeMs = lastRangeReply == 0 ? UINT32_MAX : now - lastRangeReply;
+  result.rangeAgeMs = lastRangeReply == 0 ? UINT32_MAX : now - lastRangeReply + reportedRangeAge;
   result.connected = lastReply != 0 && result.replyAgeMs < kLinkTimeoutMs;
   result.manualDriving = driveWanted;
+  if (result.motionTimestampMs && result.motionRangeAgeMs != UINT32_MAX)
+    result.motionRangeAgeMs += now-result.motionTimestampMs;
   portEXIT_CRITICAL(&stateLock);
   return result;
+}
+
+void superviseMotion() {
+  portENTER_CRITICAL(&stateLock);
+  supervisorAt = millis();
+  portEXIT_CRITICAL(&stateLock);
+}
+
+bool armMotion() {
+  portENTER_CRITICAL(&stateLock);
+  const auto now = millis();
+  if (motionWanted) {
+    const bool armed = status.motionArmed && !armPending;
+    portEXIT_CRITICAL(&stateLock); return armed;
+  }
+  const bool allowed = status.motionCapable && status.encoderControl && status.ready &&
+      !status.edge && !strcmp(status.fault,"NONE") && lastReply && now-lastReply < 1000 &&
+      !status.calibrating && !driveWanted && !status.lookActive && !stopPending &&
+      !status.left && !status.right && nextMotionSession != UINT32_MAX && now-supervisorAt < kSupervisorLeaseMs;
+  if (allowed) {
+    motionSession = ++nextMotionSession;
+    if (!motionSession) motionSession = ++nextMotionSession;
+    nextMotionJob = 1; driveRevision = heartbeatCounter = 0;
+    motionWanted = armPending = true;
+    status.motionSession = motionSession;
+    status.motionJob = 0;
+    status.motionArmed = status.motionActive = false;
+    snprintf(status.motionState,sizeof(status.motionState),"ARMING");
+    snprintf(status.motionResult,sizeof(status.motionResult),"NONE");
+    queueMotion("ARM",0);
+  }
+  portEXIT_CRITICAL(&stateLock);
+  return false; // Only the peer's acknowledgement grants autonomous authority.
+}
+
+static uint32_t submitJob(const char* verb, const char* args) {
+  portENTER_CRITICAL(&stateLock);
+  const bool allowed = motionWanted && status.motionArmed && !armPending &&
+      !status.motionActive && !motionPending[0] && !stopPending &&
+      millis()-supervisorAt < kSupervisorLeaseMs && nextMotionJob != 0;
+  const uint16_t job = allowed ? nextMotionJob++ : 0;
+  if (job) {
+    motionUpdate[0]=0;
+    status.motionJob = job; status.motionActive = true;
+    snprintf(status.motionState,sizeof(status.motionState),"SENDING");
+    snprintf(status.motionResult,sizeof(status.motionResult),"NONE");
+    queueMotion(verb,job,args);
+    driveRevision = 0;
+  }
+  portEXIT_CRITICAL(&stateLock);
+  return job;
+}
+
+uint32_t driveJob(int left, int right, int stopMm, uint32_t maxMs) {
+  if (left < 3000 || left > 3200 || right < 3000 || right > 3200 ||
+      (stopMm != 50 && stopMm != 100) || maxMs < 100 || maxMs > 60000) return 0;
+  char args[64];
+  snprintf(args,sizeof(args),"%d %d %d %d %lu",left,right,acceleration(),stopMm,static_cast<unsigned long>(maxMs));
+  return submitJob("DRIVE",args);
+}
+
+uint32_t turnJob(int degrees, uint32_t maxMs) {
+  if (!degrees || degrees < -180 || degrees > 180 || maxMs < 100 || maxMs > 30000) return 0;
+  char args[48];
+  snprintf(args,sizeof(args),"%d %d %lu",degrees,acceleration(),static_cast<unsigned long>(maxMs));
+  return submitJob("TURN",args);
+}
+
+uint32_t measureJob() { return submitJob("MEASURE","2500"); }
+
+bool updateDriveJob(uint32_t job, int left, int right) {
+  if (left < 3000 || left > 3200 || right < 3000 || right > 3200) return false;
+  portENTER_CRITICAL(&stateLock);
+  const bool allowed = motionWanted && status.motionArmed && status.motionActive &&
+      !strcmp(status.motionState,"RUNNING") && job && job==status.motionJob && !stopPending;
+  if (allowed) snprintf(motionUpdate,sizeof(motionUpdate),"M2 %08lx %lu %lu UPDATE %lu %d %d",
+      static_cast<unsigned long>(status.motionBoot),static_cast<unsigned long>(motionSession),
+      static_cast<unsigned long>(job),static_cast<unsigned long>(++driveRevision),left,right);
+  portEXIT_CRITICAL(&stateLock);
+  return allowed;
+}
+
+bool ackMotion(uint32_t job) {
+  portENTER_CRITICAL(&stateLock);
+  const bool allowed = motionWanted && job && job==status.motionJob && terminalMotion(status.motionState);
+  if (allowed) ackMotionJob = static_cast<uint16_t>(job);
+  portEXIT_CRITICAL(&stateLock);
+  return allowed;
+}
+
+void cancelMotion(bool smooth) {
+  // Existing BRAKE/STOP is also an out-of-band protocol cancellation and
+  // disarms the peer. A later movement needs a new ARM session.
+  stop(smooth);
 }
 
 bool drive(int left, int right, int acceleration) {
@@ -294,15 +585,15 @@ bool drive(int left, int right, int acceleration) {
       acceleration < 500 || acceleration > 6000) {
     return false;
   }
-  const uint32_t now = millis();
   portENTER_CRITICAL(&stateLock);
+  const uint32_t now = millis();
   const bool allowed = status.ready && lastReply != 0 &&
                        now - lastReply < kLinkTimeoutMs &&
                        !status.calibrating;
   if (allowed) {
     manualOverride();
-    desiredLeft = left;
-    desiredRight = right;
+    desiredLeft = movementTarget(left);
+    desiredRight = movementTarget(right);
     desiredAcceleration = acceleration;
     configuredAcceleration = acceleration;
     turnWanted = false;
@@ -320,14 +611,14 @@ bool drive(int left, int right, int acceleration) {
 
 bool turn(int speed) {
   if (speed < -6000 || speed > 6000) return false;
-  const uint32_t now = millis();
   portENTER_CRITICAL(&stateLock);
+  const uint32_t now = millis();
   const bool allowed = status.ready && lastReply != 0 &&
                        now - lastReply < kLinkTimeoutMs && !status.calibrating;
   if (allowed) {
     manualOverride();
-    desiredLeft = speed;
-    desiredRight = -speed;
+    desiredLeft = movementTarget(speed);
+    desiredRight = -movementTarget(speed);
     turnWanted = true;
     safeWanted = false;
     facePending = 0;
@@ -357,19 +648,19 @@ void stop(bool smooth) {
 bool safeDrive(int left, int right, int stopDistanceMm) {
   if (left < 0 || left > 3200 || right < 0 || right > 3200) return false;
   if (stopDistanceMm != 50 && stopDistanceMm != 100 && stopDistanceMm != 150) return false;
-  const uint32_t now = millis();
   portENTER_CRITICAL(&stateLock);
+  const uint32_t now = millis();
   const bool allowed = status.ready && !status.edge && !strcmp(status.fault, "NONE") &&
       lastReply && now - lastReply < 500 && status.actionCapable &&
       status.rangeValid && status.autoRampCapable && !status.calibrating && !status.lookActive &&
-      lastRangeReply && now - lastRangeReply < 250 &&
+      lastRangeReply && now - lastRangeReply + reportedRangeAge < 250 &&
       (stopDistanceMm != 100 || status.closeApproachCapable) &&
       (stopDistanceMm != 50 || status.chaseCloseCapable) && !status.approachArrived &&
       !stopPending && !facePending && !scenePending && !sceneId &&
       (left + right <= 0 || status.distanceMm > (stopDistanceMm < 150 ? stopDistanceMm - 20 : 150));
   if (allowed) {
-      desiredLeft = left;
-    desiredRight = right;
+    desiredLeft = movementTarget(left);
+    desiredRight = movementTarget(right);
     desiredAcceleration = configuredAcceleration;
     desiredStopMm = stopDistanceMm;
     driveWanted = left || right;
@@ -383,8 +674,8 @@ bool safeDrive(int left, int right, int stopDistanceMm) {
 }
 
 bool calibrate() {
-  const uint32_t now = millis();
   portENTER_CRITICAL(&stateLock);
+  const uint32_t now = millis();
   const bool allowed = lastReply != 0 && now - lastReply < kLinkTimeoutMs &&
                        !driveWanted && !status.calibrating;
   if (allowed) {
@@ -404,8 +695,8 @@ bool isFaceName(const char* name) {
 }
 
 bool wake() {
-  const uint32_t now = millis();
   portENTER_CRITICAL(&stateLock);
+  const uint32_t now = millis();
   const bool connected = lastReply != 0 && now - lastReply < kLinkTimeoutMs;
   const bool allowed = connected && !driveWanted && !status.lookActive && !status.calibrating &&
                        !calibrationPending && !stopPending && !facePending && !ledPending &&
@@ -419,8 +710,8 @@ bool wake() {
 
 static bool requestTurn(int degrees, uint32_t expectedControlGeneration, bool wiggle) {
   if (degrees < -180 || degrees > 180) return false;
-  const uint32_t now = millis();
   portENTER_CRITICAL(&stateLock);
+  const uint32_t now = millis();
   const bool allowed = status.controlGeneration == expectedControlGeneration &&
       lastReply && now - lastReply < kLinkTimeoutMs && status.ready && status.voiceCapable && status.rampedLookCapable &&
       (!wiggle || status.wiggleCapable) &&
@@ -457,8 +748,8 @@ bool scene(const char* expression, const char* label) {
   const int face = faceIndex(expression);
   if (!face || !label || !label[0] || strlen(label) >= sizeof(sceneLabel)) return false;
   for (const char* p = label; *p; ++p) if ((*p < 'A' || *p > 'Z') && *p != '_') return false;
-  const uint32_t now = millis();
   portENTER_CRITICAL(&stateLock);
+  const uint32_t now = millis();
   const bool allowed = lastReply && now - lastReply < 500 && status.sceneCapable &&
       !status.left && !status.right && !status.lookActive && !driveWanted && !stopPending &&
       !status.calibrating && !scenePending && !sceneId && !facePending && !wakePending && !wakeCommandId;
@@ -494,8 +785,8 @@ void cancelLook() {
 bool face(const char* name) {
   const int index = faceIndex(name);
   if (index == 0) return false;
-  const uint32_t now = millis();
   portENTER_CRITICAL(&stateLock);
+  const uint32_t now = millis();
   const bool allowed = lastReply != 0 && now - lastReply < kLinkTimeoutMs &&
                        !driveWanted && !status.lookActive && !status.calibrating &&
                        status.left == 0 && status.right == 0;
@@ -511,8 +802,8 @@ bool face(const char* name) {
 bool led(int target, uint8_t red, uint8_t green, uint8_t blue,
          uint8_t brightness) {
   if (target < -1 || target > 5 || brightness > 31) return false;
-  const uint32_t now = millis();
   portENTER_CRITICAL(&stateLock);
+  const uint32_t now = millis();
   const bool allowed = lastReply != 0 && now - lastReply < kLinkTimeoutMs;
   if (allowed) {
     ledTarget = target;
@@ -531,8 +822,7 @@ bool led(int target, uint8_t red, uint8_t green, uint8_t blue,
 }
 
 void poll() {
-  const uint32_t now = millis();
-  pollReceive(now);
+  pollReceive(millis());
 
   bool sendStop = false, sendBrake = false, sendCalibration = false;
   int sendFace = 0;
@@ -550,11 +840,18 @@ void poll() {
   bool sendDrive = false;
   bool sendTurn = false;
   bool sendSafe = false;
+  char sendMotion[128] = {}, sendHeartbeat[80] = {};
+  uint32_t dispatchGeneration = 0, dispatchSession = 0;
+  uint16_t dispatchJob = 0;
   int left = 0, right = 0, acceleration = 6000, stopDistanceMm = 150;
   portENTER_CRITICAL(&stateLock);
+  // Producers can renew leases or queue work while this task receives UART.
+  // Read time under the same lock as those timestamps: an older `now` minus a
+  // newly published timestamp otherwise wraps and falsely expires the job.
+  const uint32_t now = millis();
   const bool connected = lastReply != 0 && now - lastReply < kLinkTimeoutMs;
   const uint32_t turnDeadline = lookWiggle ? 5000U :
-      6500U + 2U * ((2400000U + lookAcceleration - 1) / lookAcceleration);
+      6500U + 2U * ((3000000U + lookAcceleration - 1) / lookAcceleration);
   if (status.lookActive && (!connected || !status.ready || status.calibrating ||
       driveWanted || stopPending || now - lookStarted > turnDeadline ||
       (!strcmp(status.lookResult, "SENDING") && now - lookStarted > 1000))) {
@@ -564,7 +861,7 @@ void poll() {
     wakeCommandId = 0;
     snprintf(status.wakeResult, sizeof(status.wakeResult), "NO_REPLY");
   }
-  if (sceneId && now - sceneSentAt >= 1000) {
+  if (sceneId && now - sceneSentAt >= (status.motionCapable ? 3000U : 1000U)) {
     sceneId = 0;
     snprintf(status.sceneResult, sizeof(status.sceneResult), "NO_REPLY");
   }
@@ -578,6 +875,7 @@ void poll() {
     if (!ledPending) snprintf(status.ledResult, sizeof(status.ledResult), "NO_REPLY");
   }
   if (!connected) {
+    if (motionWanted) discardMotion("DISCONNECTED");
     status.connected = false;
     status.ready = false;
     status.calibrating = false;
@@ -595,11 +893,32 @@ void poll() {
     clearDrive();
     queueStop();
   }
+  if (motionWanted && (now-supervisorAt >= kSupervisorLeaseMs ||
+      (motionPending[0] && now-motionQueuedAt >= 1500))) {
+    const char* reason = now-supervisorAt >= kSupervisorLeaseMs ? "SUPERVISOR_TIMEOUT" : "JOB_ACK_TIMEOUT";
+    discardMotion(reason);
+    snprintf(status.lastError,sizeof(status.lastError),"%s",reason);
+    ++status.safetyEvents;
+    queueStop();
+  }
   if (stopPending) {
     sendStop = true;
     sendBrake = brakePending && connected && status.ready && status.brakeCapable;
     stopPending = false;
     brakePending = false;
+  } else if (motionWanted && ackMotionJob) {
+    dispatchJob=ackMotionJob;
+    snprintf(sendMotion,sizeof(sendMotion),"M2 %08lx %lu %u ACK",
+        static_cast<unsigned long>(status.motionBoot),static_cast<unsigned long>(motionSession),ackMotionJob);
+    ackMotionJob=0;
+  } else if (motionWanted && motionPending[0] && (!motionSentAt || now-motionSentAt >= kMotionRetryMs)) {
+    dispatchJob=pendingMotionJob;
+    snprintf(sendMotion,sizeof(sendMotion),"%s",motionPending);
+    motionSentAt=now;
+  } else if (motionWanted && motionUpdate[0]) {
+    dispatchJob=static_cast<uint16_t>(status.motionJob);
+    snprintf(sendMotion,sizeof(sendMotion),"%s",motionUpdate);
+    motionUpdate[0]=0;
   } else if (calibrationPending) {
     sendCalibration = true;
     calibrationPending = false;
@@ -642,50 +961,69 @@ void poll() {
     stopDistanceMm = desiredStopMm;
     lastDriveSent = now;
   }
+  if (!sendStop && motionWanted && !armPending && now-heartbeatAt >= 100) {
+    snprintf(sendHeartbeat,sizeof(sendHeartbeat),"M2 %08lx %lu 0 HB %lu",
+        static_cast<unsigned long>(status.motionBoot),static_cast<unsigned long>(motionSession),
+        static_cast<unsigned long>(++heartbeatCounter));
+    heartbeatAt=now;
+  }
+  dispatchGeneration=status.controlGeneration;
+  dispatchSession=motionSession;
   portEXIT_CRITICAL(&stateLock);
 
+  // All UART writes belong to this task. Revalidate selected work after the
+  // lock is released, then publish its reply identity under the lock before
+  // transmitting. Stop invalidates generations and sessions immediately.
+  portENTER_CRITICAL(&stateLock);
+  if (dispatchGeneration!=status.controlGeneration) {
+    sendCalibration=sendLed=sendWake=sendLook=sendDrive=false;
+    sendFace=sendScene=0; keepId=0;
+    sendMotion[0]=sendHeartbeat[0]=0;
+  }
+  if (!motionWanted || dispatchSession!=motionSession)
+    sendMotion[0]=sendHeartbeat[0]=0;
+  const bool hasPrimary=sendStop || sendMotion[0] || sendCalibration || sendFace || sendScene ||
+      sendLed || sendWake || sendLook || keepId || sendDrive;
+  const uint16_t wire=hasPrimary ? reserveWireId() : 0;
+  if (sendCalibration) calibrationId=wire;
+  if (sendScene) { sceneId=wire; sceneSentAt=now; }
+  if (sendLed) { ledCommandId=wire; ledSentAt=now; }
+  if (sendWake) { wakeCommandId=wire; wakeSentAt=now; }
+  if (sendLook && status.lookActive) { lookId=wire; lastKeepSent=now; }
+  if (sendMotion[0]) motionWires[motionWireCursor++%16]={wire,dispatchSession,dispatchJob,false};
+  const uint16_t heartbeatWire=sendHeartbeat[0] ? reserveWireId() : 0;
+  if (heartbeatWire) motionWires[motionWireCursor++%16]={heartbeatWire,dispatchSession,0,true};
+  portEXIT_CRITICAL(&stateLock);
+  if (hasPrimary) { zumoUart.print(wire); zumoUart.print(' '); }
   if (sendStop) {
-    sendPrefix();
     zumoUart.println(sendBrake ? "BRAKE" : "STOP");
+  } else if (sendMotion[0]) {
+    zumoUart.printf("%s *%04X\n",sendMotion,motionCrc(sendMotion,strlen(sendMotion)));
   } else if (sendCalibration) {
-    calibrationId = sendPrefix();
     zumoUart.println("CALIBRATE");
   } else if (sendFace) {
-    sendPrefix();
     zumoUart.printf("FACE %s\n", kFaceNames[sendFace - 1]);
   } else if (sendScene) {
-    sceneId = sendPrefix();
-    sceneSentAt = now;
     zumoUart.printf("SCENE %s %s\n", kFaceNames[sendScene - 1], label);
   } else if (sendLed) {
-    ledCommandId = sendPrefix();
-    ledSentAt = now;
     if (target == -1) zumoUart.printf("LED ALL %u %u %u %u\n", red, green, blue, brightness);
     else zumoUart.printf("LED %d %u %u %u %u\n", target, red, green, blue, brightness);
   } else if (sendWake) {
-    const uint16_t id = sendPrefix();
-    portENTER_CRITICAL(&stateLock);
-    wakeCommandId = id;
-    wakeSentAt = now;
-    portEXIT_CRITICAL(&stateLock);
     zumoUart.println("WAKE");
   } else if (sendLook) {
-    const uint16_t id = sendPrefix();
-    portENTER_CRITICAL(&stateLock);
-    // A concurrent manual request will queue STOP immediately after this line.
-    if (status.lookActive) { lookId = id; lastKeepSent = now; }
-    portEXIT_CRITICAL(&stateLock);
     if (sendWiggle) zumoUart.println(sendExcited ? "WIGGLE EXCITED" : "WIGGLE");
     else zumoUart.printf("LOOK %d %d\n", angle, acceleration);
   } else if (keepId) {
-    sendPrefix();
     zumoUart.printf("KEEP %u\n", keepId);
   } else if (sendDrive) {
-    sendPrefix();
     if (sendTurn) zumoUart.printf("TURN %d\n", left);
     else if (sendSafe && stopDistanceMm < 150) zumoUart.printf("SAFE %d %d %d %d\n", left, right, acceleration, stopDistanceMm);
     else if (sendSafe) zumoUart.printf("SAFE %d %d %d\n", left, right, acceleration);
     else zumoUart.printf("DRIVE %d %d %d\n", left, right, acceleration);
+  }
+  if (sendHeartbeat[0]) {
+    zumoUart.print(heartbeatWire); zumoUart.print(' ');
+    zumoUart.printf("%s *%04X\n",sendHeartbeat,motionCrc(sendHeartbeat,strlen(sendHeartbeat)));
   }
   if (now - lastStatusSent >= kStatusPeriodMs) {
     lastStatusSent = now;

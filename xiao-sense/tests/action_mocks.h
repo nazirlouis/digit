@@ -100,9 +100,17 @@ struct Status {
   bool voiceCapable=true,rangeValid=true,lookActive=false,manualDriving=false,rampedLookCapable=true;
   bool wiggleCapable=true,sceneCapable=true,autoRampCapable=true,closeApproachCapable=true,approachArrived=false,chaseCloseCapable=true;
   int left=0,right=0,distanceMm=900;
+  int rawDistanceMm=900,rangeStatus=0,encoderLeftCps=0,encoderRightCps=0;
+  bool encoderControl=true;
+  bool motionCapable=true,motionArmed=false,motionActive=false;
+  uint32_t motionBoot=1,motionSession=0,motionJob=0,motionRangeAgeMs=0,motionSample=0,motionTimestampMs=0;
+  int motionDistanceMm=-1,motionHeadingDeciDeg=0;
+  char motionState[16]="DISARMED",motionResult[24]="NONE";
+  uint32_t controlMaxGapMs=0,controlOverruns=0,displayMaxSliceUs=0;
+  int targetLeftCps=0,targetRightCps=0;
   uint32_t controlGeneration=0,replyAgeMs=0,safetyEvents=0,rangeAgeMs=0;
   uint32_t statusTimestampMs=0;
-  char fault[24]="NONE",lookResult[24]="NONE",sceneResult[24]="NONE";
+  char fault[24]="NONE",lookResult[24]="NONE",sceneResult[24]="NONE",lastError[32]="NONE";
 };
 inline Status state;
 inline unsigned motions=0;
@@ -114,8 +122,12 @@ inline int lastStopDistance=150;
 inline bool gesture=false,excitedGesture=false,sceneAvailable=true,sceneAcknowledged=true;
 inline std::vector<int> angles;
 inline std::vector<std::string> scenes;
+inline int motionKind=0;
+inline uint32_t motionAt=0,motionDeadline=0,motionLastSample=0,supervisorAt=0;
+inline unsigned nextMotionJob=0,driveUpdates=0,measureJobs=0;
+inline int motionSamples[3]={},motionSampleCount=0,pendingAngle=0;
 inline Status snapshot() { return state; }
-inline void stop(bool smooth=false) { lastStopSmooth=smooth;++stops;state.approachArrived=false;state.left=state.right=0;state.lookActive=state.manualDriving=false;++state.controlGeneration; }
+inline void stop(bool smooth=false) { lastStopSmooth=smooth;++stops;state.approachArrived=false;state.left=state.right=0;state.lookActive=state.manualDriving=false;state.motionActive=state.motionArmed=false;motionKind=0;strcpy(state.motionState,"DISARMED");++state.controlGeneration; }
 inline bool safeDrive(int left,int right,int stopMm=150) { lastStopDistance=stopMm;state.left=left;state.right=right;++motions;return true; }
 inline bool turn(int speed) { state.left=speed;state.right=-speed;++motions;return state.ready; }
 inline bool look(int angle,uint32_t) { gesture=false;angles.push_back(angle);state.lookActive=true;turnAt=nowMs;std::strcpy(state.lookResult,"TURNING");++motions;return true; }
@@ -124,4 +136,28 @@ inline bool face(const char*) { return true; }
 inline void cancelLook() { stop(); }
 inline bool scene(const char* face,const char* label) { if(!sceneAvailable)return false;scenes.push_back(std::string(face)+" "+label);std::strcpy(state.sceneResult,sceneAcknowledged?"APPLIED":"SENDING");return true; }
 inline int acceleration() { return selectedAcceleration; }
+inline void superviseMotion() { supervisorAt=nowMs; }
+inline bool armMotion() { state.motionArmed=state.ready && state.motionCapable && state.encoderControl;return state.motionArmed; }
+inline uint32_t startJob(int kind,uint32_t deadline) {
+  if(!state.motionArmed || state.motionActive)return 0;
+  motionKind=kind; motionAt=nowMs; motionDeadline=deadline;
+  state.motionActive=true;state.motionJob=++nextMotionJob;
+  strcpy(state.motionState,"RUNNING");strcpy(state.motionResult,"ACCEPTED");
+  return state.motionJob;
+}
+inline uint32_t driveJob(int left,int right,int stopMm,uint32_t maxMs=30000) {
+  auto job=startJob(1,maxMs);if(job){state.left=left;state.right=right;lastStopDistance=stopMm;++motions;}return job;
+}
+inline uint32_t turnJob(int angle,uint32_t maxMs=20000) {
+  auto job=startJob(2,maxMs);if(job){pendingAngle=angle;look(angle,state.controlGeneration);}return job;
+}
+inline uint32_t measureJob() {
+  auto job=startJob(3,2500);if(job){++measureJobs;motionLastSample=0;motionSampleCount=0;}return job;
+}
+inline bool updateDriveJob(uint32_t job,int left,int right) {
+  if(job!=state.motionJob || motionKind!=1)return false;
+  state.left=left;state.right=right;++driveUpdates;return true;
+}
+inline bool ackMotion(uint32_t job) {return job==state.motionJob;}
+inline void cancelMotion(bool smooth=true) {stop(smooth);}
 }

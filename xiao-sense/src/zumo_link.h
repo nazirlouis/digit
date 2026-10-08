@@ -37,11 +37,44 @@ struct Status {
   bool approachArrived;
   bool chaseCloseCapable;
   uint32_t statusTimestampMs;
+  int rangeStatus;
+  int rawDistanceMm;
+  bool encoderControl;
+  int encoderLeftCps;
+  int encoderRightCps;
+  bool motionCapable;
+  bool motionArmed;
+  bool motionActive;
+  uint32_t motionBoot;
+  uint32_t motionSession;
+  uint32_t motionJob;
+  uint32_t motionRangeAgeMs;
+  uint32_t motionSample;
+  uint32_t motionTimestampMs;
+  int motionDistanceMm;
+  int motionHeadingDeciDeg;
+  char motionState[16];
+  char motionResult[24];
+  uint32_t controlMaxGapMs;
+  uint32_t controlOverruns;
+  uint32_t displayMaxSliceUs;
+  int targetLeftCps;
+  int targetRightCps;
 };
 
 void begin();
 void poll();
 Status snapshot();
+// Only the mission supervisor refreshes this lease. The UART task cannot
+// keep a stalled mission alive just by continuing to send heartbeats.
+void superviseMotion();
+bool armMotion();
+uint32_t driveJob(int left, int right, int stopDistanceMm, uint32_t maxMs = 30000);
+uint32_t turnJob(int degrees, uint32_t maxMs = 20000);
+uint32_t measureJob();
+bool updateDriveJob(uint32_t job, int left, int right);
+bool ackMotion(uint32_t job);
+void cancelMotion(bool smooth = true);
 bool drive(int left, int right, int acceleration = 6000);
 bool turn(int speed);
 bool safeDrive(int left, int right, int stopDistanceMm = 150);

@@ -43,6 +43,21 @@ class Display(framebuf.FrameBuffer):
         super().__init__(self.buffer, self.width, self.height, framebuf.MONO_HLSB)
         self._previous = bytearray(len(self.buffer))
         self._valid = False
+        # Cooperative mode snapshots the newest complete drawing, then scans
+        # and transfers a bounded number of logical rows on each service call.
+        # Never keep SPI/CS owned while returning to motor or button polling.
+        self.cooperative = False
+        self._queued = bytearray(len(self.buffer))
+        self._row_valid = bytearray(self.height)
+        self._row_foreground = [None] * self.height
+        self._row_background = [None] * self.height
+        self._scan_row = 0
+        self._scan_remaining = 0
+        self.frame_pending = False
+        self.frame_id = 0
+        self.completed_frame_id = 0
+        self.last_slice_us = 0
+        self.max_slice_us = 0
         # Two scaled physical rows are prepared together and sent in one write.
         self._rows = bytearray(self.width * 8)
         self._rows_view = memoryview(self._rows)
@@ -53,6 +68,12 @@ class Display(framebuf.FrameBuffer):
         self._lookup = tuple(bytearray(16) for _ in range(16))
         self._foreground = None
         self._background = None
+        self._next_foreground = foreground
+        self._next_background = background
+        # Reuse command/window storage during the safety-sensitive service
+        # path. Initialization and the legacy synchronous API remain simple.
+        self._command_byte = bytearray(1)
+        self._window_bytes = bytearray(4)
         self.last_show_us = 0
         self.last_rows_sent = 0
         self.last_bytes_sent = 0
@@ -95,7 +116,8 @@ class Display(framebuf.FrameBuffer):
 
     def _command(self, command, data=None):
         self.dc(0)
-        self.spi.write(bytes((command,)))
+        self._command_byte[0] = command
+        self.spi.write(self._command_byte)
         if data is not None:
             self.dc(1)
             self.spi.write(data)
@@ -137,16 +159,30 @@ class Display(framebuf.FrameBuffer):
         # Inclusive endpoints in landscape; 240x280 glass in 240x320 GRAM.
         x0 += 20
         x1 += 20
-        self._command(0x2A, bytes((x0 >> 8, x0 & 255, x1 >> 8, x1 & 255)))
-        self._command(0x2B, bytes((y0 >> 8, y0 & 255, y1 >> 8, y1 & 255)))
+        data = self._window_bytes
+        data[0], data[1], data[2], data[3] = x0 >> 8, x0 & 255, x1 >> 8, x1 & 255
+        self._command(0x2A, data)
+        data[0], data[1], data[2], data[3] = y0 >> 8, y0 & 255, y1 >> 8, y1 & 255
+        self._command(0x2B, data)
         self._command(0x2C)
         self.dc(1)
 
     def set_colors(self, foreground=0xFFFF, background=0x0000):
         """Change RGB565 colors in place; no new lookup buffers or tuple."""
+        self._next_foreground, self._next_background = foreground, background
+        if self.cooperative:
+            # A palette belongs to a submitted complete frame, never to a
+            # half-rasterized future frame while an older one is in flight.
+            return
+        self._apply_colors(foreground, background)
+
+    def _apply_colors(self, foreground, background):
         if foreground == self._foreground and background == self._background:
             return
         self._valid = False
+        if not self.cooperative:
+            for row in range(self.height):
+                self._row_valid[row] = 0
         fg_hi, fg_lo = foreground >> 8, foreground & 255
         bg_hi, bg_lo = background >> 8, background & 255
         # MONO_HLSB is most-significant bit first. Each source pixel expands
@@ -169,6 +205,8 @@ class Display(framebuf.FrameBuffer):
         """Clear the whole physical panel, including the canvas margins."""
         row = bytes((color >> 8, color & 255)) * self.panel_width
         self._valid = False
+        for y in range(self.height):
+            self._row_valid[y] = 0
         try:
             self._begin()
             self._window(0, 0, self.panel_width - 1, self.panel_height - 1)
@@ -204,6 +242,8 @@ class Display(framebuf.FrameBuffer):
 
     def show(self, full_update=False):
         """Send the byte-aligned rectangle containing all changed pixels."""
+        if self.cooperative:
+            return self.queue_frame(full_update)
         started = time.ticks_us()
         buf = self.buffer
         previous = self._previous
@@ -267,3 +307,116 @@ class Display(framebuf.FrameBuffer):
             finally:
                 self._end()
         self.last_show_us = time.ticks_diff(time.ticks_us(), started)
+
+    def enable_cooperative(self):
+        """Make show() enqueue only; callers must service flush() regularly."""
+        if self.cooperative:
+            return
+        self.cooperative = True
+        for row in range(self.height):
+            self._row_valid[row] = 1 if self._valid else 0
+            self._row_foreground[row] = self._foreground
+            self._row_background[row] = self._background
+
+    def queue_frame(self, full_update=False):
+        """Replace pending pixels atomically with the newest complete canvas.
+
+        The queued buffer is independent of subsequent drawing. Every row is
+        compared with pixels actually sent, so replacing an unfinished frame
+        cannot lose erasures. Palette changes repaint only affected pixels;
+        changing eye color must not retransmit unchanged black margins.
+        """
+        self._queued[:] = self.buffer
+        self._apply_colors(self._next_foreground, self._next_background)
+        if full_update:
+            for row in range(self.height):
+                self._row_valid[row] = 0
+        self.frame_id += 1
+        if not self.frame_pending:
+            self._scan_row = 0
+        self.frame_pending = True
+        # Keep advancing around the panel if producers replace frames faster
+        # than SPI can flush them. Restarting at row zero would starve the
+        # lower eyes/caption forever. One full sweep validates this revision.
+        self._scan_remaining = self.height
+        return self.frame_id
+
+    def cancel_frame(self):
+        """Discard pending work without claiming unsent pixels were displayed."""
+        self.frame_pending = False
+
+    def flush(self, max_rows=2, max_us=1500):
+        """Service at most max_rows logical rows, releasing shared SPI always.
+
+        max_us is checked between rows, not a hard real-time deadline: a
+        single row conversion/write cannot be preempted in MicroPython.
+        Even unchanged row scans count toward the work limit.
+        """
+        started = time.ticks_us()
+        self.last_rows_sent = 0
+        self.last_bytes_sent = 0
+        serviced = 0
+        bus_owned = False
+        try:
+            while self.frame_pending and serviced < max_rows:
+                if serviced and time.ticks_diff(time.ticks_us(), started) >= max_us:
+                    break
+                y = self._scan_row
+                offset = y * self.row_bytes
+                first, last = self.row_bytes, -1
+                foreground_changed = self._row_foreground[y] != self._foreground
+                background_changed = self._row_background[y] != self._background
+                for x in range(self.row_bytes):
+                    previous = self._previous[offset+x]
+                    if (not self._row_valid[y] or self._queued[offset+x] != previous or
+                            (foreground_changed and previous != 0) or
+                            (background_changed and previous != 255)):
+                        if first == self.row_bytes:
+                            first = x
+                        last = x
+                if last >= first:
+                    count = last - first + 1
+                    length = count * 32
+                    for x in range(count):
+                        value = self._queued[offset+first+x]
+                        start = x * 32
+                        self._rows[start:start+16] = self._lookup[value >> 4]
+                        self._rows[start+16:start+32] = self._lookup[value & 15]
+                    self._rows_view[length:length*2] = self._rows_view[:length]
+                    try:
+                        if not bus_owned:
+                            # SPI reconfiguration is appreciably slower than
+                            # a row transfer on RP2040. Own it for this bounded
+                            # slice, not separately for each row. _end still
+                            # runs before returning to safety/Button C/RGB.
+                            bus_owned = True
+                            self._begin()
+                        self._window(self.x_offset + first*16, self.y_offset + y*2,
+                                     self.x_offset + (last+1)*16-1,
+                                     self.y_offset + y*2+1)
+                        self.spi.write(self._rows_view[:length*2])
+                    except BaseException:
+                        self._valid = False
+                        self._row_valid[y] = 0
+                        raise
+                    for x in range(first, last+1):
+                        self._previous[offset+x] = self._queued[offset+x]
+                    self.last_rows_sent += 2
+                    self.last_bytes_sent += length*2
+                self._row_valid[y] = 1
+                self._row_foreground[y] = self._foreground
+                self._row_background[y] = self._background
+                self._scan_row = (self._scan_row + 1) % self.height
+                self._scan_remaining -= 1
+                serviced += 1
+                if self._scan_remaining == 0:
+                    self.frame_pending = False
+                    self.completed_frame_id = self.frame_id
+                    self._valid = True
+        finally:
+            if bus_owned:
+                self._end()
+            self.last_slice_us = time.ticks_diff(time.ticks_us(), started)
+            self.last_show_us = self.last_slice_us
+            self.max_slice_us = max(self.max_slice_us, self.last_slice_us)
+        return not self.frame_pending

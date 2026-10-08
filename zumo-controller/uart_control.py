@@ -7,10 +7,11 @@ hardware imports so its timing and safety rules can be tested on a desktop.
 
 from digit_face_engine import EXPRESSIONS
 from wake_reaction import WakeReaction
-from voice_turn import VoiceTurn, WIGGLE_ACCELERATION, WIGGLE_DECELERATION
+from voice_turn import VoiceTurn, WIGGLE_ACCELERATION, WIGGLE_DECELERATION, movement_target
+from motion_jobs import MotionJobs
 
 
-MAX_LINE = 63
+MAX_LINE = 159
 MAX_DRIVE_SPEED = 6000
 MAX_AUTO_SPEED = 3200
 APPROACH_STOP_DISTANCES_MM = (50, 100)
@@ -37,7 +38,7 @@ MIN_EDGE_MARGIN = 180
 class UARTController:
     def __init__(self, uart, motors, line_sensors, battery, face,
                  button_a, button_b, button_c, clock, rgb_leds=None,
-                 gyro=None, turn_motor_sign=1, tof=None):
+                 gyro=None, turn_motor_sign=1, tof=None, speed_control=None):
         self.uart = uart
         self.motors = motors
         self.line_sensors = line_sensors
@@ -49,6 +50,9 @@ class UARTController:
         self.button_c = button_c
         self.clock = clock
         self.tof = tof
+        self.speed_control = speed_control
+        self.raw_distance_mm = -1
+        self.range_status = 255
         self.distance_mm = -1
         self.range_at = None
         self.last_range_poll = None
@@ -62,6 +66,8 @@ class UARTController:
         self.last_keep = None
         self.look_acceleration = MAX_ACCELERATION
         self.wiggle_started = False
+        self.wiggle_scene = None
+        self.wiggle_display_started = None
         self.wiggle_leg = 0
         self.wiggle_face = "HAPPY"
         self.line = bytearray()
@@ -85,11 +91,21 @@ class UARTController:
         self.last_edge_poll = None
         self.calibration = None
         self.motors.off()
+        self.last_tick_at = None
+        self.max_loop_gap_ms = 0
+        self.loop_overruns = 0
+        self.scene_wire = None
+        self.scene_sequence = None
+        self.motion = MotionJobs(self)
+        if hasattr(face, "enable_cooperative"):
+            face.enable_cooperative()
 
     def _send(self, value):
         self.uart.write((value + "\n").encode())
 
     def _stop(self, smooth=False):
+        if self.speed_control:
+            self.speed_control.reset()
         smooth = smooth and self.ready and bool(self.left or self.right)
         already_braking = self.braking
         self.braking = smooth
@@ -117,6 +133,8 @@ class UARTController:
         if self.wiggle_started:
             self.face.play("neutral")
         self.wiggle_started = False
+        self.wiggle_scene = None
+        self.wiggle_display_started = None
         self._cancel_wake()
 
     def _cancel_wake(self):
@@ -132,7 +150,7 @@ class UARTController:
     def _target_motion(self, left, right, now, acceleration, deceleration=DECELERATION):
         if not self._moving():
             self.ramp_at = now
-        self.target_left, self.target_right = left, right
+        self.target_left, self.target_right = movement_target(left), movement_target(right)
         self.acceleration = acceleration
         self.deceleration = deceleration
         self.braking = False
@@ -151,8 +169,16 @@ class UARTController:
         self.ramp_at = now
         step = self.acceleration * elapsed / 1000.0
         braking_step = self.deceleration * elapsed / 1000.0
-        self.ramp_left = self._ramp_track(self.ramp_left, self.target_left, step, braking_step)
-        self.ramp_right = self._ramp_track(self.ramp_right, self.target_right, step, braking_step)
+        targets = (self.target_left, self.target_right)
+        if self.speed_control:
+            try:
+                targets = self.speed_control.update(now, targets, (self.left, self.right), self.braking)
+            except Exception as error:
+                self._latch("ENCODER")
+                print("ENCODER CONTROL:", error)
+                return
+        self.ramp_left = self._ramp_track(self.ramp_left, targets[0], step, braking_step)
+        self.ramp_right = self._ramp_track(self.ramp_right, targets[1], step, braking_step)
         left, right = int(self.ramp_left), int(self.ramp_right)
         if (left, right) != (self.left, self.right):
             self.motors.set_speeds(left, right)
@@ -163,6 +189,8 @@ class UARTController:
             self.safe_motion = False
 
     def _latch(self, reason):
+        if self.motion.armed or self.motion.active:
+            self.motion.cancel(reason, True)
         self._stop()
         self.ready = False
         if reason == "EDGE":
@@ -200,7 +228,7 @@ class UARTController:
         return confirmed
 
     def start_calibration(self, command_id="0", now=None):
-        """Begin stationary floor sampling; ID 0 is used at startup."""
+        """Begin stationary surface sampling; ID 0 is used at startup."""
         if now is None:
             now = self.clock.ticks_ms()
         if self.calibration is not None:
@@ -222,7 +250,7 @@ class UARTController:
             "next": now,
         }
         self._send(command_id + " OK CALIBRATING")
-        print("UART CONTROL: calibrating on stationary floor")
+        print("UART CONTROL: calibrating on stationary surface")
 
     def _sample_calibration(self, now):
         state = self.calibration
@@ -267,10 +295,17 @@ class UARTController:
             print("UART CONTROL: battery read error:", error)
             millivolts = -1
         valid = self._range_valid(self.clock.ticks_ms())
-        self._send("{} OK READY={} FAULT={} L={} R={} BAT={} EDGE={} VOICE={} DIST={} RANGE={} AUTO=1 BRAKE=1 LOOKRAMP=1 WIGGLE=2 SCENE=1 SAFE2=1 CLOSE=2".format(
+        age = self.clock.ticks_diff(self.clock.ticks_ms(), self.range_at) if self.range_at is not None else 65535
+        velocity = self.speed_control.velocity if self.speed_control else (0, 0)
+        target = self.speed_control.targets if self.speed_control else (0, 0)
+        self._send("{} OK READY={} FAULT={} L={} R={} BAT={} EDGE={} VOICE={} DIST={} RANGE={} AUTO=1 BRAKE=1 LOOKRAMP=1 WIGGLE=2 SCENE=1 SAFE2=1 CLOSE=2 RA={} RS={} RAW={} ENC={} VL={} VR={} MOTION=1 BOOT={} SESSION={} GAP={} OVERRUN={} DSUS={} TL={} TR={}".format(
             command_id, int(self.ready), self.fault, self.left, self.right,
             millivolts, int(self.edge), int(self.voice_turn is not None),
-            self.distance_mm, int(valid)))
+            self.distance_mm, int(valid), min(65535, age), self.range_status,
+            self.raw_distance_mm, int(self.speed_control is not None), int(velocity[0]), int(velocity[1]), self.motion.boot, self.motion.session,
+            self.max_loop_gap_ms, self.loop_overruns, getattr(self.face, "max_slice_us", 0), int(target[0]), int(target[1])))
+        if self.motion.session:
+            self.motion.snapshot(command_id)
 
     def _range_valid(self, now):
         return (self.tof is not None and self.range_at is not None and
@@ -284,8 +319,12 @@ class UARTController:
         self.last_range_poll = now
         try:
             if self.tof.data_ready:
-                distance = self.tof.distance_mm
-                valid = self.tof.range_status == 0
+                if hasattr(self.tof, "read_result"):
+                    distance, status = self.tof.read_result()
+                else:
+                    distance, status = self.tof.distance_mm, self.tof.range_status
+                self.raw_distance_mm, self.range_status = distance, status
+                valid = status == 0 and distance > 0
                 self.tof.clear_interrupt()
                 self.distance_mm = distance if valid else -1
                 self.range_at = now if valid else None
@@ -336,6 +375,9 @@ class UARTController:
             self._send("0 ERR FORMAT")
             return
         words = line.split()
+        if len(line) > 63 and (len(words) < 2 or words[1] != "M2"):
+            self._send("0 ERR LINE_TOO_LONG")
+            return
         if len(words) < 2 or not words[0].isdigit():
             self._send("0 ERR FORMAT")
             return
@@ -345,11 +387,19 @@ class UARTController:
             return
         command = words[1]
         args = words[2:]
+        if command == "M2":
+            self.motion.handle(command_id, line[len(command_id) + 1:], now)
+            return
+        if command in ("STOP", "BRAKE", "CALIBRATE", "DRIVE", "SAFE", "LOOK", "WIGGLE", "TURN") and self.motion.armed:
+            # Manual takeover closes the autonomous session before accepting a
+            # legacy command. Delayed autonomous traffic can never resume it.
+            self.motion.cancel("CANCELLED" if command in ("STOP", "BRAKE") else "MANUAL_TAKEOVER", smooth=command == "BRAKE")
         if command == "PING" and not args:
             self._send(command_id + " OK PONG")
         elif command == "STATUS" and not args:
             self._status(command_id)
         elif command in ("STOP", "BRAKE") and not args:
+            self.scene_wire = self.scene_sequence = None
             self._stop(smooth=command == "BRAKE")
             self.calibration = None
             self.face.play("neutral")
@@ -390,6 +440,8 @@ class UARTController:
                         self.wiggle_leg = 0
                         self.wiggle_face = args[0] if args else "HAPPY"
                         self.voice_turn.start_wiggle(now)
+                        if getattr(self.face, "cooperative", False):
+                            self.voice_turn.timeout_ms += 1500
                     else:
                         self.look_acceleration = int(args[1]) if len(args) == 2 else MAX_ACCELERATION
                         self.voice_turn.start(int(argument), now, self.look_acceleration)
@@ -471,18 +523,21 @@ class UARTController:
             expression, caption = args
             if expression != expression.upper() or expression.lower() not in EXPRESSIONS or caption not in SCENE_LABELS:
                 self._send(command_id + " ERR ARGUMENT")
-            elif self._moving() or self.look_id is not None or self.calibration is not None:
+            elif (self._moving() or self.look_id is not None or self.calibration is not None) and not getattr(self.face, "cooperative", False):
                 self._send(command_id + " ERR MOVING")
             else:
                 try:
                     self._cancel_wake()
                     self.face.show_scene(expression.lower(), caption)
                     self._send(command_id + " OK SCENE")
+                    if getattr(self.face, "cooperative", False):
+                        self.scene_wire = command_id
+                        self.scene_sequence = self.face.scene_sequence
                 except Exception as error:
                     self._send(command_id + " ERR DISPLAY")
                     print("UART CONTROL: scene error:", error)
         elif command == "FACE" and len(args) == 1:
-            if self._moving() or self.look_id is not None:
+            if (self._moving() or self.look_id is not None) and not getattr(self.face, "cooperative", False):
                 self._send(command_id + " ERR MOVING")
             elif args[0] == args[0].upper() and args[0].lower() in EXPRESSIONS:
                 self._cancel_wake()
@@ -541,6 +596,14 @@ class UARTController:
 
     def tick(self):
         now = self.clock.ticks_ms()
+        if self.last_tick_at is not None:
+            gap = max(0, self.clock.ticks_diff(now, self.last_tick_at))
+            self.max_loop_gap_ms = max(self.max_loop_gap_ms, gap)
+            if gap > 20:
+                self.loop_overruns += 1
+            if gap > 150 and self.motion.active:
+                self.motion.cancel("CONTROL_STALE", True)
+        self.last_tick_at = now
         if self.button_c.check() is True:
             self._latch("BUTTON_C")
         if (self.brake_started is not None and
@@ -577,6 +640,7 @@ class UARTController:
                     self._send("0 EVENT ARRIVED")
         self._poll_uart(now)
         self._sample_calibration(now)
+        self.motion.tick(now)
         if self.look_id is not None:
             left, right = self.voice_turn.update(now, max(abs(self.left), abs(self.right)))
             if self.voice_turn.result is not None:
@@ -591,25 +655,41 @@ class UARTController:
             else:
                 if self.voice_turn.wiggle and self.voice_turn.bias is not None:
                     if not self.wiggle_started:
-                        # Render the complete happy pose while the tracks are
-                        # still off. LCD writes must never block a moving turn.
-                        try:
-                            if self.wiggle_face == "EXCITED":
-                                self.face.show_scene("excited", "FOUND")
+                        cooperative = getattr(self.face, "cooperative", False)
+                        if self.wiggle_scene is None:
+                            # Accept one scene, then keep servicing the gyro,
+                            # safety and bounded display work with tracks off.
+                            try:
+                                if self.wiggle_face == "EXCITED":
+                                    self.face.show_scene("excited", "FOUND")
+                                elif cooperative:
+                                    self.face.show_scene("happy", "NONE")
+                                else:
+                                    self.face.show_happy()
+                            except Exception as error:
+                                self._send(self.look_id + " ERR LOOK_FACE")
+                                self._latch("TURN_FAULT")
+                                print("UART CONTROL: greeting face error:", error)
+                                return
+                            if cooperative:
+                                self.wiggle_scene = self.face.scene_sequence
+                                self.wiggle_display_started = now
                             else:
-                                self.face.show_happy()
-                        except Exception as error:
-                            self._send(self.look_id + " ERR LOOK_FACE")
-                            self._latch("TURN_FAULT")
-                            print("UART CONTROL: greeting face error:", error)
-                            return
-                        self.wiggle_started = True
-                        # No yaw happened during this stationary LCD transfer.
-                        self.voice_turn.last_sample = self.clock.ticks_ms()
-                        self._send(self.look_id + " OK WIGGLE_START")
-                        # Recheck lease, button and edge safety next tick before
-                        # applying any motor target after the display transfer.
-                        return
+                                self.wiggle_started = True
+                                self.voice_turn.last_sample = self.clock.ticks_ms()
+                                self._send(self.look_id + " OK WIGGLE_START")
+                                return  # Recheck safety after synchronous drawing.
+                        if cooperative:
+                            if self.face.visible_scene_sequence == self.wiggle_scene:
+                                self.wiggle_started = True
+                                self._send(self.look_id + " OK WIGGLE_START")
+                            elif self.clock.ticks_diff(now, self.wiggle_display_started) >= 1500:
+                                self._send(self.look_id + " ERR LOOK_FACE")
+                                self._latch("TURN_FAULT")
+                                return
+                            # Also keep zero for the first visible tick: the
+                            # next tick rechecks the lease and edge before drive.
+                            left = right = 0
                     if self.voice_turn.wiggle_leg != self.wiggle_leg:
                         self.wiggle_leg = self.voice_turn.wiggle_leg
                         if self.wiggle_leg == 2:
@@ -619,7 +699,7 @@ class UARTController:
         self._update_motion(now)
         pressed_a = self.button_a.check() is True
         pressed_b = self.button_b.check() is True
-        if not self._moving() and self.look_id is None:
+        if not self._moving() and self.look_id is None and not self.motion.active:
             if pressed_a:
                 self._cancel_wake()
                 self.face.play_sad()
@@ -628,14 +708,20 @@ class UARTController:
                 self.face.play_happy()
         # LCD transfers can take longer than a control-loop tick. Keep the
         # transport and motor safety checks ahead of display work.
-        if not self._moving() and self.look_id is None:
+        if getattr(self.face, "cooperative", False) or (not self._moving() and self.look_id is None and not self.motion.active):
             try:
                 self.wake.update(now)
             except Exception as error:
                 self._cancel_wake()
                 print("UART CONTROL: wake animation error:", error)
                 self._send("0 EVENT WAKE_FAILED")
-            self.face.update()
+            if getattr(self.face, "cooperative", False):
+                self.face.update(max_units=8, max_us=3000)
+            else:
+                self.face.update()
+        if (self.scene_wire is not None and getattr(self.face, "visible_scene_sequence", -1) >= self.scene_sequence):
+            self._send(self.scene_wire + " OK SCENE_VISIBLE")
+            self.scene_wire = self.scene_sequence = None
 
     def close(self):
         self._stop()

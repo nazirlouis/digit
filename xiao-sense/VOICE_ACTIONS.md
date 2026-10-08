@@ -99,12 +99,12 @@ of memory needed by the dashboard or Wi-Fi.
 | --- | --- |
 | Come say hello | Find and center a person, approach in short steps to the existing 100 mm front-ToF target, perform an excited wiggle, then finish with LOVE eyes and a soft affectionate voice. Any detected person counts; no identity recognition. |
 | What is this / What's this | Stay still, examine a battery, marker or screwdriver, show a surprised recognition beat, then happy eyes and the object name. Uncertain evidence produces confused eyes and NOT SURE. One result per command. |
-| Find a way out | Explore a simple floor course with a marker at the exit. Compare measured openings, move in bounded steps, align with the marker and celebrate at the existing 550 mm ToF threshold. Maximum 18 exploratory advances / 150 seconds; no general maze-solving guarantee. |
+| Find a way out | Explore a small desk course with a battery at the exit. Drive continuously until 50 mm from a wall, compare front/left/right openings at 90-degree spacing, and choose the longest. Never sample behind the arrival heading. Confirm and align with the battery, approach in bounded steps, and celebrate upon reaching 100 mm. Markers and screwdrivers do not count as the exit. Maximum 18 exploratory advances / 150 seconds; no general maze-solving guarantee. |
 
 The dashboard and dispatcher share readiness checks. Moving actions require
-floor calibration, gyro/turn/gesture support, and valid front range younger
+surface calibration, gyro/turn/gesture support, and valid front range younger
 than 250 ms. Identification only needs the connected display and object model;
-it does not require the person model, gyro, ToF or floor calibration.
+it does not require the person model, gyro, ToF or surface calibration.
 The speech registry contains six phrases for these four IDs. Retired IDs
 1-6, 10-13, 15 and 16 are rejected without interrupting an active action.
 Old Say hello, Find me and Follow me phrases are not aliases. The separate
@@ -120,15 +120,20 @@ Old Say hello, Find me and Follow me phrases are not aliases. The separate
   must fall within 1.8 seconds, match spatially and in size, and come from
   distinct captures. Camera result and capture age must be within 1.2 seconds.
 - Forward motion brakes on target loss, stale camera/range data, local arrival
-  or the end of a bounded step. Stale motor STATUS aborts. The greeting retains
-  its 100 mm local braking target, 80 mm hard guard and arrival latch. Range
+  or the end of a bounded target-approach step. Maze exploration has no step timer. Stale motor STATUS aborts. The greeting and exit-battery approach use
+  a 100 mm local braking target, 80 mm hard guard and arrival latch. Range
   bounce up to 120 mm still requires visual confirmation before celebrating.
 - Escape scans use three distinct, settled readings per heading and their
-  median at the starting heading, +60, -60 and 180 degrees. A single far
-  outlier cannot invent an opening. An opening must measure at least 500 mm
-  and is rechecked before travel. ToF measures the nearest obstacle, not the
-  identity of a camera target. The 550 mm exit target is not proof of crossing
-  a physical exit line.
+  median at the starting heading, +90 and -90 degrees. The rear direction is not sampled. A single far
+  outlier cannot invent an opening. An opening must measure more than 50 mm
+  and is rechecked before travel. Exploration runs continuously at target speed 3000
+  with SAFE 50 local braking (CLOSE=2 required). Seeing a battery stops travel
+  for stationary confirmation; battery approach still uses bounded steps. At 50 mm or less,
+  Digit stops and scans; missing/stale range also stops him. With no clear
+  front/left/right opening he stops for help instead of checking behind him. A corridor-wall
+  arrival does not count as battery arrival. ToF measures the nearest obstacle, not the
+  identity of a camera target. Arrival therefore also requires fresh, centered,
+  repeated battery detections; it is not proof of crossing a physical exit line.
 - Display submission waits at most two seconds; acknowledgement waits at most
   1.5 seconds. Full cue playback has its expression duration plus a 500 ms watchdog margin. Failed final scenes
   terminate directly. Turns use a deadline derived from the selected ramp;
@@ -159,9 +164,143 @@ recognition accuracy and the exit course remain untested for this revision.
 
 ## Install
 
-1. On the Zumo, replace **uart_control.py** and **digit_face_engine.py** from
+### Dashboard stop diagnosis, 2026-10-07
+
+The Actions panel now includes a collapsible "Why did Digit stop?" log with
+live range, raw range/status/age, encoder velocities and link state. The XIAO
+retains the last 24 action starts, phase changes, finishes, rejections and stop
+requests in RAM until restart. Each event captures sensor/motor/link state
+before cancellation, with uptime and generation. GET /api/actions/debug reads
+this shared history; polling/reloading never clears it. Copy works on local
+HTTP with a clipboard fallback. Requests from all dashboard tabs appear here.
+
+A reproduced code path unconditionally sent global Stop on browser blur and
+visibility changes, even without manual driving. Those callbacks and stray
+pointer-release/cancel events now send Stop only when a manual drive button is
+held. Explicit Stop/STOP ALL still cancel every action. Stop requests identify
+button, release, blur, hidden tab, pointer loss, failed drive, unavailable status
+or locked controller. Older pages still send untagged requests, labeled
+"Dashboard Stop (legacy or unspecified request)"; refresh all existing tabs.
+Controller disconnect, encoder, sensor and turn faults have distinct reasons.
+
+Desktop tests cover autonomous survival of idle-tab blur/hide, continued manual
+abort behavior, explicit Stop and delayed-request cancellation, log rendering,
+and bounded history retaining pre-stop motor/sensor values. Preview uses
+clearly labeled simulated events and never accesses hardware.
+
+### Encoder feedback and distance reporting, 2026-10-07
+
+The Zumo now regulates track velocity from calibrated encoder measurements;
+the existing gyro still regulates turn angle. XIAO commands remain normalized
+velocity targets. See the Zumo README for calibration, limits and bench evidence.
+Find a way out displays SEARCHING while scanning, not OBSTACLE. Invalid/stale
+range waits stationary and then reports NOT_SURE with a sensor-specific reason.
+An incomplete scan does not claim all directions are physically blocked.
+A confirmed blocked scan can still show OBSTACLE. No distance threshold was
+increased, and raw close readings retain immediate local stopping priority.
+
+/api/zumo/status now includes encoder_control, encoder_left_cps,
+encoder_right_cps, range_status and raw_distance_mm. range_age_ms includes
+sensor sample age plus transport age. Before this change, live readings were
+342-355 mm while stopped, with an EDGE fault; a 50 mm false reading was not
+reproduced. Actual ToF accuracy at the maze wall remains to be checked.
+
+Validation: all 117 Zumo tests, action/voice/UART tests, dashboard checks and
+firmware build passed. XIAO COM7 flash hash and all five installed Zumo COM6
+files were verified. GET-only checks confirmed encoder_control=true, measured
+track speeds 0/0, motors 0/0, action Idle, and valid ToF 486 mm/status 0. The
+raised robot correctly failed surface calibration (all five readings 1024);
+place it back on the desk and recalibrate before movement. No loaded driving
+or gyro turn was commanded during this change.
+
+
+### Continuous desk maze and torque minimum, 2026-10-07
+
+Supersedes the stepped exploration described in the earlier install below.
+Exploration now continues forward until the 50 mm wall threshold, a battery
+sighting, stale data, or another stop condition. Scans compare front, +90 and
+-90 degree headings using three settled readings per heading; the longest
+opening wins. No rear heading is sampled. No opening above 50 mm means stop
+for help. Battery arrival remains visually confirmed at 100 mm.
+
+Nonzero movement targets now have minimum magnitude 3000 across the active
+manual, automatic and gyro-turn paths. Zero, smooth ramps and immediate
+safety stops remain. The turn watchdog accounts for the updated ramp time.
+
+The action/voice/UART regression suite, dashboard checks, all 108 Zumo tests,
+and the xiao_esp32s3_sense_idf build passed. Zumo main.py, uart_control.py and
+voice_turn.py were backed up, installed on COM6 and SHA-256 verified. XIAO
+COM7 received the new application with flash hash verification. Read-only
+checks confirmed connected/ready, no fault, motors 0/0, action Idle, valid
+range, voice ready and the updated live dashboard. No physical motion was
+commanded; real maze turns and braking still need a user-supervised test.
+
+### Small-course clearance, 2026-10-07
+
+Exploration now allows forward steps with fresh range strictly greater than
+50 mm and brakes/scans at 50 mm or less. The previous 500 mm opening / 350 mm
+exploration-stop thresholds are removed. Every exploratory step uses speed
+2400 and the shorter duration, with SAFE 50 local stopping; arrival at the
+battery remains 100 mm. CLOSE=2 is required, and wall arrival is kept separate
+from battery arrival. Tests cover 51/100/150/349/499 mm forward clearance,
+50 mm stopping, stale range, capability rejection, and no false battery success.
+Mission/Stop/dashboard tests and all 107 Zumo tests passed. XIAO COM7 was updated
+with flash hash verification; the existing Zumo already supports this protocol.
+Only idle status was checked after installation; physical braking remains untested.
+
+### Battery exit target, 2026-10-07
+
+Installed on XIAO COM7: Escape now selects Battery (class 0), requires repeated
+fresh centered detections, and uses the Zumo's existing SAFE 100 mm close-approach
+protocol. It slows its short steps below 300 mm and celebrates after confirmed
+arrival; markers/screwdrivers cannot complete the action. No Zumo file change was
+needed. Mission, cancellation and dashboard tests plus the firmware build passed;
+flash hash verification and GET-only idle checks passed. The installed dashboard
+serves the battery instructions. At the final check, the distance reading was
+unavailable, so Escape correctly remained unavailable with motors 0/0. Physical
+battery detection, approach and stopping accuracy remain to be tested by the user.
+
+### Decoder-result acceptance fix, 2026-10-07
+
+The first three-action release compared MultiNet's text literally. Live decoder
+replay returned ` STOP` (leading space), command 7, detected state, score 0.971,
+which the phrase filter rejected. Further live output included partial/repeated
+words (` CO COME SAY HELLO`). Acceptance now uses MultiNet's DETECTED state,
+nonempty candidate list/transcript, and a registered command ID (7, 8, 9, 14).
+The transcript remains diagnostic rather than a second exact-text recognizer.
+Model-specific phrase IDs are not treated as source-array indices. Tests cover
+all six phrases, actual padded/partial-word transcripts through production
+dispatch, empty/candidate-less/retired commands, timeout, stale audio and cancellation.
+The saved-audio diagnostic now reports `accepted` using the same production
+command allowlist and detected-state check; it still never dispatches an action.
+The correction was flashed to COM7 and verified with the same saved recording:
+detected command 7, score 0.971, text ` STOP`, `accepted=true`. Both motors stayed
+at zero. A subsequent user-led live retry was also observed: wake voice ->
+Listening -> recognized command 9 with text ` WHAT IS THIS`, then the action
+phase `Let me see!`; recognized count advanced from 0 to 1 with no audio drops.
+The final command-ID acceptance revision also passed installed no-action replay
+for ` CO COME SAY HELLO` (command 8), ` FI FIND A WAY OUT` (command 14), and
+` STOP` (command 7), all with `accepted=true`. These movement-command samples
+were locally synthesized; one alternative Escape voice was misrecognized as
+command 9, so synthetic-voice success is not a general accuracy claim.
+The user's subsequent live retries passed on the final firmware: recognized
+count 0 -> 1, command 8, ` CO COME SAY HELLO`, phase `Looking for you`; then
+count 1 -> 2, command 14, ` FI FIND A WAY OUT`, phase `Let's explore`.
+This confirms live recognition and dispatch, not completion of the physical missions.
+The frontend sometimes reported EDGE or missing range during this session;
+those movement guards were retained, and later status reported valid range.
+
+Installed 2026-10-07: complete XIAO firmware/model upload on COM7 passed flash
+hash checks. Eleven Zumo runtime files were backed up and compared on COM6;
+`digit_face_engine.py` and `wake_reaction.py` were updated and SHA-256 verified,
+and the other nine already matched. Zumo restarted and completed stationary
+calibration. GET-only checks reported all three actions ready, motors 0/0,
+no fault, valid range, audio/camera/vision/voice ready, and startup volume 100%.
+No action, motion, or speaker audition was commanded during installation.
+
+1. On the Zumo, replace **uart_control.py**, **digit_face_engine.py**, and **wake_reaction.py** from
    `../zumo-controller/`. Keep the current **main.py**, face/display adapters,
-   **wake_reaction.py**, **voice_turn.py**, and **digit_config.py** installed.
+   **voice_turn.py**, and **digit_config.py** installed.
    `voice_turn.py` must be the current fast-wiggle version. The sensor driver must be
    `/zumo_2040_robot/vl53l4cd.py`; its source is in the device-library folder.
    Restart the Zumo. Startup should report the gyroscope and front distance sensor.
@@ -173,7 +312,7 @@ recognition accuracy and the exit course remain untested for this revision.
    is not sufficient for this upgrade.** The offsets changed to fit the larger MultiNet 6 model and both vision models.
 4. Open the dashboard and confirm both boards are connected. With motor power
    off, inspect status only. For user-led physical testing, start with What's this,
-   then calibrate on safe floor and try Come say hello and the marked exit
+   then calibrate on safe floor and try Come say hello and the battery-marked exit
    course individually. Check Stop and target loss during each.
 
 The build packs models automatically with `tools/model_bundle.py`. Layout:

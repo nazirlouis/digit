@@ -123,6 +123,13 @@ class VL53L4CD:
     def distance_mm(self):
         return self._read_u16(self._RESULT_DISTANCE)
 
+    def read_result(self):
+        """Read status and distance in one transaction before clearing interrupt."""
+        data = self._read(self._RESULT_RANGE_STATUS, 15)
+        raw = data[0] & 0x1F
+        status = self._STATUS_MAP[raw] if raw < len(self._STATUS_MAP) else 255
+        return (data[13] << 8) | data[14], status
+
     @property
     def range_status(self):
         raw_status = self._read(self._RESULT_RANGE_STATUS)[0] & 0x1F

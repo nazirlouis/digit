@@ -32,6 +32,20 @@ void tick() {
 int main() {
   robot_actions::begin();
   resetDevice();
+  zumo_link::state.left=3100; zumo_link::state.distanceMm=168;
+  robot_actions::stop("Manual drive stopped: browser lost focus");
+  robot_actions::DebugEvent captured;
+  const auto capturedId=robot_actions::latestDebugId();
+  assert(robot_actions::debugEvent(capturedId,&captured));
+  assert(captured.left==3100 && captured.distanceMm==168);
+  assert(!strcmp(captured.reason,"Manual drive stopped: browser lost focus"));
+  assert(!strcmp(captured.kind,"stopped"));
+  assert(zumo_link::state.left==0);
+  for(int i=0;i<30;++i) robot_actions::stop("Ring history test");
+  assert(!robot_actions::debugEvent(capturedId,&captured));
+  assert(robot_actions::debugEvent(robot_actions::latestDebugId()-23,&captured));
+  std::cout << "PASS stop log preserves pre-stop sensor evidence and bounded history\n";
+  resetDevice();
   vision_service::state.enabled=true;
   vision_service::state.batteryMode=true;
   robot_actions::stop("Dashboard Stop");
@@ -83,21 +97,33 @@ int main() {
   zumo_link::state.rangeValid=false;vision_service::state.ready=false;
   assert(!robot_actions::unavailableReason(Command::Identify)[0]);
   assert(robot_actions::start(Command::Identify,robot_actions::generation()));
-  for(int failure=0;failure<8;++failure) {
+  for(int failure=0;failure<9;++failure) {
     resetDevice();
     if(failure==0)zumo_link::state.voiceCapable=false;
     if(failure==1)zumo_link::state.rangeValid=false;
-    if(failure==2)zumo_link::state.rangeAgeMs=250;
+    if(failure==2)zumo_link::state.motionCapable=false;
     if(failure==3)zumo_link::state.ready=false;
     if(failure==4)zumo_link::state.edge=true;
     if(failure==5)zumo_link::state.connected=false;
     if(failure==6)zumo_link::state.autoRampCapable=false;
     if(failure==7)zumo_link::state.sceneCapable=false;
+    if(failure==8)zumo_link::state.encoderControl=false;
     for(auto action : {Command::ComeSayHello,Command::Escape}) {
       assert(robot_actions::unavailableReason(action)[0]);
       assert(!robot_actions::start(action,robot_actions::generation()));
     }
   }
+  resetDevice();zumo_link::state.rangeAgeMs=350;
+  assert(!robot_actions::unavailableReason(Command::Escape)[0]);
+  // Receiving telemetry late is not evidence that Zumo's own sensor is stale.
+  assert(robot_actions::start(Command::Escape,robot_actions::generation()));
+  const auto beforeFault=robot_actions::generation();
+  ++zumo_link::state.safetyEvents;
+  std::strcpy(zumo_link::state.lastError,"CONTROL_STALE");
+  robot_actions::poll();
+  assert(!robot_actions::snapshot().active);
+  assert(std::strstr(robot_actions::snapshot().phase,"control loop was delayed"));
+  assert(!robot_actions::start(Command::Escape,beforeFault));
   resetDevice();vision_service::state.ready=false;
   assert(robot_actions::unavailableReason(Command::ComeSayHello)[0]);
   assert(!robot_actions::unavailableReason(Command::Escape)[0]);

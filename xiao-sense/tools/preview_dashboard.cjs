@@ -10,7 +10,9 @@ const status = {
   identify_ready: true, person_action_ready: true, object_action_ready: true,
   follow_action_ready: true, chase_action_ready: true,
   fault: 'NONE', last_error: 'NONE', battery_mv: 7600, left: 0, right: 0,
-  distance_mm: 250, range_valid: true, range_age_ms: 10,
+  distance_mm: 250, raw_distance_mm: 250, range_status: 0, range_valid: true, range_age_ms: 10,
+  motion_supported: true, motion_state: 'IDLE', motion_result: 'NONE', motion_job: 0, control_max_gap_ms: 8, control_overruns: 0, display_max_slice_us: 1100, target_left_cps: 0, target_right_cps: 0, heading_deci_deg: 0,
+  encoder_control: true, encoder_left_cps: 0, encoder_right_cps: 0, reply_age_ms: 20,
   audio_state: 'READY', audio_available: true, camera_ready: true,
   vision_ready: true, vision_enabled: false, follow_enabled: false, follow_state: 'Off',
   captured_ms: 0, max_recording_ms: 10000, psram_free: 4000000,
@@ -27,6 +29,7 @@ html = html.replace('<script>', `<script>
 const previewStatus=${JSON.stringify(status)};
 window.fetch=async (url,options={})=>{
   const request=new URL(url,'http://preview.local');
+  if(request.pathname==='/api/actions/debug')return {ok:true,json:async()=>({events:[{id:3,ms:12400,kind:'stopped',action:'Find a way out',reason:'Example: Dashboard STOP ALL button',distance_mm:168,raw_distance_mm:168,range_status:0,range_age_ms:35,range_valid:true,left:3100,right:3300,encoder_left_cps:1550,encoder_right_cps:1540,fault:'NONE',turn:'DONE',connected:true,reply_age_ms:20,generation:4,motion_state:'CANCELLED',motion_result:'STOP',motion_job:3,control_max_gap_ms:8,control_overruns:0,display_max_slice_us:1100}]})};
   if(request.pathname==='/api/camera/photo')return {ok:false,text:async()=>'Preview only. Photos are available on Digit.'};
   if(options.method==='POST'){
     previewStatus.generation++;

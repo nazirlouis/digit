@@ -64,18 +64,25 @@ int main() {
   assert(mono(INT32_MIN) == INT16_MIN);
   assert(mono(0x10000000) == 4096); // No artificial x4 gain/clipping.
   assert(mono(-0x10000000) == -4096);
-  assert(accepts(1, "stop", 7));
-  assert(accepts(1, "come say hello", 8));
-  for (int id=2;id<=6;++id) assert(!accepts(1, "retired", id));
-  assert(!accepts(0, "stop", 7));
+  assert(accepts(1, " STOP", 7)); // Actual ESP-SR 2.4.6 live result.
+  assert(accepts(1, " WHAT WHAT IS THIS", 9));
+  assert(accepts(1, " CO COME SAY HELLO", 8));
+  assert(accepts(1, " FIND FIND A WAY OUT", 14));
+  assert(!accepts(1, " \t\r\n", 7));
+  assert(!accepts(0, " STOP", 7));
   assert(!accepts(1, "", 7));
   assert(!accepts(1, nullptr, 7));
-  assert(!accepts(1, "stop", 0));
-  assert(!accepts(1, "unknown", 8));
   assert(!speech_phrases::find(15,"bump me"));
   assert(!speech_phrases::find(16,"follow me"));
   assert(sizeof(speech_phrases::phrases)/sizeof(speech_phrases::phrases[0])==6);
-  for (const auto& phrase : speech_phrases::phrases) assert(accepts(1,phrase.text,phrase.command));
+  for (const auto& phrase : speech_phrases::phrases) {
+    assert(accepts(1,phrase.text,phrase.command));
+    char padded[128];
+    snprintf(padded,sizeof(padded)," %s ",phrase.text);
+    assert(accepts(1,padded,phrase.command));
+  }
+  for (int id=-1;id<=99;++id)
+    assert(accepts(1,"decoder candidate",id) == (id==7 || id==8 || id==9 || id==14));
   assert(speech_phrases::find(7, "STOP MOVING"));
   assert(speech_phrases::find(7, "STOP"));
   assert(speech_phrases::find(8, "Come Say Hello"));

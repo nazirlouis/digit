@@ -2,11 +2,20 @@
 
 import math
 
-MIN_TURN_SPEED = 2400  # User-observed breakaway torque is above 2000.
+MIN_TURN_SPEED = 3000  # User-observed minimum reliable movement effort.
 MAX_TURN_SPEED = 3200
 WIGGLE_SPEED = 6000
 WIGGLE_ACCELERATION = 30000  # 200 ms from zero to full target, through the shared ramp.
 WIGGLE_DECELERATION = 30000
+
+
+def movement_target(speed):
+    """Apply the torque floor to targets, never to braking/ramp output or zero."""
+    if 0 < speed < MIN_TURN_SPEED:
+        return MIN_TURN_SPEED
+    if -MIN_TURN_SPEED < speed < 0:
+        return -MIN_TURN_SPEED
+    return speed
 
 
 class VoiceTurn:

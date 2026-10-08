@@ -12,6 +12,12 @@ const nodes = new Map([...html.matchAll(/\bid="([^"]+)"/g)].map(m=>[m[1],{
 const routineIds = [...html.matchAll(/data-routine="(\d+)"/g)].map(m=>Number(m[1]));
 assert.deepEqual(routineIds,[8,9,14]);
 assert.ok(html.includes('>Come say hello<small>'));
+assert.ok(html.includes('place a battery at the exit'));
+assert.ok(html.includes('about 10 cm before celebrating'));
+assert.ok(html.includes('more than 5 cm ahead'));
+assert.ok(html.includes('90° right without checking behind him'));
+assert.ok(html.includes('id="driveSpeed" type="range" min="3000"'));
+assert.ok(!html.includes('exit marker'));
 assert.ok(!html.includes('Bump me'));
 const buttons = routineIds.map(id=>({disabled:false,dataset:{routine:String(id)}}));
 const driveButtons=['forward','back','left','right'].map(drive=>({dataset:{drive},listeners:{},setPointerCapture(){},addEventListener(name,fn){this.listeners[name]=fn;}}));
@@ -29,6 +35,7 @@ const context = vm.createContext({
   async fetch(url,options){
     calls.push({url,options});
     if(offline) throw Error('offline');
+    if(url==='/api/actions/debug')return reply({events:[{id:1,ms:1000,kind:'stopped',action:'Find a way out',reason:'Manual drive stopped: browser lost focus',distance_mm:168,raw_distance_mm:168,range_status:0,range_age_ms:30,range_valid:true,left:3100,right:3200,encoder_left_cps:1550,encoder_right_cps:1560,fault:'NONE',turn:'DONE',connected:true,reply_age_ms:25,generation:4}]});
     if(url==='/api/actions')return reply({generation,active,action:active?'Say hello':'Idle',phase:active?'Saying hello':'Stopped',voice_ready:true,listening:false,drive_ready:true,identify_ready:true,person_action_ready:true,object_action_ready:true,follow_action_ready:true,chase_action_ready:true,...voice});
     if(url.startsWith('/api/zumo/stop')){if(deferStop){deferStop=false;await new Promise(resolve=>releaseStop=resolve);}generation++;active=false;return reply({generation,message:'All actions cancelled; motor stop sent'});}
     if(url.startsWith('/api/actions?')||url.startsWith('/api/zumo/drive?')){
@@ -46,6 +53,12 @@ const testTimeout=setTimeout(()=>{console.error('FAIL: dashboard test did not co
 (async()=>{
   vm.runInContext(script,context);
   await new Promise(resolve=>setImmediate(resolve));
+  nodes.get('actionDebug').open=true;await context.refreshDebug();
+  assert.match(nodes.get('debugLog').textContent,/browser lost focus/);
+  assert.match(nodes.get('debugLog').textContent,/168 mm/);
+  assert.match(context.motionDebug({motion_supported:true,motion_state:'DONE',motion_result:'WALL_STOPPED',motion_job:42,control_max_gap_ms:9}),/Zumo job 42: DONE.*WALL_STOPPED/);
+  assert.match(context.motionDebug({motion_supported:true,control_max_gap_ms:9}),/control gap: 9 ms/);
+  nodes.get('actionDebug').open=false;
   assert.equal(nodes.get('distanceBadge').textContent,'ToF: 5.0 cm');
   rangeStatus={range_valid:true,distance_mm:13,range_age_ms:100,ready:false,fault:'EDGE'};
   await context.refreshZumo();
@@ -81,23 +94,33 @@ const testTimeout=setTimeout(()=>{console.error('FAIL: dashboard test did not co
   assert.equal(params.get('acceleration'),'6000','Changing acceleration must affect the next held-drive request');
   await context.stopZumo();
   const stopCalls=()=>calls.filter(c=>c.url.startsWith('/api/zumo/stop'));
-  await driveButtons[0].listeners.pointerup({type:'pointerup'});
-  assert.equal(stopCalls().at(-1).url,'/api/zumo/stop','Normal release requests fixed deceleration');
-  await nodes.get('zumoStop').listeners.click({type:'click'});
-  assert.equal(stopCalls().at(-1).url,'/api/zumo/stop','Drive Stop requests fixed deceleration');
-  await driveButtons[0].listeners.pointercancel();
-  assert.equal(stopCalls().at(-1).url,'/api/zumo/stop?hard=1');
+  let before=stopCalls().length;
+  active=true;
   await windowListeners.blur();
-  assert.equal(stopCalls().at(-1).url,'/api/zumo/stop?hard=1');
+  context.document.hidden=true; await documentListeners.visibilitychange();
+  await driveButtons[0].listeners.pointerup({type:'pointerup'});
+  await driveButtons[0].listeners.pointercancel();
+  assert.equal(stopCalls().length,before,'An idle dashboard tab must not cancel an autonomous action');
+  assert.equal(active,true);
+  context.document.hidden=false;
   vm.runInContext("heldDirection='forward'",context);
-  await driveButtons[0].listeners.lostpointercapture();
-  await new Promise(resolve=>setImmediate(resolve));
-  assert.equal(stopCalls().at(-1).url,'/api/zumo/stop?hard=1');
+  await driveButtons[0].listeners.pointerup({type:'pointerup'});
+  assert.equal(stopCalls().at(-1).url,'/api/zumo/stop?source=release');
+  await nodes.get('zumoStop').listeners.click({type:'click'});
+  assert.equal(stopCalls().at(-1).url,'/api/zumo/stop?source=stop-button');
+  for(const [handler,source] of [[driveButtons[0].listeners.pointercancel,'pointer-cancel'],[windowListeners.blur,'blur'],[driveButtons[0].listeners.lostpointercapture,'capture-lost']]){
+    vm.runInContext("heldDirection='forward'",context);await handler();
+    assert.equal(stopCalls().at(-1).url,'/api/zumo/stop?source='+source+'&hard=1');
+  }
+  vm.runInContext("heldDirection='forward'",context);context.document.hidden=true;
+  await documentListeners.visibilitychange();
+  assert.equal(stopCalls().at(-1).url,'/api/zumo/stop?source=hidden&hard=1');
+  context.document.hidden=false;
   deferStop=true;
   const pendingBrake=context.stopZumo();
   await new Promise(resolve=>setImmediate(resolve));
   await context.stopZumo(true);
-  assert.equal(stopCalls().at(-1).url,'/api/zumo/stop?hard=1','Safety abort overrides a pending normal stop');
+  assert.equal(stopCalls().at(-1).url,'/api/zumo/stop?source=stop-button&hard=1','Safety abort overrides a pending normal stop');
   assert.equal(vm.runInContext('stopPending',context),true);
   releaseStop();await pendingBrake;
   assert.equal(vm.runInContext('stopPending',context),false);

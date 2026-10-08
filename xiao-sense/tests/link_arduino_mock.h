@@ -7,8 +7,16 @@
 inline uint32_t nowMs = 1000;
 inline uint32_t millis() { return nowMs; }
 using portMUX_TYPE = int;
+inline void (*beforeCritical)() = nullptr;
+inline void enterCritical() {
+  if (beforeCritical) {
+    const auto callback = beforeCritical;
+    beforeCritical = nullptr;
+    callback();
+  }
+}
 #define portMUX_INITIALIZER_UNLOCKED 0
-#define portENTER_CRITICAL(x) ((void)(x))
+#define portENTER_CRITICAL(x) ((void)(x), enterCritical())
 #define portEXIT_CRITICAL(x) ((void)(x))
 constexpr int SERIAL_8N1 = 0;
 struct HardwareSerial {

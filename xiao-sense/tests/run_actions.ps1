@@ -92,6 +92,8 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Speech result tests failed' }
     & "C:\Users\nazir\.platformio\penv\Scripts\python.exe" "$PSScriptRoot\test_cue_pack.py"
     if ($LASTEXITCODE -ne 0) { throw 'Cue packing tests failed' }
+    & "C:\Users\nazir\.platformio\penv\Scripts\python.exe" "$PSScriptRoot\test_i2c_timeout_patch.py"
+    if ($LASTEXITCODE -ne 0) { throw 'Build-local I2C timeout backport tests failed' }
     & cl /nologo /std:c++17 /EHsc /W4 "/I$project\src" /Fe:test_cue_adpcm.exe /Fo:test_cue_adpcm.obj "$PSScriptRoot\test_cue_adpcm.cpp"
     if ($LASTEXITCODE -ne 0) { throw 'Cue playback test compilation failed' }
     & .\test_cue_adpcm.exe (Join-Path $project 'test-artifacts\cues')

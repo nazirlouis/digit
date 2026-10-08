@@ -21,11 +21,22 @@
 
 namespace {
 constexpr char kTag[] = "digit";
+void motion_link_task(void*) {
+  TickType_t scheduled = xTaskGetTickCount();
+  for (;;) {
+    // Never acquire the mission/UI mutex here. UART service and its watchdog
+    // remain independent of camera, audio, HTTP and high-level decisions.
+    zumo_link::poll();
+    vTaskDelayUntil(&scheduled, std::max<TickType_t>(1, pdMS_TO_TICKS(5)));
+  }
+}
 void wifi_event(void*, esp_event_base_t base, int32_t id, void*) {
   if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START) {
     esp_wifi_connect();
   } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
-    robot_actions::stop("Wi-Fi disconnected");
+    // Autonomous missions do not depend on a browser or access point. Manual
+    // controls still use the existing short hold-to-drive lease.
+    if (zumo_link::snapshot().manualDriving) robot_actions::stop("Wi-Fi disconnected during manual drive");
     ESP_LOGW(kTag, "Wi-Fi disconnected; reconnecting");
     esp_wifi_connect();
   } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
@@ -71,24 +82,32 @@ extern "C" void app_main() {
   wake_word::begin();
   speech_commands::begin();
   robot_actions::begin();
+  // Bring up the independent motor link before optional peripheral startup.
+  // Audio initialization must never prevent Stop/status service from running.
+  zumo_link::begin();
+  configASSERT(xTaskCreatePinnedToCore(motion_link_task, "motion_link", 4096,
+                                     nullptr, 4, nullptr, 1) == pdPASS);
   audioEngine.begin();
   camera_service::begin();
-  zumo_link::begin();
   voice_direction::begin();
   vision_service::begin();
   start_wifi();
   bool web_started = false;
+  uint32_t last_web_attempt = 0;
   uint32_t last_health = 0;
   for (;;) {
     {
       robot_actions::Guard control;
-      zumo_link::poll();
       person_follow::poll();
       speech_commands::poll();
       robot_actions::poll();
       wake_word::poll();
     }
-    if (!web_started && WiFi.status() == WL_CONNECTED) web_started = web_server::begin();
+    if (!web_started && WiFi.status() == WL_CONNECTED &&
+        (!last_web_attempt || millis()-last_web_attempt >= 1000)) {
+      last_web_attempt=millis();
+      web_started=web_server::begin();
+    }
     if (millis() - last_health >= 5000) {
       last_health = millis();
       refresh_wifi_signal();

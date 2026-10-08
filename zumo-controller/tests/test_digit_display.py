@@ -390,6 +390,132 @@ class DisplayTests(unittest.TestCase):
         self.assertEqual(face.display._lookup[0x8][:4], b"\xfc\xe0" * 2)
         self.assertGreater(face.display.last_bytes_sent, 0)
 
+    def drain(self):
+        for _ in range(self.display.height + 1):
+            if not self.display.frame_pending:
+                return
+            self.display.flush(max_rows=2, max_us=1_000_000)
+        self.fail("cooperative display never completed")
+
+    def test_cooperative_show_only_queues_and_flush_is_bounded(self):
+        self.display.enable_cooperative()
+        self.spi.writes.clear()
+        self.display.pixel(0, 0, 1)
+        frame_id = self.display.show()
+        self.assertEqual(self.spi.writes, [])
+        self.assertTrue(self.display.frame_pending)
+        self.display.flush(max_rows=2, max_us=1_000_000)
+        self.assertEqual(self.display.last_rows_sent, 4)
+        self.assertEqual(self.display._scan_row, 2)
+        self.assertEqual(self.display.completed_frame_id, 0)
+        self.assert_idle()
+        self.drain()
+        self.assertEqual(self.display.completed_frame_id, frame_id)
+        self.assertEqual(self.display._previous, self.display.buffer)
+        self.assertGreaterEqual(self.display.max_slice_us, self.display.last_slice_us)
+
+    def test_new_drawing_does_not_mutate_queued_pixels_or_palette(self):
+        self.display.enable_cooperative()
+        self.display.fill(1)
+        self.display.set_colors(0xF800, 0)
+        self.display.show()
+        self.display.fill(0)
+        self.display.set_colors(0x07FF, 0)
+        self.spi.writes.clear()
+        self.display.flush(max_rows=1, max_us=1_000_000)
+        self.assertEqual(self.frame_data(), b"\xf8\x00" * (128 * 4))
+        self.assertEqual(self.display._foreground, 0xF800)
+        self.display.show()
+        self.drain()
+        self.assertFalse(any(self.display._previous))
+        self.assertEqual(self.display._foreground, 0x07FF)
+
+    def test_replaced_partial_frame_repairs_erasures_and_all_palette_rows(self):
+        self.display.enable_cooperative()
+        self.display.fill(1)
+        self.display.show()
+        self.display.flush(max_rows=20, max_us=1_000_000)
+        self.display.fill(0)
+        self.display.pixel(127, 63, 1)
+        self.display.set_colors(0xF800, 0)
+        replacement = self.display.show()
+        self.drain()
+        self.assertEqual(self.display._previous, self.display.buffer)
+        self.assertTrue(all(self.display._row_valid))
+        self.assertEqual(self.display.completed_frame_id, replacement)
+
+    def test_cooperative_failure_retry_and_cancellation_release_shared_pins(self):
+        self.display.enable_cooperative()
+        self.display.show()
+        self.spi.fail_next = True
+        with self.assertRaises(OSError):
+            self.display.flush()
+        self.assertEqual(self.display._scan_row, 0)
+        self.assertFalse(self.display._row_valid[0])
+        self.assert_idle()
+        rgb = load("cooperative_rgb", ROOT / "factory-backup/zumo_2040_robot/rgb_leds.py")
+        leds = rgb.RGBLEDs()
+        leds.show()
+        Pin(0).init(Pin.IN)
+        self.display.flush(max_rows=2, max_us=1_000_000)
+        self.assert_idle()
+        self.display.cancel_frame()
+        self.spi.writes.clear()
+        self.display.flush()
+        self.assertEqual(self.spi.writes, [])
+        self.assertEqual(self.display.completed_frame_id, 0)
+        self.display.show()
+        self.drain()
+
+    def test_cooperative_time_budget_checks_between_indivisible_rows(self):
+        self.display.enable_cooperative()
+        self.display.show()
+        ticks = iter((0, 2000, 2100))
+        with patch.object(time, "ticks_us", lambda: next(ticks)):
+            self.display.flush(max_rows=16, max_us=1500)
+        self.assertEqual(self.display._scan_row, 1)
+        self.assertEqual(self.display.last_slice_us, 2100)
+        self.assert_idle()
+
+    def test_frequently_replaced_frames_do_not_starve_lower_panel_rows(self):
+        self.display.enable_cooperative()
+        self.display.fill(1)
+        for row in range(self.display.height):
+            self.display.show()
+            self.display.flush(max_rows=1, max_us=1_000_000)
+            self.assertTrue(self.display._row_valid[row])
+        self.assertEqual(self.display._previous, self.display.buffer)
+        self.drain()
+        self.assertEqual(self.display.completed_frame_id, self.display.frame_id)
+
+    def test_foreground_palette_change_does_not_repaint_black_margins(self):
+        self.display.pixel(32, 20, 1)
+        self.display.show()
+        self.display.enable_cooperative()
+        self.display.set_colors(0xF800, 0)
+        self.spi.writes.clear()
+        self.display.show()
+        self.drain()
+        self.assertEqual(len(self.frame_data()), 64)
+        self.assertEqual(self.frame_data()[:4], b"\xf8\x00" * 2)
+        self.assertEqual(self.spi.writes[1], (1, b"\x00\x60\x00\x6f"))
+
+    def test_palette_changed_mid_transfer_tracks_actual_color_of_each_row(self):
+        self.display.fill(1)
+        self.display.show()
+        self.display.enable_cooperative()
+        self.display.set_colors(0xF800, 0)
+        self.display.show()
+        self.display.flush(max_rows=2, max_us=1_000_000)
+        self.assertEqual(self.display._row_foreground[:3], [0xF800, 0xF800, 0xFFFF])
+        self.display.set_colors(0x07FF, 0x001F)
+        self.display.fill(0)
+        self.display.show()
+        self.drain()
+        self.assertTrue(all(color == 0x07FF for color in self.display._row_foreground))
+        self.assertTrue(all(color == 0x001F for color in self.display._row_background))
+        self.assertFalse(any(self.display._previous))
+
 
 if __name__ == "__main__":
     unittest.main()

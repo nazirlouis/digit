@@ -31,6 +31,47 @@ class Display(FrameBuffer):
         self.fill_rect(x, y, len(text) * 8, 8, value)
 
 
+class CooperativeDisplay(Display):
+    def __init__(self):
+        super().__init__()
+        self.frame_pending = False
+        self.frame_id = 0
+        self.completed_frame_id = 0
+        self.primitives = 0
+        self.queued = None
+        self.cancels = 0
+
+    def enable_cooperative(self):
+        pass
+
+    def cancel_frame(self):
+        self.frame_pending = False
+        self.cancels += 1
+
+    def fill(self, value):
+        self.primitives += 1
+        super().fill(value)
+
+    def fill_rect(self, *args):
+        self.primitives += 1
+        super().fill_rect(*args)
+
+    def ellipse(self, *args):
+        self.primitives += 1
+        super().ellipse(*args)
+
+    def show(self):
+        super().show()
+        self.frame_id += 1
+        self.frame_pending = True
+        self.queued = bytes(self.buf)
+        return self.frame_id
+
+    def flush(self, **kwargs):
+        self.completed_frame_id = self.frame_id
+        self.frame_pending = False
+
+
 class FaceTests(unittest.TestCase):
     def test_speaker_timelines_match_face_timelines(self):
         root = pathlib.Path(__file__).resolve().parents[2]
@@ -76,6 +117,7 @@ class FaceTests(unittest.TestCase):
         self.now = 0
         for item in (
             patch.object(time, "ticks_ms", lambda: self.now, create=True),
+            patch.object(time, "ticks_us", lambda: self.now * 1000, create=True),
             patch.object(time, "ticks_add", lambda a, b: (a + b) % (1 << 30), create=True),
             patch.object(time, "ticks_diff", lambda a, b: ((a - b + (1 << 29)) % (1 << 30)) - (1 << 29), create=True),
         ):
@@ -238,6 +280,78 @@ class FaceTests(unittest.TestCase):
         self.assertEqual(self.face.color, COLORS["happy"])
         self.face.show_move_prompt()
         self.assertEqual(self.face.color, COLORS["neutral"])
+
+    def cooperative_face(self):
+        display = CooperativeDisplay()
+        face = FaceEngine(display)
+        self.assertTrue(face.enable_cooperative())
+        display.cancel_frame()  # Constructor's synchronous intro is already visible.
+        return face, display
+
+    def drain_face(self, face):
+        for _ in range(200):
+            if not face.frame_pending:
+                return
+            self.now += 5
+            face.update(max_units=8, max_us=1500)
+        self.fail("cooperative face never completed")
+
+    def test_scene_acknowledgement_does_not_mean_visible_and_drawing_is_bounded(self):
+        face, display = self.cooperative_face()
+        shown, primitives = display.shows, display.primitives
+        face.show_scene("confused", "FOUND")
+        self.assertEqual(display.shows, shown)
+        self.assertEqual(display.primitives, primitives)
+        self.assertEqual(face.scene_sequence, 1)
+        self.assertEqual(face.visible_scene_sequence, 0)
+        while face._render_steps is not None:
+            before = display.primitives
+            face.update(max_units=4, max_us=1500)
+            self.assertLessEqual(display.primitives - before, 4)
+            self.assertEqual(face.visible_scene_sequence, 0)
+        self.assertTrue(display.frame_pending)
+        self.now += 500
+        face.update()
+        self.assertEqual(face.visible_scene_sequence, 1)
+        self.assertEqual(face.started, self.now)
+
+    def test_cooperative_scenes_preserve_all_approved_expression_pixels(self):
+        face, display = self.cooperative_face()
+        for name in EXPRESSIONS:
+            self.face.show_scene(name, "FOUND")
+            face.show_scene(name, "FOUND")
+            self.drain_face(face)
+            self.assertEqual(display.queued, bytes(self.display.buf), name)
+            self.assertEqual(face.visible_scene_sequence, face.scene_sequence)
+
+    def test_interruption_discards_unfinished_drawing_and_pending_scene_visibility(self):
+        face, display = self.cooperative_face()
+        face.show_scene("confused", "OLD")
+        face.update(max_units=4)
+        face.show_scene("happy", "NEW")
+        self.drain_face(face)
+        self.face.show_scene("happy", "NEW")
+        self.assertEqual(display.queued, bytes(self.display.buf))
+        self.assertEqual(face.visible_scene_sequence, 2)
+        face.show_scene("sad", "OLD")
+        while face._render_steps is not None:
+            face.update()
+        face.play("neutral")
+        self.assertFalse(display.frame_pending)
+        face.update()
+        self.drain_face(face)
+        self.assertEqual(face.visible_scene_sequence, 2)
+        self.assertEqual(face.caption, "")
+
+    def test_cooperative_prompt_is_scheduled_and_legacy_display_is_not_opted_in(self):
+        self.assertFalse(self.face.enable_cooperative())
+        face, display = self.cooperative_face()
+        before = display.primitives
+        face.show_move_prompt()
+        self.assertEqual(display.primitives, before)
+        self.drain_face(face)
+        self.face.show_move_prompt()
+        self.assertEqual(display.queued, bytes(self.display.buf))
 
 
 if __name__ == "__main__":
