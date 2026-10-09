@@ -15,12 +15,12 @@ class Feedback:
         self.fail = False
     def reset(self):
         self.targets = [0, 0]
-    def update(self, now, targets, outputs, braking=False):
+    def update(self, now, targets, outputs, braking=False, rate_ratios=None):
         self.at = now
         if self.fail:
             raise RuntimeError("encoder unplugged")
-        self.targets = targets
-        return (0, 0) if braking else targets
+        self.targets = tuple(targets[i] * rate_ratios[i] for i in range(2)) if rate_ratios else targets
+        return (0, 0) if braking else self.targets
 
 
 class MotionTests(unittest.TestCase):
@@ -63,6 +63,21 @@ class MotionTests(unittest.TestCase):
         self.step(950)
         self.assertEqual(self.job.state, "RUNNING")
         self.assertGreater(self.motors.speeds[0], 0)
+
+    def test_drive_obstacle_boundary_for_both_arrival_targets(self):
+        for stop_mm in (50, 100):
+            with self.subTest(stop_mm=stop_mm):
+                self.setUp()
+                self.tof.distance_mm = 49; self.step(25)
+                args = "3000 3000 6000 {} 10000".format(stop_mm)
+                self.assertIn("ERR M2_OBSTACLE", self.send(1, "DRIVE", args))
+                self.tof.distance_mm = 50; self.step(25)
+                self.assertNotIn(" ERR ", self.send(1, "DRIVE", args))
+                self.step(25)
+                self.assertNotEqual(self.job.reason, "OBSTACLE")
+                self.tof.distance_mm = 49; self.step(25)
+                self.assertEqual(self.job.reason, "OBSTACLE")
+                self.assertEqual(self.motors.speeds, (0, 0))
 
     def test_crc_reference_and_corrupt_boot_frames_cannot_move(self):
         self.assertEqual(crc16("123456789"), 0x29b1)

@@ -22,6 +22,7 @@ std::atomic<uint32_t> controlEpoch{1};
 Command command = Command::None;
 const char* phase = "Idle";
 bool active = false;
+int selectedDriveSpeed = 4000;
 uint32_t safetyEvents = 0;
 constexpr unsigned kDebugHistory = 24;
 robot_actions::DebugEvent history[kDebugHistory] = {};
@@ -29,6 +30,9 @@ uint32_t debugId = 0;
 char lastPhase[112] = {};
 const char* motionStopReason(const zumo_link::Status& z) {
   const char* reason = z.lastError;
+  if (!strcmp(reason,"RANGE_STALE")) return "Distance sensor stopped updating for 250 ms";
+  if (!strcmp(reason,"RANGE_IO")) return "Distance sensor connection failed";
+  if (!strncmp(reason,"RANGE_STATUS_",13)) return "Distance sensor reported an unreliable measurement; see sensor status in motion result";
   if (!strcmp(reason,"HEARTBEAT_TIMEOUT")) return "Zumo stopped: XIAO heartbeat expired";
   if (!strcmp(reason,"SUPERVISOR_TIMEOUT")) return "Mission stopped responding; motors stopped";
   if (!strcmp(reason,"CONTROL_STALE")) return "Zumo control loop was delayed; motors stopped";
@@ -49,6 +53,12 @@ void record(const char* kind, const char* reason) {
   snprintf(e.fault,sizeof(e.fault),"%s",z.fault); snprintf(e.turn,sizeof(e.turn),"%s",z.lookResult);
   e.distanceMm=z.distanceMm; e.rawDistanceMm=z.rawDistanceMm; e.rangeStatus=z.rangeStatus;
   e.rangeAgeMs=z.rangeAgeMs; e.replyAgeMs=z.replyAgeMs; e.rangeValid=z.rangeValid;
+  if (z.motionJob && z.motionRangeStatus >= 0 &&
+      (!strncmp(z.lastError,"RANGE_",6) || !strcmp(z.lastError,"OBSTACLE"))) {
+    e.distanceMm=z.motionDistanceMm; e.rawDistanceMm=z.motionRawDistanceMm;
+    e.rangeStatus=z.motionRangeStatus; e.rangeAgeMs=z.motionRangeAgeMs;
+    e.rangeValid=z.motionRangeStatus==0 && z.motionDistanceMm>0 && z.motionRangeAgeMs<250;
+  }
   e.left=z.left; e.right=z.right; e.encoderLeft=z.encoderLeftCps; e.encoderRight=z.encoderRightCps;
   e.encoderControl=z.encoderControl; e.connected=z.connected; e.ready=z.ready;
   e.motionJob=z.motionJob; e.motionSession=z.motionSession;
@@ -66,6 +76,13 @@ Guard::Guard() { if (gate) xSemaphoreTakeRecursive(gate, portMAX_DELAY); }
 Guard::~Guard() { if (gate) xSemaphoreGiveRecursive(gate); }
 void begin() { gate = xSemaphoreCreateRecursiveMutex(); configASSERT(gate); photo_store::begin(); }
 uint32_t generation() { return controlEpoch.load(); }
+bool setDriveSpeed(int speed) {
+  Guard guard;
+  if (speed < 3000 || speed > 6000) return false;
+  selectedDriveSpeed = speed;
+  return true;
+}
+int driveSpeed() { Guard guard; return selectedDriveSpeed; }
 const char* name(Command value) {
   switch (value) {
     case Command::None: return "Idle";
@@ -73,6 +90,7 @@ const char* name(Command value) {
     case Command::ComeSayHello: return "Come say hello";
     case Command::Identify: return "What's this?";
     case Command::Escape: return "Find a way out";
+    case Command::CircleDance: return "Circle dance";
     default: return "Unknown";
   }
 }
@@ -122,6 +140,12 @@ const char* unavailableReason(Command value) {
   if (!z.ready || strcmp(z.fault, "NONE")) return "Calibrate the surface to enable movement";
   if (!z.motionCapable) return "Update both controllers for autonomous motion jobs";
   if (!z.encoderControl) return "Calibrated encoder feedback is required for autonomous movement";
+  if (value == Command::CircleDance) {
+    if (!z.circleCapable || !z.voiceCapable) return "Update Zumo for circle dance";
+    if (!z.rangeValid && !z.rangeNoReturn) return "Waiting for the front distance sensor";
+    if (z.rangeValid && z.distanceMm < 50) return "Front obstacle is closer than 5 cm";
+    return "";
+  }
   if (!z.actionCapable || !z.autoRampCapable || !z.voiceCapable || !z.rampedLookCapable || !z.wiggleCapable)
     return "Gyroscope or updated movement firmware unavailable";
   // The Zumo checks the sensor's local age when accepting a job. Network and
@@ -148,7 +172,7 @@ bool start(Command value, uint32_t expected) {
   command = value; active = true;
   safetyEvents = zumo_link::snapshot().safetyEvents;
   phase = name(value);
-  if (!action_mission::start(value)) {
+  if (!action_mission::start(value,selectedDriveSpeed)) {
     stop(action_mission::phase()); return false;
   }
   record("started",name(value)); lastPhase[0]=0;
@@ -165,7 +189,7 @@ void poll() {
          z.calibrating ? "Surface calibration started" : !strcmp(z.fault,"ENCODER") ? "Encoder feedback fault" :
          !strcmp(z.fault,"SENSOR") ? "Distance or surface sensor fault" : !strcmp(z.fault,"TURN_FAULT") ? "Turn controller fault" :
          !strcmp(z.lastError,"TIMEOUT") ? "Controller motion heartbeat timed out" :
-         !strcmp(z.lastError,"OBSTACLE") ? "Front distance emergency stop" :
+         !strcmp(z.lastError,"OBSTACLE") ? "Front obstacle closer than 5 cm" :
          !strcmp(z.lastError,"RANGE_UNAVAILABLE") ? "Controller rejected missing or stale distance" :
          motionStopReason(z));
     personality_events::safetyStopped();

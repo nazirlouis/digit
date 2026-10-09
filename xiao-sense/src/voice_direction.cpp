@@ -11,8 +11,8 @@ namespace {
 constexpr float kPi = 3.14159265359f;
 portMUX_TYPE lock = portMUX_INITIALIZER_UNLOCKED;
 voice_direction::Status state = {};
-float front = 0;
-int orientation = 1;
+constexpr float front = voice_mount::frontDegrees;
+constexpr int orientation = voice_mount::orientation;
 uint32_t sampledAt = 0;
 bool hasSample = false;
 
@@ -25,8 +25,8 @@ void loadSettings() {
       saved = VoiceSettings{};
     nvs_close(handle);
   }
-  front = saved.front; orientation = saved.orientation;
-  state.frontSet = saved.frontSet; state.calibrated = saved.calibrated; state.enabled = saved.enabled;
+  state.frontSet = state.calibrated = true;
+  state.enabled = saved.enabled;
 }
 void saveSettings() {
   VoiceSettings saved{};
@@ -171,31 +171,14 @@ Status snapshot() {
   return copy;
 }
 bool configure(const char* action) {
-  const auto zumo = zumo_link::snapshot();
-  const auto audio = audioEngine.snapshot();
-  const bool quiet = !zumo.left && !zumo.right && !zumo.manualDriving && !zumo.lookActive && !zumo.calibrating &&
-                     !wake_word::snapshot().pausedForVision && audio.state != AudioState::Playing && !audio.wakeChimePlaying && !audio.cuePlaying;
   bool accepted = false;
   portENTER_CRITICAL(&lock);
-  const bool fresh = quiet && state.available && state.stable && hasSample && millis() - sampledAt <= 300;
   if (!strcmp(action, "off")) {
     state.enabled = false;
     accepted = true;
   } else if (!strcmp(action, "reset")) {
-    state.frontSet = state.calibrated = false;
+    state.frontSet = state.calibrated = true;
     accepted = true;
-  } else if (!strcmp(action, "front") && fresh) {
-    front = state.degrees;
-    state.frontSet = true;
-    state.calibrated = false;
-    accepted = true;
-  } else if (!strcmp(action, "left") && fresh && state.frontSet) {
-    const float difference = wrap(state.degrees - front);
-    if (std::fabs(difference) >= 45 && std::fabs(difference) <= 135) {
-      orientation = difference > 0 ? 1 : -1;
-      state.calibrated = true;
-      accepted = true;
-    }
   } else if (!strcmp(action, "on")) {
     state.enabled = true;
     accepted = true;

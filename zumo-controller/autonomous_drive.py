@@ -3,6 +3,7 @@ from zumo_2040_robot import robot
 from digit_display import Display
 from zumo_2040_robot.vl53l4cd import VL53L4CD
 import time
+from motion_jobs import FRONT_STOP_MM
 
 
 # Motor speeds range from -6000 to 6000.
@@ -11,7 +12,6 @@ APPROACH_SPEED = 1200
 RECOVERY_SPEED = 2000
 TURN_MAX_SPEED = 2000
 
-FRONT_WALL_MM = 100
 SLOW_APPROACH_MM = 200
 STEERING_GAIN = 100
 MAX_STEERING_CORRECTION = 400
@@ -88,11 +88,11 @@ def update_history(history, value):
 
 
 def front_wall_seen(distance_mm, range_is_valid):
-    return range_is_valid and distance_mm <= FRONT_WALL_MM
+    return range_is_valid and distance_mm < FRONT_STOP_MM
 
 
 def forward_speed(distance_mm, range_is_valid):
-    if range_is_valid and distance_mm <= FRONT_WALL_MM:
+    if front_wall_seen(distance_mm, range_is_valid):
         return 0
     if range_is_valid and distance_mm <= SLOW_APPROACH_MM:
         return APPROACH_SPEED

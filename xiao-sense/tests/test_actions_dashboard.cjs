@@ -10,7 +10,7 @@ const nodes = new Map([...html.matchAll(/\bid="([^"]+)"/g)].map(m=>[m[1],{
   listeners:{},addEventListener(name,fn){this.listeners[name]=fn;},getContext:()=>({clearRect(){},strokeRect(){},fillText(){}}),
 }]));
 const routineIds = [...html.matchAll(/data-routine="(\d+)"/g)].map(m=>Number(m[1]));
-assert.deepEqual(routineIds,[8,9,14]);
+assert.deepEqual(routineIds,[8,9,16,14]);
 assert.ok(html.includes('>Come say hello<small>'));
 assert.ok(html.includes('place a battery at the exit'));
 assert.ok(html.includes('about 10 cm before celebrating'));
@@ -36,7 +36,7 @@ const context = vm.createContext({
     calls.push({url,options});
     if(offline) throw Error('offline');
     if(url==='/api/actions/debug')return reply({events:[{id:1,ms:1000,kind:'stopped',action:'Find a way out',reason:'Manual drive stopped: browser lost focus',distance_mm:168,raw_distance_mm:168,range_status:0,range_age_ms:30,range_valid:true,left:3100,right:3200,encoder_left_cps:1550,encoder_right_cps:1560,fault:'NONE',turn:'DONE',connected:true,reply_age_ms:25,generation:4}]});
-    if(url==='/api/actions')return reply({generation,active,action:active?'Say hello':'Idle',phase:active?'Saying hello':'Stopped',voice_ready:true,listening:false,drive_ready:true,identify_ready:true,person_action_ready:true,object_action_ready:true,follow_action_ready:true,chase_action_ready:true,...voice});
+    if(url==='/api/actions')return reply({generation,active,action:active?'Say hello':'Idle',phase:active?'Saying hello':'Stopped',voice_ready:true,listening:false,drive_ready:true,circle_ready:true,identify_ready:true,person_action_ready:true,object_action_ready:true,follow_action_ready:true,chase_action_ready:true,...voice});
     if(url.startsWith('/api/zumo/stop')){if(deferStop){deferStop=false;await new Promise(resolve=>releaseStop=resolve);}generation++;active=false;return reply({generation,message:'All actions cancelled; motor stop sent'});}
     if(url.startsWith('/api/actions?')||url.startsWith('/api/zumo/drive?')){
       const requestGeneration=Number(new URL(url,'http://digit').searchParams.get('generation'));
@@ -65,6 +65,13 @@ const testTimeout=setTimeout(()=>{console.error('FAIL: dashboard test did not co
   assert.equal(nodes.get('distanceBadge').textContent,'ToF: 1.3 cm','Range remains visible while drive is locked');
   rangeStatus={range_valid:false,distance_mm:-1,range_age_ms:20};
   await context.refreshZumo();assert.equal(nodes.get('distanceBadge').textContent,'ToF: unavailable');
+  rangeStatus={range_valid:false,range_no_return:true,distance_mm:-1,range_age_ms:20};
+  await context.refreshZumo();assert.equal(nodes.get('distanceBadge').textContent,'ToF: no return');
+  const noReturnExpiry=[...timers.values()].find(t=>t.delay===1500);
+  assert.ok(noReturnExpiry);noReturnExpiry.fn();
+  assert.equal(nodes.get('distanceBadge').textContent,'ToF: stale');
+  rangeStatus={range_valid:false,range_no_return:true,distance_mm:-1,range_age_ms:250};
+  await context.refreshZumo();assert.equal(nodes.get('distanceBadge').textContent,'ToF: stale');
   rangeStatus={range_valid:true,distance_mm:50,range_age_ms:250};
   await context.refreshZumo();assert.equal(nodes.get('distanceBadge').textContent,'ToF: stale');
   rangeStatus={connected:false,range_valid:true,distance_mm:50,range_age_ms:10};
@@ -78,6 +85,13 @@ const testTimeout=setTimeout(()=>{console.error('FAIL: dashboard test did not co
   assert.equal(nodes.get('distanceBadge').textContent,'ToF: offline');
   offline=false;await context.refreshZumo();
   nodes.get('driveSpeed').value='4000';
+  nodes.get('driveSpeed').listeners.input({target:{value:'4000'}});
+  await nodes.get('driveSpeed').listeners.change();
+  assert.ok(calls.some(c=>c.url==='/api/zumo/speed?value=4000'&&c.options.method==='POST'));
+  await context.startRoutine(16);
+  const danceParams=new URL(calls.findLast(c=>c.url.startsWith('/api/actions?')).url,'http://digit').searchParams;
+  assert.equal(danceParams.get('command'),'16');assert.equal(danceParams.get('speed'),'4000');
+  await context.stopZumo(true);
   nodes.get('driveAcceleration').value='500';
   nodes.get('driveAcceleration').listeners.input({target:{value:'500'}});
   assert.equal(nodes.get('driveAccelerationValue').textContent,'500');
@@ -148,7 +162,7 @@ const testTimeout=setTimeout(()=>{console.error('FAIL: dashboard test did not co
   await context.stopZumo();release();await drive;
   assert.equal(active,false,'A delayed hold-to-drive request must not restart');
   const beforeRetired=calls.length;
-  for(const id of [1,2,3,4,5,6,10,11,12,13,15,16])await context.startRoutine(id);
+  for(const id of [1,2,3,4,5,6,10,11,12,13,15,17])await context.startRoutine(id);
   assert.equal(calls.length,beforeRetired,'Retired actions must not send requests');
   assert.equal(nodes.has('voicePhoto'),false);
   for(const [status,message] of [
@@ -171,7 +185,7 @@ const testTimeout=setTimeout(()=>{console.error('FAIL: dashboard test did not co
   await context.refreshActions();
   assert.equal(buttons.find(b=>b.dataset.routine==='14').disabled,true);
   assert.ok(buttons.filter(b=>b.dataset.routine!=='14').every(b=>!b.disabled));
-  voice={follow_action_ready:false,drive_ready:false,person_action_ready:false,object_action_ready:false,chase_action_ready:false,identify_ready:true,movement_reason:'Edge stop: place Digit fully on the surface, then recalibrate'};
+  voice={follow_action_ready:false,drive_ready:false,person_action_ready:false,object_action_ready:false,chase_action_ready:false,circle_ready:false,identify_ready:true,movement_reason:'Edge stop: place Digit fully on the surface, then recalibrate'};
   await context.refreshActions();
   assert.equal(nodes.get('actionAvailability').textContent,voice.movement_reason);
   assert.equal(context.freshVision({vision_age_ms:20,vision_capture_age_ms:500}),true);

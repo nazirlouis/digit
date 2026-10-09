@@ -12,9 +12,9 @@ struct Status {
 };
 void begin();
 Status snapshot();
-// front/left capture fresh speech without moving motors. on/off/reset.
+// on/off persist the preference; reset retains the fixed mounting reference.
 bool configure(const char* action);
-// Captures one fresh, stable, calibrated bearing (positive = robot left).
+// Captures one fresh, stable bearing relative to fixed front (positive = left).
 bool target(int& degrees, uint32_t& generation, const char** reason = nullptr,
             bool* retryable = nullptr);
 bool accepts(uint32_t generation);

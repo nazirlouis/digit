@@ -169,6 +169,9 @@ bool handleMotionLine(const char* line, uint32_t now) {
   status.motionTimestampMs = now;
   status.motionJob = job;
   status.motionDistanceMm = distance;
+  status.motionRangeStatus = status.motionRawDistanceMm = -1;
+  const char* rangeDiagnostic = strstr(body, " RS=");
+  if (rangeDiagnostic) sscanf(rangeDiagnostic," RS=%d RAW=%d",&status.motionRangeStatus,&status.motionRawDistanceMm);
   status.motionHeadingDeciDeg = heading;
   status.motionRangeAgeMs = age;
   status.motionSample = job;
@@ -312,6 +315,7 @@ void handleLine(const char* line, uint32_t now) {
     status.motionBoot = boot;
     status.distanceMm = distance;
     status.rangeValid = valid == 1;
+    status.rangeNoReturn = strstr(line, " NR=1") != nullptr;
     status.actionCapable = capable == 1;
     const char* brake = strstr(line, " BRAKE=");
     status.brakeCapable = brake && brake[7] == '1';
@@ -322,6 +326,7 @@ void handleLine(const char* line, uint32_t now) {
     const char* reactionField = strstr(line, " REACT=");
     if (reactionField) sscanf(reactionField, " REACT=%x", &reactionVersion);
     status.reactionVersion = reactionVersion;
+    status.circleCapable = strstr(line, " CIRCLE=2") != nullptr;
     status.autoRampCapable = strstr(line, " SAFE2=1") != nullptr;
     status.chaseCloseCapable = strstr(line, " CLOSE=2") != nullptr;
     status.closeApproachCapable = status.chaseCloseCapable || strstr(line, " CLOSE=1") != nullptr;
@@ -559,6 +564,13 @@ uint32_t turnJob(int degrees, uint32_t maxMs) {
   return submitJob("TURN",args);
 }
 
+uint32_t circleJob(int speed) {
+  if (speed < 3000 || speed > 6000 || !snapshot().circleCapable) return 0;
+  char args[48];
+  snprintf(args,sizeof(args),"%d 3 %d 60000",speed,acceleration());
+  return submitJob("CIRCLE",args);
+}
+
 uint32_t measureJob() { return submitJob("MEASURE","2500"); }
 
 bool updateDriveJob(uint32_t job, int left, int right) {
@@ -664,7 +676,7 @@ bool safeDrive(int left, int right, int stopDistanceMm) {
       (stopDistanceMm != 100 || status.closeApproachCapable) &&
       (stopDistanceMm != 50 || status.chaseCloseCapable) && !status.approachArrived &&
       !stopPending && !facePending && !scenePending && !sceneId &&
-      (left + right <= 0 || status.distanceMm > (stopDistanceMm < 150 ? stopDistanceMm - 20 : 150));
+      (left + right <= 0 || status.distanceMm >= 50);
   if (allowed) {
     desiredLeft = movementTarget(left);
     desiredRight = movementTarget(right);
@@ -780,8 +792,11 @@ void cancelScene() {
 void cancelWake() {
   portENTER_CRITICAL(&stateLock);
   ++presentationGeneration;
+  // Cleanup also runs before unrelated face reactions. Only unfinished wake
+  // requests are cancelled; retain acknowledged results and diagnostic errors.
+  if (wakePending || wakeCommandId)
+    snprintf(status.wakeResult, sizeof(status.wakeResult), "CANCELLED");
   wakePending = false; wakeCommandId = 0;
-  snprintf(status.wakeResult, sizeof(status.wakeResult), "CANCELLED");
   portEXIT_CRITICAL(&stateLock);
 }
 

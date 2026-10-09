@@ -77,11 +77,52 @@ int main() {
   assert(!zumo_link::state.left && !zumo_link::state.right);
   std::cout << "PASS wake cancellation keeps cooldown without repeated motor Stops during held drive\n";
 
-  for (int id : {8,9,14}) {
+  resetDevice();
+  assert(robot_actions::setDriveSpeed(5200));
+  assert(!robot_actions::setDriveSpeed(2999) && !robot_actions::setDriveSpeed(6001));
+  assert(robot_actions::start(Command::CircleDance,robot_actions::generation()));
+  robot_actions::poll(); robot_actions::poll();
+  assert(zumo_link::state.left>0 && zumo_link::state.left<zumo_link::state.right && zumo_link::state.right==5200);
+  assert(audioEngine.playing && audioEngine.lastCue==AudioCue::Dance);
+  assert(!vision_service::state.enabled);
+  robot_actions::setDriveSpeed(3000);robot_actions::poll();
+  assert(zumo_link::state.right==5200); // Capture dashboard speed once per dance.
+  audioEngine.playing=false;const auto musicPlays=audioEngine.plays;
+  robot_actions::poll();assert(audioEngine.plays==musicPlays+1);
+  strcpy(zumo_link::state.motionState,"DONE");strcpy(zumo_link::state.motionResult,"CIRCLE_DONE");
+  robot_actions::poll();assert(!robot_actions::snapshot().active && !audioEngine.playing);
+  resetDevice();assert(robot_actions::start(Command::CircleDance,robot_actions::generation()));
+  robot_actions::poll();robot_actions::poll();assert(audioEngine.playing);
+  robot_actions::stop();assert(!audioEngine.playing && !zumo_link::state.right);
+  resetDevice();zumo_link::state.circleCapable=false;
+  assert(!robot_actions::start(Command::CircleDance,robot_actions::generation()));
+  resetDevice();zumo_link::state.rangeValid=false;zumo_link::state.distanceMm=-1;
+  assert(!robot_actions::start(Command::CircleDance,robot_actions::generation()));
+  zumo_link::state.rangeNoReturn=true;
+  assert(robot_actions::start(Command::CircleDance,robot_actions::generation()));
+  robot_actions::stop();
+  resetDevice();zumo_link::state.distanceMm=49;
+  assert(!robot_actions::start(Command::CircleDance,robot_actions::generation()));
+  zumo_link::state.distanceMm=50;
+  assert(robot_actions::start(Command::CircleDance,robot_actions::generation()));
+  robot_actions::stop();
+  std::cout<<"PASS circle dashboard speed capture, music loop, three-lap completion, Stop and old-peer gate\n";
+  resetDevice();assert(robot_actions::start(Command::CircleDance,robot_actions::generation()));
+  robot_actions::poll();robot_actions::poll();
+  zumo_link::state.motionRangeStatus=1;zumo_link::state.motionRawDistanceMm=234;
+  zumo_link::state.motionDistanceMm=-1;zumo_link::state.motionRangeAgeMs=20;
+  strcpy(zumo_link::state.lastError,"RANGE_STATUS_1");++zumo_link::state.safetyEvents;
+  robot_actions::poll();
+  assert(robot_actions::debugEvent(robot_actions::latestDebugId(),&captured));
+  assert(captured.rangeStatus==1 && captured.rawDistanceMm==234 && !captured.rangeValid);
+  assert(captured.distanceMm==-1); // Later healthy telemetry cannot overwrite fault evidence.
+  assert(!audioEngine.playing && !robot_actions::snapshot().active);
+
+  for (int id : {8,9,14,16}) {
     resetDevice();
     assert(robot_actions::start(static_cast<Command>(id),robot_actions::generation()));
     const auto epoch=robot_actions::generation(), motions=zumo_link::motions, stops=zumo_link::stops;
-    for(int retired : {0,1,2,3,4,5,6,10,11,12,13,15,16,17,255}) {
+    for(int retired : {0,1,2,3,4,5,6,10,11,12,13,15,17,255}) {
       assert(!robot_actions::validCommand(retired));
       assert(!robot_actions::start(static_cast<Command>(retired),epoch));
       assert(robot_actions::generation()==epoch && robot_actions::snapshot().active);

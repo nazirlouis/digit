@@ -45,7 +45,7 @@ class EncoderSpeed:
                 self.min_cps + (self.max_cps-self.min_cps) * (magnitude-3000) / 3000.0)
         return sign(target) * rate
 
-    def update(self, now, targets, outputs, braking=False):
+    def update(self, now, targets, outputs, braking=False, rate_ratios=None):
         dt = self.clock.ticks_diff(now, self.at)
         fresh = dt >= 50
         delta = (0, 0)
@@ -74,7 +74,19 @@ class EncoderSpeed:
                 self.integral[i] = 0.0
                 self.progress[i] = self.reverse_since[i] = None
                 self.directions[i] = direction
-            self.targets[i] = self.rate_target(targets[i])
+            ratio = rate_ratios[i] if rate_ratios is not None else 1.0
+            if not math.isfinite(ratio) or not 0 < ratio <= 1:
+                raise ValueError("Encoder rate ratio")
+            slow = ratio < 1
+            self.targets[i] = self.rate_target(targets[i]) * ratio
+            outside = 1 - i
+            if (slow and rate_ratios[outside] == 1 and
+                    abs(outputs[outside]) >= 3000 and self.velocity[outside] * direction >= 50):
+                # If the outside track saturates under load, follow its actual
+                # speed instead of widening the orbit by chasing an impossible
+                # nominal outside speed. The dashboard still sets its target.
+                self.targets[i] = direction * min(abs(self.rate_target(targets[i])),
+                                                 self.velocity[outside] * direction) * ratio
             if not direction:
                 result.append(0)
                 continue
@@ -82,11 +94,17 @@ class EncoderSpeed:
             low = self.low if direction > 0 else self.reverse_low
             high = self.high if direction > 0 else self.reverse_high
             feedforward = 3000 + (rate-low[i]) * 3000 / (high[i]-low[i])
-            moving = sign(outputs[i]) == direction and abs(outputs[i]) >= 3000
+            # Circle's inside track needs a lower measured velocity than the
+            # normal torque-floor target. Give it startup torque, then let PI
+            # reduce power once encoder motion is confirmed. Other movement
+            # retains the normal 3000 minimum.
+            moving = sign(outputs[i]) == direction and (abs(outputs[i]) >= 3000 or
+                     (slow and self.velocity[i] * direction >= 50))
             if not moving:
                 self.integral[i] = 0.0  # Startup/reversal must not wind up the PI loop.
-                self.progress[i] = self.reverse_since[i] = None
-            elif fresh:
+                if not slow:
+                    self.progress[i] = self.reverse_since[i] = None
+            if fresh and (moving or (slow and self.progress[i] is not None)):
                 if self.progress[i] is None or delta[i] * direction >= 2:
                     self.progress[i] = now
                 if delta[i] * direction < -2:
@@ -103,8 +121,10 @@ class EncoderSpeed:
             if moving and fresh:
                 candidate = max(-1000, min(1000, self.integral[i] + error * dt / 1000.0))
                 demand = feedforward + proportional + candidate
-                if 3000 <= demand <= 6000 or (demand > 6000 and error < 0) or (demand < 3000 and error > 0):
+                lower = 0 if slow else 3000
+                if lower <= demand <= 6000 or (demand > 6000 and error < 0) or (demand < lower and error > 0):
                     self.integral[i] = candidate
-            power = max(3000, min(6000, feedforward + proportional + self.integral[i]))
+            lower = 0 if slow and moving else 3000
+            power = max(lower, min(6000, feedforward + proportional + self.integral[i]))
             result.append(int(power) * direction)
         return tuple(result)

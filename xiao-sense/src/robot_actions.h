@@ -2,10 +2,10 @@
 #include <cstdint>
 
 namespace robot_actions {
-// Preserve the approach/identify/escape wire IDs. All other actions are retired.
+// Preserve existing wire IDs; circle dance uses its own new action ID.
 enum class Command : uint8_t { None = 0, Stop = 7,
-  ComeSayHello = 8, Identify = 9, Escape = 14 };
-inline bool validCommand(int id) { return id == 7 || id == 8 || id == 9 || id == 14; }
+  ComeSayHello = 8, Identify = 9, Escape = 14, CircleDance = 16 };
+inline bool validCommand(int id) { return id == 7 || id == 8 || id == 9 || id == 14 || id == 16; }
 struct Status { Command command; const char* phase; bool active; uint32_t generation; };
 struct DebugEvent {
   uint32_t id, timestampMs, generation, rangeAgeMs, replyAgeMs;
@@ -31,6 +31,8 @@ class Guard {
 void begin();
 uint32_t generation();
 bool start(Command command, uint32_t expectedGeneration);
+bool setDriveSpeed(int speed);
+int driveSpeed();
 void stop(const char* reason = "Stopped", bool smooth = false);
 void manualOverride();
 void poll();

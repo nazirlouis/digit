@@ -17,17 +17,21 @@ void assertCommand(const char* expected, const char* forbidden) {
   assert(zumoUart.outgoing.find(other)==std::string::npos);
 }
 std::string m2Reply(uint32_t boot,uint32_t session,unsigned job,const char* phase,
-                    const char* reason,int distance=500,int heading=0) {
+                    const char* reason,int distance=500,int heading=0,int rangeStatus=0,int rawDistance=500) {
   char body[256],frame[300];
-  snprintf(body,sizeof(body),"M2 %08lx %lu %u %s %s %d %d 25 GAP=8 OVERRUN=0 DSUS=1490 TL=1579 TR=1579",
-      static_cast<unsigned long>(boot),static_cast<unsigned long>(session),job,phase,reason,distance,heading);
+  snprintf(body,sizeof(body),"M2 %08lx %lu %u %s %s %d %d 25 GAP=8 OVERRUN=0 DSUS=1490 TL=1579 TR=1579 RS=%d RAW=%d",
+      static_cast<unsigned long>(boot),static_cast<unsigned long>(session),job,phase,reason,distance,heading,rangeStatus,rawDistance);
   snprintf(frame,sizeof(frame),"0 %s *%04X",body,motionCrc(body,strlen(body)));
   return frame;
 }
 int main() {
   zumo_link::begin();
+  handleLine("1 OK READY=1 FAULT=NONE L=0 R=0 BAT=5800 EDGE=0 VOICE=1 DIST=-1 RANGE=0 AUTO=1 RA=20 RS=2 RAW=24 NR=1",nowMs);
+  assert(zumo_link::snapshot().rangeNoReturn && !zumo_link::snapshot().rangeValid);
+  assert(zumo_link::snapshot().distanceMm==-1 && zumo_link::snapshot().rangeAgeMs==20);
   handleLine("1 OK READY=1 FAULT=NONE L=0 R=0 BAT=5800 EDGE=0 VOICE=1 DIST=350 RANGE=1 AUTO=1 BRAKE=1 SAFE2=1 CLOSE=2 RA=220 RS=0 RAW=350 ENC=1 VL=1540 VR=1535",nowMs);
   assert(zumo_link::snapshot().rangeAgeMs==220);
+  assert(!zumo_link::snapshot().rangeNoReturn); // No stale inheritance from an old reply.
   assert(zumo_link::snapshot().encoderControl && zumo_link::snapshot().encoderLeftCps==1540);
   assert(zumo_link::snapshot().rangeStatus==0 && zumo_link::snapshot().rawDistanceMm==350);
   nowMs+=35;
@@ -211,13 +215,25 @@ int main() {
   assert(!zumo_link::safeDrive(2400,2400,50));
   closeRange.replace(closeRange.find("DIST=30"),7,"DIST=60");
   handleLine(closeRange.c_str(),nowMs);
-  assert(!zumo_link::safeDrive(2400,2400,100));
+  assert(zumo_link::safeDrive(2400,2400,100));
   assert(zumo_link::safeDrive(2400,2400,50));
   handleLine("333 OK ARRIVED",nowMs);
   assert(zumo_link::snapshot().approachArrived && !driveWanted);
   zumo_link::stop(); zumo_link::poll(); handleLine(closePeer.c_str(),nowMs);
   assert(!zumo_link::snapshot().chaseCloseCapable && !zumo_link::safeDrive(2400,2400,50));
-  std::cout<<"PASS 5 cm chase capability, 3 cm hard guard, local arrival and 10 cm peer compatibility\n";
+  for(int target : {50,100,150}) {
+    zumo_link::stop();zumo_link::poll();
+    auto boundary=chasePeer;
+    boundary.replace(boundary.find("DIST=900"),8,"DIST=49");
+    handleLine(boundary.c_str(),nowMs);
+    assert(!zumo_link::safeDrive(2400,2400,target));
+    assert(zumo_link::drive(4000,4000,500)); // Manual has no front-distance gate.
+    zumo_link::stop();zumo_link::poll();
+    boundary.replace(boundary.find("DIST=49"),7,"DIST=50");
+    handleLine(boundary.c_str(),nowMs);
+    assert(zumo_link::safeDrive(2400,2400,target));
+  }
+  std::cout<<"PASS 5 cm chase capability, strictly below 5 cm obstacle guard, manual exemption, local arrival and 10 cm peer compatibility\n";
   std::cout<<"PASS explicit close-approach negotiation, distance argument, local arrival and no automatic restart\n";
   std::cout<<"PASS quick wiggle negotiation, generation, single command, heartbeat, completion and cancellation\n";
   std::cout<<"PASS production UART bridge: default 6000, BRAKE support, older peer fallback, edge and lease priority\n";
@@ -280,6 +296,7 @@ int main() {
   handleLine(m2Reply(0x1234abcd,10,measure,"DONE","MEASURED",750,905).c_str(),nowMs);
   completion=zumo_link::snapshot();
   assert(completion.motionSample==measure && completion.motionDistanceMm==750 && completion.motionHeadingDeciDeg==905);
+  assert(completion.motionRangeStatus==0 && completion.motionRawDistanceMm==500);
   assert(zumo_link::scene("CURIOUS","SEARCHING"));zumo_link::poll();
   const auto visibleId=sceneId;
   handleLine((std::to_string(visibleId)+" OK SCENE").c_str(),nowMs);
@@ -346,7 +363,30 @@ int main() {
   handleLine((std::to_string(freshWake)+" OK WAKE").c_str(),nowMs);
   handleLine((std::to_string(freshWake)+" OK WAKE_VISIBLE").c_str(),nowMs);
   assert(!strcmp(zumo_link::snapshot().wakeResult,"APPLIED") && !wakeCommandId);
+  // Later face reactions clean up wake work but must retain its actual result.
+  zumo_link::cancelWake();
+  assert(!strcmp(zumo_link::snapshot().wakeResult,"APPLIED"));
+  assert(zumo_link::wake());
+  zumo_link::cancelWake();
+  assert(!strcmp(zumo_link::snapshot().wakeResult,"CANCELLED") && !wakePending);
+  assert(zumo_link::wake());zumo_link::poll();const auto failedWake=wakeCommandId;
+  handleLine((std::to_string(failedWake)+" ERR WAKE_IO").c_str(),nowMs);
+  zumo_link::cancelWake();
+  assert(!strcmp(zumo_link::snapshot().wakeResult,"WAKE_IO"));
   handleLine(modern,nowMs);assert(zumo_link::snapshot().reactionVersion==0);
+  assert(!zumo_link::snapshot().circleCapable && !zumo_link::circleJob(4000));
+  handleLine((jobs+" CIRCLE=1").c_str(),nowMs);
+  assert(!zumo_link::snapshot().circleCapable); // One-track peer must be upgraded.
+  handleLine((jobs+" CIRCLE=2").c_str(),nowMs);
+  assert(zumo_link::snapshot().circleCapable);
+  zumo_link::superviseMotion();zumo_link::armMotion();zumo_link::poll();
+  session=motionSession;handleLine(m2Reply(0x1234abcd,session,0,"ARMED","NONE").c_str(),nowMs);
+  assert(!zumo_link::circleJob(2999) && !zumo_link::circleJob(6001));
+  assert(zumo_link::circleJob(5200));zumoUart.outgoing.clear();zumo_link::poll();
+  assert(zumoUart.outgoing.find(" CIRCLE 5200 3 ")!=std::string::npos);
+  assert(zumoUart.outgoing.find(" 60000 *")!=std::string::npos);
+  zumo_link::stop();zumo_link::poll();
+  std::cout<<"PASS negotiated circle job, selected speed, three laps and bounded deadline\n";
   std::cout<<"PASS reaction catalog negotiation, independent presentation cancellation, stale acknowledgments and wake visibility\n";
   std::cout<<"PASS persistent M2 jobs, CRC, retry, monotonic sessions, completion latching, heading-specific measurement, independent heartbeat, supervisor timeout and restart cancellation\n";
 }

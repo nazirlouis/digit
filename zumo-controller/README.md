@@ -270,12 +270,12 @@ GP4/GP5; if unavailable, manual drive/face/light control still starts and
 `STATUS` reports `VOICE=0`. Do not overwrite the current motor polarity or
 silent buzzer library with factory files.
 
-The XIAO dashboard provides **Set front**, **Set left**, and **Enable voice
-turning**. See `../xiao-sense/README.md` for mounting and setup. Direction setup
-does not move motors and is saved on the XIAO across restarts. Voice turning
-defaults on, but waits for valid direction and surface calibration; an explicit
-off choice is also saved. Floor calibration is
-still required. Wake listening remains on unless vision is enabled.
+The XIAO uses a fixed microphone mounting reference: 270 degrees is front and
+0/360 degrees is left. No voice direction calibration is needed. The dashboard
+provides **Enable voice turning** / **Disable voice turning**, and preserves
+that choice across restarts. See `../xiao-sense/README.md` for mounting details.
+Voice turning defaults on, but still waits for fresh, stable speech and surface
+calibration. Wake listening remains on unless vision is enabled.
 
 `ID LOOK angle [acceleration]` accepts integer degrees -180 through 180, positive toward the
 robot's left. It replies `ID OK LOOKING`, then `ID OK LOOK_DONE` only after
@@ -401,11 +401,15 @@ names and a fixed set of labels; arbitrary display text is not a UART command.
 Only the explicit four-argument SAFE form enables a close target; its last
 argument must be exactly 50 or 100. `CLOSE=2` advertises both targets, while
 older `CLOSE=1` controllers support only 100. It preserves the ramp and fixed
-braking, retains an immediate guard 20 mm inside the selected target (30 mm
-for Chase this, 80 mm for Find me), and reports `0 EVENT ARRIVED` or
+braking, uses the shared obstacle guard strictly below 50 mm for both targets,
+and reports `0 EVENT ARRIVED` or
 `ID OK ARRIVED` without a safety fault. It stays stopped if later refreshes
 arrive or the range bounces upward; Stop or a new manual motion clears that
-arrival state. Ordinary SAFE retains its 150 mm hard stop. Missing range,
+arrival state. Ordinary SAFE, circle dance, and the standalone roaming program
+also stop for a front obstacle only below 50 mm. Exactly 50 mm is allowed by
+the obstacle guard; normal arrival targets still apply. Manual DRIVE/TURN has
+no front-distance stop, including when the front range is missing. Missing range
+in range-dependent automatic movement,
 edge faults, Button C and communication timeouts retain their existing stops.
 
 Motion starts with a ramp on the Zumo itself. `DRIVE left right acceleration`

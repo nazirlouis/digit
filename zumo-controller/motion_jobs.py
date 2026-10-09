@@ -9,6 +9,7 @@ import os
 
 
 HEARTBEAT_MS = 750
+FRONT_STOP_MM = 50  # Automatic obstacle stop is strictly below 5 cm.
 SETTLE_MS = 150
 SETTLE_CPS = 50
 MEASURE_SAMPLES = 3
@@ -71,6 +72,13 @@ class MotionJobs:
         self.measured = -1
         self.measured_at = None
         self.measure_samples = []
+        self.circle_speed = 0
+        self.circle_goal = 0
+        self.circle_progress = 0.0
+        self.circle_progress_at = 0
+        self.circle_restarts = 0
+        self.circle_range_at = None
+        self.failure_range = None
 
     @property
     def active(self):
@@ -81,12 +89,15 @@ class MotionJobs:
         now = self.clock.ticks_ms() if now is None else now
         distance = self.measured if self.reason == "MEASURED" else c.distance_mm
         at = self.measured_at if self.reason == "MEASURED" else c.range_at
+        range_status, raw_distance = c.range_status, c.raw_distance_mm
+        if self.failure_range is not None:
+            distance, at, range_status, raw_distance = self.failure_range
         age = min(65535, max(0, self.clock.ticks_diff(now, at))) if at is not None else 65535
         target = c.speed_control.targets if c.speed_control else (0, 0)
-        body = "M2 {} {} {} {} {} {} {} {} GAP={} OVERRUN={} DSUS={} TL={} TR={}".format(
+        body = "M2 {} {} {} {} {} {} {} {} GAP={} OVERRUN={} DSUS={} TL={} TR={} RS={} RAW={}".format(
             self.boot, self.session, self.seq, self.state, self.reason, distance,
             int(self.heading * 10), age, c.max_loop_gap_ms, c.loop_overruns,
-            getattr(c.face, "max_slice_us", 0), int(target[0]), int(target[1]))
+            getattr(c.face, "max_slice_us", 0), int(target[0]), int(target[1]), range_status, raw_distance)
         c._send(frame(wire, body))
         self.reported = now
 
@@ -94,6 +105,9 @@ class MotionJobs:
         # Keep session + high-water job id after disarming. Old traffic cannot
         # re-arm or restart the most recently cancelled session.
         was_active = self.active or self.armed
+        if fault and self.failure_range is None:
+            self.failure_range = (self.c.distance_mm, self.c.range_at,
+                                  self.c.range_status, self.c.raw_distance_mm)
         guarded_brake = smooth and self.kind == "DRIVE" and self.c._moving()
         self.armed = False
         self.kind = None
@@ -158,6 +172,7 @@ class MotionJobs:
             if not self._stopped(now):
                 return self._error(wire, "NOT_STOPPED")
             self.session, self.seq = session, 0
+            self.failure_range = None
             self.payload = None
             self.armed = True
             self.heartbeat = now
@@ -224,10 +239,20 @@ class MotionJobs:
                 return self._error(wire, "ARGUMENT")
             if not self.c._range_valid(now):
                 return self._error(wire, "RANGE_UNAVAILABLE")
+            if self.c.distance_mm < FRONT_STOP_MM:
+                return self._error(wire, "OBSTACLE")
         elif verb == "TURN":
             if (len(args) != 3 or not -180 <= args[0] <= 180 or not 500 <= args[1] <= 6000 or
                     not 100 <= args[2] <= 30000):
                 return self._error(wire, "ARGUMENT")
+        elif verb == "CIRCLE":
+            if (len(args) != 4 or not 3000 <= args[0] <= 6000 or args[1] != 3 or
+                    not 500 <= args[2] <= 6000 or not 1000 <= args[3] <= 60000):
+                return self._error(wire, "ARGUMENT")
+            if not (self.c._range_valid(now) or self.c._range_no_return(now)):
+                return self._error(wire, "RANGE_UNAVAILABLE")
+            if self.c._range_valid(now) and self.c.distance_mm < FRONT_STOP_MM:
+                return self._error(wire, "OBSTACLE")
         elif verb == "MEASURE":
             if len(args) != 1 or not 100 <= args[0] <= 5000:
                 return self._error(wire, "ARGUMENT")
@@ -235,6 +260,7 @@ class MotionJobs:
             return self._error(wire, "VERB")
         self.c._stop()
         self.seq, self.payload = seq, fields[4:]
+        self.failure_range = None
         self.kind, self.state, self.reason = verb, "RUNNING", "ACCEPTED"
         self.started, self.limit = now, args[-1]
         self.settled = None
@@ -256,6 +282,17 @@ class MotionJobs:
                 self.bias_count, self.bias_total = 0, 0.0
             else:
                 self._drive(now, 0)
+        elif verb == "CIRCLE":
+            self.circle_speed, laps, self.acceleration = args[:3]
+            self.circle_range_at = self.c.range_at
+            self.circle_goal = laps * 360
+            self.turn_origin = self.heading
+            self.circle_progress = 0.0
+            self.circle_progress_at = now
+            self.circle_restarts = 0
+            self.gyro_at = now
+            self.state = "CALIBRATING"
+            self.bias_count, self.bias_total = 0, 0.0
         elif verb == "TURN":
             self.turn_origin = self.heading
             self.acceleration = args[1]
@@ -332,7 +369,7 @@ class MotionJobs:
         if not c._range_valid(now):
             self.cancel("RANGE_UNAVAILABLE", True)
             return False
-        if c.distance_mm <= self.stop_mm - 20:
+        if c.distance_mm < FRONT_STOP_MM:
             self.cancel("OBSTACLE", True)
             return False
         if c.range_at != self.last_range_at:
@@ -372,7 +409,9 @@ class MotionJobs:
         if self.clock.ticks_diff(now, self.started) >= self.limit:
             self.cancel("JOB_TIMEOUT", True)
             return
-        if self.kind == "DRIVE":
+        if self.kind == "CIRCLE":
+            self._circle(now)
+        elif self.kind == "DRIVE":
             if not self._range_motion(now):
                 return
             try:
@@ -436,3 +475,68 @@ class MotionJobs:
                     self.measured = sorted(self.measure_samples)[1]
                     self.measured_at = now
                     self._finish("MEASURED")
+
+    def _circle(self, now):
+        c = self.c
+        usable = c._range_valid(now) or c._range_no_return(now)
+        if usable:
+            self.circle_range_at = c.range_at
+        elif c.range_failed or c.tof is None:
+            self.cancel("RANGE_IO", True)
+            return
+        elif c.range_at is None or self.clock.ticks_diff(now, c.range_at) >= 250:
+            self.cancel("RANGE_STALE", True)
+            return
+        elif (c.range_status in (3, 5, 255) or self.circle_range_at is None or
+              self.clock.ticks_diff(now, self.circle_range_at) >= 250):
+            self.cancel("RANGE_STATUS_{}".format(c.range_status), True)
+            return
+        # A brief unreliable sample is not an obstacle and is not stale data.
+        # Retain the bounded 250 ms grace since the last usable observation;
+        # every valid reading below the obstacle threshold still stops now.
+        if c._range_valid(now) and c.distance_mm < FRONT_STOP_MM:
+            self.cancel("OBSTACLE", True)
+            return
+        try:
+            rate = self._gyro(now)
+        except Exception as error:
+            reason = str(error)
+            self.cancel(reason if reason in ("GYRO_STALE", "GYRO_RANGE", "CALIBRATION_MOVING", "GYRO_UNSTABLE") else "GYRO_IO", True)
+            return
+        if rate is None:
+            return
+        progress = self.heading - self.turn_origin
+        if progress < -5:
+            self.cancel("CIRCLE_DIRECTION", True)
+            return
+        if self.state == "BRAKING":
+            if self._settled(now):
+                if progress >= self.circle_goal - 8:
+                    self._finish("CIRCLE_DONE")
+                elif self.circle_restarts >= 6:
+                    self.cancel("CIRCLE_UNSETTLED", True)
+                else:
+                    self.circle_restarts += 1
+                    self.state, self.reason = "RUNNING", "CIRCLING"
+                    self.circle_progress_at = now
+            return
+        effort = max(abs(c.left), abs(c.right))
+        if progress >= self.circle_progress + 2 or effort < 3000:
+            self.circle_progress, self.circle_progress_at = progress, now
+        elif self.clock.ticks_diff(now, self.circle_progress_at) >= 700:
+            self.cancel("CIRCLE_STALLED", True)
+            return
+        # With approximately 3-inch track-center spacing, 3/9-inch inside/
+        # outside paths give a 6-inch center path. Scale measured encoder rate,
+        # not PWM or the nonlinear dashboard speed, to preserve the 1:3 ratio.
+        stopping_yaw = max(0, rate) * (effort / 24000.0 + .020)
+        if progress + stopping_yaw >= self.circle_goal:
+            c._stop(smooth=True)
+            self.state, self.reason, self.settled = "BRAKING", "CIRCLE_BRAKING", None
+            self.snapshot(now=now)
+        elif c.voice_turn.motor_sign > 0:
+            c._target_motion(self.circle_speed, self.circle_speed, now, self.acceleration,
+                             rate_ratios=(1.0 / 3.0, 1.0))
+        else:
+            c._target_motion(self.circle_speed, self.circle_speed, now, self.acceleration,
+                             rate_ratios=(1.0, 1.0 / 3.0))

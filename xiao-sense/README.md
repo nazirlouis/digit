@@ -216,12 +216,10 @@ on a desk cannot supply a robot-relative heading for this implementation.
    voice** in the dashboard. Speak from different sides and confirm the displayed
    array angle changes. Unsupported/busy direction commands report an error;
    they must never be interpreted as a valid zero-degree heading.
-3. Repeat “hello” directly in front while pressing **Set front**. Repeat from
-   Digit's left side while pressing **Set left**. These actions do not move
-   motors. Left must be 45–135 degrees from the captured front. Both readings
-   must be fresh and stable. This calibrates mounting offset and angle sign.
+3. The microphone mount uses a fixed reference: 270 degrees is front,
+   0/360 is left, 180 is right, and 90 is behind. No speech calibration is needed.
 4. Speak from front, left, right, and behind. Check the displayed relative
-   directions before enabling motion. Redo setup after remounting the array.
+   directions before enabling motion. Preserve this orientation when remounting the array.
 5. Place Digit on a clear, level floor and calibrate the floor. Voice turning is
    already enabled unless you switched it off; use **Enable voice turning** if needed. Start with a small left or right angle and say “Digit”. Check the
    physical rotation with STOP/Button C available, then test other headings.
@@ -270,9 +268,10 @@ Visual Studio Developer PowerShell in `xiao-sense`, compile and run it with
 then `./test-artifacts/test_xvf_read.exe`.
 
 `GET /api/voice/status` reports raw/relative angle, freshness, command source,
-setup state, gyro availability, last read resource/command/status and the last turn result. `POST
-/api/voice/setup?action=front|left|on|off|reset` performs setup and enabling.
-Calibration/enable are session-only. Once enabled, wake listening and voice
+fixed mounting reference, gyro availability, last read resource/command/status and the last turn result. `POST
+/api/voice/setup?action=on|off|reset` controls the saved turning preference;
+reset keeps the fixed reference and existing on/off choice. Old sampled front/left
+settings are ignored. Once enabled, wake listening and voice
 turning work without keeping the browser open; browser visibility still
 controls the separate turn-only person tracker. The approved voice actions own
 their detection modes and cancel through the same dashboard Stop path.

@@ -6,6 +6,7 @@ inline constexpr Phrase phrases[] = {
   {8, "COME SAY HELLO"},
   {9, "WHAT IS THIS"}, {9, "WHAT'S THIS"},
   {14, "FIND A WAY OUT"},
+  {16, "CIRCLE DANCE"},
   {7, "STOP MOVING"}, {7, "STOP"},
 };
 inline const Phrase* find(int command, const char* text) {

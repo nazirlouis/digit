@@ -25,6 +25,7 @@ struct Status {
   bool manualDriving;
   bool actionCapable;
   bool rangeValid;
+  bool rangeNoReturn;
   int distanceMm;
   uint32_t safetyEvents;
   bool brakeCapable;
@@ -44,6 +45,7 @@ struct Status {
   int encoderLeftCps;
   int encoderRightCps;
   bool motionCapable;
+  bool circleCapable;
   bool motionArmed;
   bool motionActive;
   uint32_t motionBoot;
@@ -53,6 +55,8 @@ struct Status {
   uint32_t motionSample;
   uint32_t motionTimestampMs;
   int motionDistanceMm;
+  int motionRangeStatus;
+  int motionRawDistanceMm;
   int motionHeadingDeciDeg;
   char motionState[16];
   char motionResult[24];
@@ -72,6 +76,7 @@ void superviseMotion();
 bool armMotion();
 uint32_t driveJob(int left, int right, int stopDistanceMm, uint32_t maxMs = 30000);
 uint32_t turnJob(int degrees, uint32_t maxMs = 20000);
+uint32_t circleJob(int speed);
 uint32_t measureJob();
 bool updateDriveJob(uint32_t job, int left, int right);
 bool ackMotion(uint32_t job);

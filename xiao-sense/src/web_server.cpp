@@ -17,6 +17,7 @@
 #include "zumo_link.h"
 #include "wake_word.h"
 #include "voice_direction.h"
+#include "voice_settings.h"
 #include "robot_actions.h"
 #include "speech_commands.h"
 #include "photo_store.h"
@@ -120,6 +121,7 @@ const char kIndexHtml[] PROGMEM = R"HTML(
       <div class="zumo-actions">
         <button data-routine="8" onclick="startRoutine(8)">Come say hello<small>Find you, come closer, and greet you</small></button>
         <button data-routine="9" onclick="startRoutine(9)">What's this?<small>Show Digit a battery, marker, or screwdriver</small></button>
+        <button data-routine="16" onclick="startRoutine(16)">Circle dance<small>Three 6-inch circles with music; both tracks moving</small></button>
         <button data-routine="14" onclick="startRoutine(14)">Find a way out<small>Find the battery, approach it, and celebrate escaping</small></button>
       </div>
       <details class="help"><summary>Meet Digit's three tricks</summary>
@@ -194,15 +196,12 @@ const char kIndexHtml[] PROGMEM = R"HTML(
       <p id="wakeResult"></p>
       <button id="wakeTest" onclick="action('/api/wake/test')" disabled>Test wake reaction</button>
       <div id="voiceSetup"><h3>Turn toward my voice</h3>
-      <p>Fasten the circular microphone array to Digit so they turn together. With Digit still, speak from directly in front and press Set front. Then speak from Digit's left side and press Set left. Say “hello” during setup.</p>
+      <p>Fixed microphone orientation: 270° is straight ahead; 0°/360° is directly left. Keep the array fastened in this position so it turns with Digit. No voice direction calibration is needed.</p>
       <p><strong id="voiceState">Checking direction...</strong> <span id="voiceAngle"></span></p>
       <div class="zumo-actions">
-        <button id="voiceFront" onclick="voiceAction('front')" disabled>1. Set front</button>
-        <button id="voiceLeft" onclick="voiceAction('left')" disabled>2. Set left</button>
         <button id="voiceToggle" onclick="voiceAction(voiceEnabled?'off':'on')" disabled>Enable voice turning</button>
-        <button onclick="voiceAction('reset')">Reset direction setup</button>
       </div>
-      <p id="voiceMessage">Voice turning starts on by default. Direction setup and your on/off choice are saved. Calibrate the surface before movement; direction setup does not move the tracks.</p>
+      <p id="voiceMessage">Voice turning starts on by default. Your on/off choice is saved. Surface calibration is still required before movement.</p>
       <p id="voiceResult"></p>
       <p>Once enabled, “Digit” requests one turn, then the lights, face and answering voice. If the direction is unclear, Digit only reacts. The reaction test above never turns the tracks.</p>
     </div>
@@ -224,16 +223,16 @@ let heldDirection=null,driveTimer=null,driveInFlight=false,zumoReady=false,camer
 let voiceEnabled=false,voicePending=false,batteryEnabled=false,batteryPending=false,batteryNotice='';
 let controlGeneration=0,routinePending=false,stopPending=false,hardStopPending=false,stopRequests=0,actionActive=false;
 const routineButtons=[...document.querySelectorAll('[data-routine]')];
-const actionNames={7:'Stop',8:'Come say hello',9:"What's this?",14:'Find a way out'};
-async function refreshActions(){try{const response=await fetch('/api/actions',{cache:'no-store'});if(!response.ok)throw Error('Action status unavailable');const s=await response.json();controlGeneration=Math.max(controlGeneration,s.generation);actionActive=s.active;$('routineState').textContent=s.action+' · '+s.phase;$('commandState').textContent=s.listening?(s.voice_result==='Wake voice'?'Digit is answering…':'Listening for your command…'):s.voice_ready?(s.voice_result==='No command recognized'?'No command heard. Say Digit and try again.':(s.voice_result==='Audio queue overflow'||s.voice_result==='Audio interrupted')?'Listening interrupted. Say Digit and try again.':s.voice_result==='Recognized'?'Heard: '+(actionNames[s.last_command]||'command'):'Say Digit, then a command'):s.voice_error||'Voice commands unavailable';$('actionAvailability').textContent=s.movement_reason||'';for(const b of routineButtons){const id=Number(b.dataset.routine);const ready=id===9?s.identify_ready:id===8?s.person_action_ready:s.object_action_ready;b.disabled=!ready||routinePending||stopPending;}}catch(error){$('commandState').textContent=error.message;for(const b of routineButtons)b.disabled=true}}
+const actionNames={7:'Stop',8:'Come say hello',9:"What's this?",14:'Find a way out',16:'Circle dance'};
+async function refreshActions(){try{const response=await fetch('/api/actions',{cache:'no-store'});if(!response.ok)throw Error('Action status unavailable');const s=await response.json();controlGeneration=Math.max(controlGeneration,s.generation);actionActive=s.active;if(Number.isFinite(s.drive_speed)&&!driveSpeedDirty){$('driveSpeed').value=s.drive_speed;$('driveSpeedValue').textContent=s.drive_speed;}$('routineState').textContent=s.action+' · '+s.phase;$('commandState').textContent=s.listening?(s.voice_result==='Wake voice'?'Digit is answering…':'Listening for your command…'):s.voice_ready?(s.voice_result==='No command recognized'?'No command heard. Say Digit and try again.':(s.voice_result==='Audio queue overflow'||s.voice_result==='Audio interrupted')?'Listening interrupted. Say Digit and try again.':s.voice_result==='Recognized'?'Heard: '+(actionNames[s.last_command]||'command'):'Say Digit, then a command'):s.voice_error||'Voice commands unavailable';$('actionAvailability').textContent=s.movement_reason||'';for(const b of routineButtons){const id=Number(b.dataset.routine);const ready=id===16?s.circle_ready:id===9?s.identify_ready:id===8?s.person_action_ready:s.object_action_ready;b.disabled=!ready||routinePending||stopPending;}}catch(error){$('commandState').textContent=error.message;for(const b of routineButtons)b.disabled=true}}
 let debugData=null,debugPending=false;
 function motionDebug(s){return !s.motion_supported&&!s.motion_state?'Motion jobs: update both controllers':`Zumo job ${s.motion_job??0}: ${s.motion_state||'IDLE'} · ${s.motion_result||'NONE'} | Target L/R: ${s.target_left_cps??0}/${s.target_right_cps??0} counts/s | Heading: ${((s.heading_deci_deg??0)/10).toFixed(1)}° | Longest control gap: ${s.control_max_gap_ms??0} ms · overruns ${s.control_overruns??0} · longest display slice ${((s.display_max_slice_us??0)/1000).toFixed(1)} ms`;}
 async function refreshDebug(){if(!$('actionDebug').open||debugPending)return;debugPending=true;try{const r=await fetch('/api/actions/debug',{cache:'no-store'});if(!r.ok)throw Error('Debug log unavailable');const d=await r.json();debugData=d;$('debugLog').textContent=d.events.length?d.events.map(e=>`#${e.id} · ${(e.ms/1000).toFixed(1)}s · ${e.kind} · ${e.action}\n${e.reason}\nDistance ${e.range_valid?e.distance_mm+' mm':'unavailable'} (raw ${e.raw_distance_mm}, status ${e.range_status}, age ${e.range_age_ms} ms) | Motor power ${e.left}/${e.right} | Encoders ${e.encoder_left_cps}/${e.encoder_right_cps} counts/s\nFault ${e.fault} | Link ${e.connected?'connected':'lost'}, reply ${e.reply_age_ms} ms | Turn ${e.turn} | Generation ${e.generation}\n${motionDebug(e)}`).join('\n\n'):'No events yet. Start an action to record its progress.';$('debugMessage').textContent='Log connected · '+d.events.length+' recent events'}catch(error){$('debugMessage').textContent=error.message+'; last log retained'}finally{debugPending=false}}
 async function copyDebugLog(){if(!debugData)return;try{const text=JSON.stringify(debugData,null,2);if(navigator.clipboard&&window.isSecureContext){await navigator.clipboard.writeText(text)}else{const field=document.createElement('textarea');field.value=text;field.style.cssText='position:fixed;left:-10000px';document.body.appendChild(field);field.select();let copied=false;try{copied=document.execCommand('copy')}finally{field.remove()}if(!copied)throw Error('Copy unavailable')}$('debugMessage').textContent='Debug log copied'}catch(error){$('debugMessage').textContent='Clipboard unavailable. Select and copy the log below.'}}
 $('actionDebug').addEventListener('toggle',refreshDebug);setInterval(refreshDebug,1000);
-async function startRoutine(id){if(!actionNames[id]||id===7||routinePending||stopPending||!controlGeneration)return;routinePending=true;try{const response=await fetch('/api/actions?command='+id+'&generation='+controlGeneration+'&acceleration='+Number($('driveAcceleration').value),{method:'POST'});const s=await response.json();if(!response.ok)throw Error(s.message);controlGeneration=Math.max(controlGeneration,s.generation);$('routineMessage').textContent=s.message}catch(error){$('routineMessage').textContent=error.message}finally{routinePending=false;await refreshActions()}}
+async function startRoutine(id){if(!actionNames[id]||id===7||routinePending||stopPending||!controlGeneration)return;routinePending=true;try{const response=await fetch('/api/actions?command='+id+'&generation='+controlGeneration+'&speed='+Number($('driveSpeed').value)+'&acceleration='+Number($('driveAcceleration').value),{method:'POST'});const s=await response.json();if(!response.ok)throw Error(s.message);controlGeneration=Math.max(controlGeneration,s.generation);$('routineMessage').textContent=s.message}catch(error){$('routineMessage').textContent=error.message}finally{routinePending=false;await refreshActions()}}
 async function voiceAction(value){if(voicePending)return;voicePending=true;try{const response=await fetch('/api/voice/setup?action='+value,{method:'POST'});const data=await response.json();if(!response.ok)throw Error(data.message);$('voiceMessage').textContent=data.message}catch(error){$('voiceMessage').textContent=error.message}finally{voicePending=false;await refreshVoice()}}
-async function refreshVoice(){try{const response=await fetch('/api/voice/status',{cache:'no-store'});if(!response.ok)throw Error('Unavailable');const s=await response.json();voiceEnabled=s.enabled;$('voiceState').textContent=s.turning?'Turning toward saved voice direction':s.paused?'Paused for vision':s.error||(!s.available?'Direction unavailable':!s.front_set?'Set the front direction':!s.calibrated?'Now set Digit’s left side':s.enabled?(!s.gyro_ready?'Voice turning on · update Zumo turn files':!s.drive_ready?'Voice turning on · calibrate the surface':'Voice turning enabled'):'Direction ready · turning off');$('voiceAngle').textContent=s.stable?` · ${Math.round(s.degrees)}° at array`+(s.calibrated?` · ${Math.round(Math.abs(s.relative))}° ${s.relative>=0?'left':'right'}`:''):' · waiting for clear speech';const setup=s.stable&&!s.paused&&!s.turning&&!voicePending;$('voiceFront').disabled=!setup;$('voiceLeft').disabled=!setup||!s.front_set;$('voiceToggle').textContent=s.enabled?'Disable voice turning':'Enable voice turning';$('voiceToggle').disabled=voicePending;$('voiceResult').textContent=s.turn_reason||(s.result==='NONE'?'':s.result==='DONE'?'Last turn completed':`Last turn: ${s.result}`);if(!s.gyro_ready)$('voiceResult').textContent+=' · Check Zumo connection, updated turn files, and gyro'}catch(error){$('voiceState').textContent='Direction unavailable';$('voiceFront').disabled=$('voiceLeft').disabled=$('voiceToggle').disabled=true}}
+async function refreshVoice(){try{const response=await fetch('/api/voice/status',{cache:'no-store'});if(!response.ok)throw Error('Unavailable');const s=await response.json();voiceEnabled=s.enabled;$('voiceState').textContent=s.turning?'Turning toward saved voice direction':s.paused?'Paused for vision':s.error||(!s.available?'Direction unavailable':s.enabled?(!s.gyro_ready?'Voice turning on · update Zumo turn files':!s.drive_ready?'Voice turning on · calibrate the surface':'Voice turning enabled'):'Direction ready · turning off');$('voiceAngle').textContent=s.stable?` · ${Math.round(s.degrees)}° at array`+(s.calibrated?` · ${Math.round(Math.abs(s.relative))}° ${s.relative>=0?'left':'right'}`:''):' · waiting for clear speech';$('voiceToggle').textContent=s.enabled?'Disable voice turning':'Enable voice turning';$('voiceToggle').disabled=voicePending;$('voiceResult').textContent=s.turn_reason||(s.result==='NONE'?'':s.result==='DONE'?'Last turn completed':`Last turn: ${s.result}`);if(!s.gyro_ready)$('voiceResult').textContent+=' · Check Zumo connection, updated turn files, and gyro'}catch(error){$('voiceState').textContent='Direction unavailable';$('voiceToggle').disabled=true}}
 const driveButtons=[...document.querySelectorAll('[data-drive]')];
 const faceButtons=[...document.querySelectorAll('[data-face]')];
 let accelerationDirty=false,accelerationSending=false;
@@ -272,7 +271,9 @@ async function toggleBattery(){if(batteryPending||stopPending||!Number.isFinite(
 async function toggleFollow(){if(followPending)return;followPending=true;$('followToggle').disabled=true;try{const response=await fetch('/api/follow?enabled='+(followEnabled?'0':'1'),{method:'POST',cache:'no-store'});const data=await response.json();if(!response.ok)throw Error(data.message||'Could not change person turning');$('message').textContent=data.message;$('message').className=''}catch(error){$('message').textContent=error.message;$('message').className='error'}finally{followPending=false;await refresh()}}
 async function followHeartbeat(){if(!followEnabled||followHeartbeatPending||document.hidden)return;followHeartbeatPending=true;try{const response=await fetch('/api/follow/heartbeat',{method:'POST',cache:'no-store'});if(!response.ok)followEnabled=false}catch(error){followEnabled=false}finally{followHeartbeatPending=false}}
 setInterval(followHeartbeat,500);
-$('driveSpeed').addEventListener('input',event=>{$('driveSpeedValue').textContent=event.target.value});
+let driveSpeedDirty=false;
+$('driveSpeed').addEventListener('input',event=>{driveSpeedDirty=true;$('driveSpeedValue').textContent=event.target.value});
+$('driveSpeed').addEventListener('change',async()=>{try{const response=await fetch('/api/zumo/speed?value='+Number($('driveSpeed').value),{method:'POST'});if(!response.ok)throw Error('Could not save drive speed');driveSpeedDirty=false}catch(error){$('zumoMessage').textContent=error.message}});
 $('driveAcceleration').addEventListener('input',event=>{$('driveAccelerationValue').textContent=event.target.value;accelerationDirty=true;});
 $('driveAcceleration').addEventListener('change',saveAcceleration);
 $('zumoCalibrate').addEventListener('click',async()=>{try{await postZumo('/api/zumo/calibrate');$('zumoMessage').textContent='Calibrating surface...'}catch(error){$('zumoMessage').textContent=error.message}});
@@ -286,10 +287,11 @@ function updateDistance(s){
   if(distanceTimer!==null){clearTimeout(distanceTimer);distanceTimer=null;}
   const badge=$('distanceBadge');
   const fresh=s?.connected&&s.range_valid&&Number.isFinite(s.distance_mm)&&s.distance_mm>0&&Number.isFinite(s.range_age_ms)&&s.range_age_ms<250;
-  badge.className='distance-badge'+(fresh?'':' unavailable');
-  badge.textContent=fresh?`ToF: ${(s.distance_mm/10).toFixed(1)} cm`:!s?.connected?'ToF: offline':s.range_age_ms>=250?'ToF: stale':'ToF: unavailable';
+  const noReturn=s?.connected&&s.range_no_return&&Number.isFinite(s.range_age_ms)&&s.range_age_ms<250;
+  badge.className='distance-badge'+(fresh||noReturn?'':' unavailable');
+  badge.textContent=fresh?`ToF: ${(s.distance_mm/10).toFixed(1)} cm`:noReturn?'ToF: no return':!s?.connected?'ToF: offline':s.range_age_ms>=250?'ToF: stale':'ToF: unavailable';
   // A stalled request must not leave the last number looking live indefinitely.
-  if(fresh)distanceTimer=setTimeout(()=>{badge.textContent='ToF: stale';badge.className='distance-badge unavailable';distanceTimer=null;},1500);
+  if(fresh||noReturn)distanceTimer=setTimeout(()=>{badge.textContent='ToF: stale';badge.className='distance-badge unavailable';distanceTimer=null;},1500);
 }
 async function refreshZumo(){if(zumoRefreshPending)return;zumoRefreshPending=true;try{const response=await fetch('/api/zumo/status',{cache:'no-store'});if(!response.ok)throw Error('Status unavailable');const s=await response.json();updateDistance(s);$('debugSensors').textContent=`Distance: ${s.range_valid?s.distance_mm+' mm':'unavailable'} · raw ${s.raw_distance_mm??'—'} mm · sensor status ${s.range_status??'—'} · age ${s.range_age_ms} ms | Encoders L/R: ${s.encoder_left_cps??0}/${s.encoder_right_cps??0} counts/s · feedback ${s.encoder_control?'on':'off'} | Controller: ${s.fault} · reply ${s.reply_age_ms} ms\n${motionDebug(s)}`;zumoReady=s.connected&&s.ready&&!s.calibrating;if(Number.isFinite(s.acceleration)&&!accelerationDirty&&!accelerationSending){$('driveAcceleration').value=s.acceleration;$('driveAccelerationValue').textContent=s.acceleration;}$('zumoLink').textContent=s.connected?'Zumo: connected':'Zumo: disconnected';$('zumoReady').textContent=s.calibrating?'Drive: calibrating':zumoReady?'Drive: ready':'Drive: locked';$('zumoBattery').textContent=s.battery_mv>=0?`Battery: ${(s.battery_mv/1000).toFixed(2)} V`:'Battery: --';$('zumoFault').textContent='Fault: '+s.fault;$('ledApply').disabled=$('ledOff').disabled=!s.connected;$('ledResult').textContent=s.connected?(s.led_result==='APPLIED'?'Zumo acknowledged':s.led_result==='SENDING'?'Sending...':s.led_result==='NONE'?'--':s.led_result):'Disconnected';for(const button of driveButtons)button.disabled=!zumoReady||followEnabled;$('zumoCalibrate').disabled=!s.connected||s.calibrating||!!heldDirection||followEnabled;faceAvailable=s.connected&&!s.calibrating&&!s.left&&!s.right&&!s.look_active&&!s.manual_driving&&!heldDirection&&!followEnabled&&!actionActive;updateFaceControls();if(!zumoReady&&heldDirection)stopZumo(true,'status-locked');let message='Waiting for Zumo connection...';if(s.connected){if(s.calibrating)message='Calibrating surface...';else if(s.fault!=='NONE')message='Zumo fault: '+s.fault;else if(s.last_error!=='NONE')message=s.last_error;else if(zumoReady)message='Hold a direction to drive.';else message='Connected. Calibrate surface on a safe surface to enable driving.'}$('zumoMessage').textContent=message}catch(error){updateDistance(null);zumoReady=false;faceAvailable=false;updateFaceControls();for(const button of [...driveButtons,...faceButtons])button.disabled=true;$('ledApply').disabled=$('ledOff').disabled=true;$('ledResult').textContent='Unavailable';$('zumoLink').textContent='Zumo: unavailable';$('zumoMessage').textContent='Zumo status unavailable';if(heldDirection)stopZumo(true,'status-offline')}finally{zumoRefreshPending=false}}
 refreshZumo();setInterval(refreshZumo,500);
@@ -563,6 +565,7 @@ esp_err_t actionsStatusHandler(httpd_req_t* request) {
   const char* escapeReason = robot_actions::unavailableReason(robot_actions::Command::Escape);
   const bool personReady = !helloReason[0];
   const bool escapeReady = !escapeReason[0];
+  const bool circleReady = !robot_actions::unavailableReason(robot_actions::Command::CircleDance)[0];
   const bool identifyReady = !robot_actions::unavailableReason(robot_actions::Command::Identify)[0];
   const bool driveReady = personReady || escapeReady;
   const char* movementReason = helloReason[0] ? helloReason : escapeReason;
@@ -575,6 +578,7 @@ esp_err_t actionsStatusHandler(httpd_req_t* request) {
       "{\"action\":\"%s\",\"phase\":\"%s\",\"active\":%s,\"generation\":%lu,"
       "\"voice_ready\":%s,\"listening\":%s,\"voice_error\":\"%s\",\"recognized\":%lu,"
       "\"last_command\":%d,\"score\":%.3f,\"drive_ready\":%s,\"range_valid\":%s,"
+      "\"circle_ready\":%s,\"circle_laps\":3,\"circle_target_diameter_inches\":6,\"circle_inner_diameter_inches\":3,\"drive_speed\":%d,"
       "\"identify_ready\":%s,\"person_action_ready\":%s,\"object_action_ready\":%s,"
       "\"movement_reason\":\"%s\",\"find_me_stop_mm\":100,\"person_confirm_percent\":%u,"
       "\"distance_mm\":%d,\"photo_revision\":%lu,\"voice_result\":\"%s\","
@@ -586,7 +590,7 @@ esp_err_t actionsStatusHandler(httpd_req_t* request) {
       robot_actions::name(action.command),phase,action.active?"true":"false",(unsigned long)action.generation,
       speech.ready?"true":"false",speech.listening?"true":"false",error,(unsigned long)speech.recognized,
       speech.lastCommand,speech.score,driveReady?"true":"false",
-      z.rangeValid?"true":"false",identifyReady?"true":"false",personReady?"true":"false",
+      z.rangeValid?"true":"false",circleReady?"true":"false",robot_actions::driveSpeed(),identifyReady?"true":"false",personReady?"true":"false",
       escapeReady?"true":"false",movementReason,vision_service::kPersonConfidencePercent,
       z.distanceMm,(unsigned long)photo_store::revision(),result,
       (unsigned long)(speech.samples/16),(unsigned long)speech.chunks,speech.micPeak,
@@ -666,6 +670,22 @@ esp_err_t commandAudioTestHandler(httpd_req_t* request) {
            probe.decoderState, probe.command, probe.score, escaped);
   return sendJson(request, json);
 }
+bool readDriveSpeed(httpd_req_t* request, const char* key, int& speed) {
+  char text[12];
+  if (!queryValue(request,key,text,sizeof(text)) || !text[0] || strspn(text,"0123456789")!=strlen(text) || strlen(text)>4) return false;
+  speed=atoi(text);
+  return speed>=3000 && speed<=6000;
+}
+esp_err_t driveSpeedHandler(httpd_req_t* request) {
+  int speed;
+  if (!readDriveSpeed(request,"value",speed)) {
+    httpd_resp_set_status(request,"400 Bad Request");
+    return controlReply(request,"Choose a drive speed from 3000 to 6000");
+  }
+  robot_actions::setDriveSpeed(speed);
+  return controlReply(request,"Drive speed saved for circle dance");
+}
+
 esp_err_t actionsHandler(httpd_req_t* request) {
   robot_actions::Guard control;
   char value[4];
@@ -679,6 +699,14 @@ esp_err_t actionsHandler(httpd_req_t* request) {
   if (!currentGeneration(request)) {
     httpd_resp_set_status(request,"409 Conflict");
     return controlReply(request,"This request was cancelled by Stop or another action. Try again.");
+  }
+  if (id==16) {
+    int speed;
+    if (!readDriveSpeed(request,"speed",speed)) {
+      httpd_resp_set_status(request,"400 Bad Request");
+      return controlReply(request,"Circle dance requires the dashboard drive speed (3000 to 6000)");
+    }
+    robot_actions::setDriveSpeed(speed);
   }
   char accelerationText[8];
   int acceleration = 6000;
@@ -714,11 +742,13 @@ esp_err_t voiceStatusHandler(httpd_req_t* request) {
   escapeJsonString(zumo.lookResult, result, sizeof(result));
   escapeJsonString(wake.turnReason, turnReason, sizeof(turnReason));
   snprintf(json, sizeof(json),
-           "{\"available\":%s,\"stable\":%s,\"front_set\":%s,\"calibrated\":%s,"
+           "{\"fixed_orientation\":true,\"front_degrees\":%.0f,\"left_degrees\":%.0f,"
+           "\"available\":%s,\"stable\":%s,\"front_set\":%s,\"calibrated\":%s,"
            "\"enabled\":%s,\"degrees\":%.1f,\"relative\":%.1f,\"age_ms\":%lu,"
            "\"source\":\"%s\",\"read_resource\":%u,\"read_command\":%u,\"read_status\":%u,"
            "\"error\":\"%s\",\"turning\":%s,\"result\":\"%s\","
            "\"drive_ready\":%s,\"gyro_ready\":%s,\"paused\":%s,\"turn_reason\":\"%s\"}",
+           voice_mount::frontDegrees, voice_mount::leftDegrees,
            direction.available ? "true" : "false", direction.stable ? "true" : "false",
            direction.frontSet ? "true" : "false", direction.calibrated ? "true" : "false",
            direction.enabled ? "true" : "false", direction.degrees, direction.relative,
@@ -735,19 +765,17 @@ esp_err_t voiceSetupHandler(httpd_req_t* request) {
   robot_actions::Guard control;
   char action[8];
   if (!queryValue(request, "action", action, sizeof(action)) ||
-      (strcmp(action, "front") && strcmp(action, "left") && strcmp(action, "on") &&
+      (strcmp(action, "on") &&
        strcmp(action, "off") && strcmp(action, "reset"))) {
     httpd_resp_set_status(request, "400 Bad Request");
-    return sendJson(request, "{\"message\":\"Choose front, left, on, off, or reset\"}");
+    return sendJson(request, "{\"message\":\"Choose on, off, or reset. Direction is fixed at front 270 degrees, left 0 degrees.\"}");
   }
   if (!voice_direction::configure(action)) {
     httpd_resp_set_status(request, "409 Conflict");
-    return sendJson(request, "{\"message\":\"Keep Digit still with vision off. Setup needs fresh clear speech from the chosen side; left must be about 90 degrees from front. Turning waits for surface calibration and the updated Zumo gyro controller.\"}");
+    return sendJson(request, "{\"message\":\"Voice turning setting unavailable.\"}");
   }
-  const char* message = !strcmp(action, "front") ? "Front saved. Now speak from Digit's left and press Set left." :
-      !strcmp(action, "left") ? "Left saved. Voice turning follows your saved on/off choice once the surface is calibrated." :
-      !strcmp(action, "on") ? "Voice turning enabled and saved. Calibrate direction and surface; then say Digit for one turn." :
-      !strcmp(action, "off") ? "Voice turning disabled and saved. Wake reactions still work." : "Direction setup reset; turning waits for fresh front and left calibration.";
+  const char* message = !strcmp(action, "on") ? "Voice turning enabled and saved. Front is 270 degrees; left is 0/360 degrees. Calibrate the surface before movement." :
+      !strcmp(action, "off") ? "Voice turning disabled and saved. Wake reactions still work." : "Fixed direction restored: front 270 degrees, left 0/360 degrees. Your on/off choice is unchanged.";
   char json[240];
   snprintf(json, sizeof(json), "{\"message\":\"%s\"}", message);
   return sendJson(request, json);
@@ -863,7 +891,7 @@ esp_err_t zumoStatusHandler(httpd_req_t* request) {
            "\"reply_age_ms\":%lu,\"fault\":\"%s\",\"last_error\":\"%s\",\"led_result\":\"%s\",\"brake_supported\":%s,"
            "\"look_active\":%s,\"manual_driving\":%s,\"turn_ramp_supported\":%s,\"wiggle_supported\":%s,\"acceleration\":%d,"
            "\"scene_supported\":%s,\"auto_ramp_supported\":%s,\"range_age_ms\":%lu,\"close_approach_supported\":%s,\"chase_close_supported\":%s,"
-           "\"distance_mm\":%d,\"range_valid\":%s,\"range_status\":%d,\"raw_distance_mm\":%d,"
+           "\"distance_mm\":%d,\"range_valid\":%s,\"range_no_return\":%s,\"range_status\":%d,\"raw_distance_mm\":%d,"
            "\"encoder_control\":%s,\"encoder_left_cps\":%d,\"encoder_right_cps\":%d,"
            "\"motion_supported\":%s,\"motion_armed\":%s,\"motion_active\":%s,"
            "\"motion_boot\":%lu,\"motion_session\":%lu,\"motion_job\":%lu,"
@@ -880,7 +908,7 @@ esp_err_t zumoStatusHandler(httpd_req_t* request) {
            zumo.rampedLookCapable ? "true" : "false", zumo.wiggleCapable ? "true" : "false", zumo_link::acceleration(),
            zumo.sceneCapable ? "true" : "false", zumo.autoRampCapable ? "true" : "false", (unsigned long)zumo.rangeAgeMs,
            zumo.closeApproachCapable ? "true" : "false", zumo.chaseCloseCapable ? "true" : "false",
-           zumo.distanceMm, zumo.rangeValid ? "true" : "false", zumo.rangeStatus, zumo.rawDistanceMm,
+           zumo.distanceMm, zumo.rangeValid ? "true" : "false", zumo.rangeNoReturn ? "true" : "false", zumo.rangeStatus, zumo.rawDistanceMm,
            zumo.encoderControl ? "true" : "false", zumo.encoderLeftCps, zumo.encoderRightCps,
            zumo.motionCapable ? "true" : "false",zumo.motionArmed ? "true" : "false",zumo.motionActive ? "true" : "false",
            (unsigned long)zumo.motionBoot,(unsigned long)zumo.motionSession,(unsigned long)zumo.motionJob,
@@ -1111,6 +1139,11 @@ esp_err_t toneHandler(httpd_req_t* request) {
 }
 
 esp_err_t stopPlaybackHandler(httpd_req_t* request) {
+  robot_actions::Guard control;
+  if (robot_actions::snapshot().command==robot_actions::Command::CircleDance) {
+    robot_actions::stop("Circle dance stopped from audio controls");
+    return sendJson(request,"{\"message\":\"Circle dance and music stopped\"}");
+  }
   Serial.printf("[%10lu] Web: POST /api/play/stop\n",
                 static_cast<unsigned long>(millis()));
   return sendActionResult(request, audioEngine.stopPlayback(),
@@ -1262,6 +1295,7 @@ bool begin() {
       registerUri(controlServer, "/api/actions/audio/test", HTTP_POST, commandAudioTestHandler) &&
       registerUri(controlServer, "/api/actions/audio/test", HTTP_GET, commandAudioTestHandler) &&
       registerUri(controlServer, "/api/actions", HTTP_POST, actionsHandler) &&
+      registerUri(controlServer, "/api/zumo/speed", HTTP_POST, driveSpeedHandler) &&
       registerUri(controlServer, "/api/actions/photo", HTTP_GET, photo_store::send) &&
       registerUri(controlServer, "/api/wake/test", HTTP_POST, wakeTestHandler) &&
       registerUri(controlServer, "/api/voice/status", HTTP_GET, voiceStatusHandler) &&

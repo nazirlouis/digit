@@ -51,6 +51,35 @@ class EncoderTests(unittest.TestCase):
         self.assertGreater(outputs[1], 0)
         self.assertNotEqual(abs(outputs[0]), abs(outputs[1]))
 
+    def test_orbit_ratio_tracks_measured_velocity_at_all_dashboard_speeds(self):
+        for speed in (3000, 4000, 6000):
+            for inside in (0, 1):
+                with self.subTest(speed=speed, inside=inside):
+                    self.setUp()
+                    ratios = (1/3, 1) if inside == 0 else (1, 1/3)
+                    outputs = [0, 0]
+                    for _ in range(240):
+                        rates = [max(0, CAL['low_cps'][i] + (outputs[i]-3000) *
+                                     (CAL['high_cps'][i]-CAL['low_cps'][i])/3000) *
+                                 (1 if i == 0 else .92) if outputs[i] else 0 for i in range(2)]
+                        self.encoder.counts = tuple(self.encoder.counts[i]+rates[i]*.05 for i in range(2))
+                        self.clock.now += 50
+                        outputs = self.loop.update(self.clock.now, (speed, speed), outputs, rate_ratios=ratios)
+                    self.assertGreater(min(rates), 0)
+                    self.assertLessEqual(self.loop.targets[inside] / self.loop.targets[1-inside], 1/3 + .001)
+                    self.assertLess(abs(rates[inside] / rates[1-inside] - 1/3), .025)
+                    self.assertLess(outputs[inside], outputs[1-inside])
+                    # A normal target immediately drops the circle ratio.
+                    self.loop.update(self.clock.now, (4000, 4000), outputs)
+                    self.assertEqual(self.loop.targets[0], self.loop.targets[1])
+
+    def test_inside_track_stall_is_detected_even_at_low_power(self):
+        self.loop.update(50, (4000, 4000), (3000, 3000), rate_ratios=(1/3, 1))
+        with self.assertRaisesRegex(RuntimeError, "ENCODER_STALL"):
+            for n in range(1, 18):
+                self.encoder.counts = (0, n*100)
+                self.loop.update(50+n*50, (4000, 4000), (2000, 4000), rate_ratios=(1/3, 1))
+
     def test_zero_and_reversal_reset_integrator(self):
         self.loop.update(0, (4000,4000), (4000,4000))
         self.loop.integral = [500,500]

@@ -107,15 +107,17 @@ inline bool setBatteryEnabled(bool enabled) { state.enabled=enabled; state.batte
 namespace zumo_link {
 struct Status {
   bool connected=true,ready=true,calibrating=false,edge=false,actionCapable=true;
-  bool voiceCapable=true,rangeValid=true,lookActive=false,manualDriving=false,rampedLookCapable=true;
+  bool voiceCapable=true,rangeValid=true,rangeNoReturn=false,lookActive=false,manualDriving=false,rampedLookCapable=true;
   bool wiggleCapable=true,sceneCapable=true,autoRampCapable=true,closeApproachCapable=true,approachArrived=false,chaseCloseCapable=true;
   int left=0,right=0,distanceMm=900;
   int rawDistanceMm=900,rangeStatus=0,encoderLeftCps=0,encoderRightCps=0;
   bool encoderControl=true;
+  bool circleCapable=true;
   bool motionCapable=true,motionArmed=false,motionActive=false;
   uint32_t reactionVersion=reaction_catalog::version;
   uint32_t motionBoot=1,motionSession=0,motionJob=0,motionRangeAgeMs=0,motionSample=0,motionTimestampMs=0;
   int motionDistanceMm=-1,motionHeadingDeciDeg=0;
+  int motionRangeStatus=-1,motionRawDistanceMm=-1;
   char motionState[16]="DISARMED",motionResult[24]="NONE";
   uint32_t controlMaxGapMs=0,controlOverruns=0,displayMaxSliceUs=0;
   int targetLeftCps=0,targetRightCps=0;
@@ -164,6 +166,9 @@ inline uint32_t driveJob(int left,int right,int stopMm,uint32_t maxMs=30000) {
 }
 inline uint32_t turnJob(int angle,uint32_t maxMs=20000) {
   auto job=startJob(2,maxMs);if(job){pendingAngle=angle;look(angle,state.controlGeneration);}return job;
+}
+inline uint32_t circleJob(int speed) {
+  auto job=startJob(4,60000);if(job){state.left=speed/3;state.right=speed;++motions;}return job;
 }
 inline uint32_t measureJob() {
   auto job=startJob(3,2500);if(job){++measureJobs;motionLastSample=0;motionSampleCount=0;}return job;

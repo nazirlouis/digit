@@ -88,8 +88,10 @@ If braking stops more than 10 mm short of the requested clearance, the same
 bounded job resumes its approach; it never declares a distant wall reached.
 Six unsuccessful correction approaches fault rather than loop indefinitely.
 WALL_STOPPED occurs only after output is zero and both measured encoder speeds
-remain <=50 counts/sec for 150 ms. The independent 30 mm guard for a 50 mm job
-(80 mm for 100 mm) is an emergency stop, not a successful arrival. Validity and
+remain <=50 counts/sec for 150 ms. The independent obstacle guard is strictly
+below 50 mm for every automatic job, regardless of its arrival target. An
+obstacle stop is not a successful arrival. Manual drive/turn has no front-distance
+guard. Validity and
 freshness are checked locally during braking too. Physical final clearance must
 be measured under real load; the software profile is not proof of a 5 cm stop.
 

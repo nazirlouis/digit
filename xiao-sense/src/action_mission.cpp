@@ -13,7 +13,7 @@ namespace {
 using robot_actions::Command;
 using Vision = vision_service::Status;
 enum class Beat { Idle, Present, Observe, Turn, Drive, Brake, Reveal,
-                  EscapeRead, Finish };
+                  EscapeRead, Circle, Finish };
 constexpr uint32_t kFreshMs = 1200, kSettleMs = 120, kConfirmMs = 1800;
 constexpr int kApproachSpeed = 3000, kCloseSpeed = 3000, kHelloStopMm = 100;
 constexpr int kExitBatteryStopMm = 100;
@@ -68,7 +68,7 @@ void stopVision() {
 void abort(const char* reason) {
   // Transport failures cannot rely on another display acknowledgement to end.
   message = reason; running = false; beat = Beat::Idle;
-  reaction_player::cancel(); stopVision(); zumo_link::stop();
+  reaction_player::cancel(); if(task==Command::CircleDance)audioEngine.cancelOutput(); stopVision(); zumo_link::stop();
 }
 void observe() {
   beat = Beat::Observe; at = millis(); freshAfter = at; lastFreshAt = at;
@@ -262,8 +262,8 @@ void inspect(const Vision& v, const zumo_link::Status& z, uint32_t now) {
 }
 
 namespace action_mission {
-bool start(Command value) {
-  if (value != Command::ComeSayHello && value != Command::Identify && value != Command::Escape) return false;
+bool start(Command value, int selectedSpeed) {
+  if (value != Command::ComeSayHello && value != Command::Identify && value != Command::Escape && value != Command::CircleDance) return false;
   cancel(); task = value; running = true;
   activeJob=0; steeringFrame=0;
   started = at = stationaryAfter = millis(); scans = corrections = advances = 0; heading = 0;
@@ -272,6 +272,12 @@ bool start(Command value) {
   exitTarget = sawTarget = welcomed = lossReacted = closeArrival = false; recognizedClass = -1;
   objects = value != Command::ComeSayHello;
   limitMs = value == Command::Identify ? 12000 : 150000;
+  if (value == Command::CircleDance) {
+    driveSpeed = selectedSpeed; limitMs = 65000;
+    activeJob = 0; beat = Beat::Circle; at = millis();
+    message = "Preparing circle dance";
+    return true;
+  }
   ownsVision = objects ? vision_service::setBatteryEnabled(true) : vision_service::setEnabled(true);
   if (!ownsVision) { abort("Detection model unavailable"); return false; }
   present("CURIOUS", value == Command::Escape ? "EXIT" : "SEARCHING", AudioCue::Curious,
@@ -279,6 +285,7 @@ bool start(Command value) {
   return true;
 }
 void cancel() {
+  if(task==Command::CircleDance)audioEngine.cancelOutput();
   reaction_player::cancel();
   if (running && task != Command::Identify) zumo_link::cancelMotion();
   running = false; beat = Beat::Idle; activeJob=0; stopVision();
@@ -294,10 +301,31 @@ void poll() {
   if (z.connected && z.rangeValid && z.rangeAgeMs < 250 && z.distanceMm > 0) lastFreshRangeMs = now;
   if (stopped(z)) lastFreshStoppedMs = now;
   if (ownsVision && (!v.enabled || v.batteryMode != objects)) { outcome("Detection was changed; action stopped"); return; }
-  if (now-started > limitMs && beat != Beat::Finish && !(beat == Beat::Present && afterPresent == Beat::Finish)) {
+  if (task != Command::CircleDance && now-started > limitMs && beat != Beat::Finish && !(beat == Beat::Present && afterPresent == Beat::Finish)) {
     outcome("I need a little help; search time is up", false, "LOST"); return;
   }
+  if (task == Command::CircleDance && now-started > limitMs) { abort("Circle dance timed out"); return; }
   switch (beat) {
+    case Beat::Circle: {
+      if (!activeJob) {
+        if (zumo_link::armMotion()) activeJob=zumo_link::circleJob(driveSpeed);
+        if (!activeJob && now-at>2500) abort("Circle dance could not start");
+        return;
+      }
+      if (z.motionJob!=activeJob) return;
+      if (!strcmp(z.motionState,"DONE")) {
+        audioEngine.cancelOutput();
+        if (strcmp(z.motionResult,"CIRCLE_DONE")) { abort("Circle dance failed"); return; }
+        zumo_link::ackMotion(activeJob); zumo_link::stop();
+        running=false; beat=Beat::Idle; message="Three circles complete";
+      } else if (!strcmp(z.motionState,"CANCELLED") || !strcmp(z.motionState,"FAULT") || !strcmp(z.motionState,"DISARMED")) {
+        abort("Circle dance stopped by controller");
+      } else if (!strcmp(z.motionState,"RUNNING") || !strcmp(z.motionState,"BRAKING")) {
+        message="Circling with music (3 laps)";
+        if (!audioEngine.cuePlaying() && !audioEngine.playCue(AudioCue::Dance)) abort("Music unavailable; circle stopped");
+      }
+      return;
+    }
     case Beat::Present: {
       if (!issued) {
         if (!stopped(z)) {

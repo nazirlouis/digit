@@ -41,7 +41,7 @@ def pack(source, target, env):
         stale_cn.unlink()
     phrases = re.findall(r'\{(\d+), "([^"]+)"\}',
                          (project / "src" / "speech_phrases.h").read_text())
-    assert {int(command) for command, _ in phrases} == {7, 8, 9, 14}, \
+    assert {int(command) for command, _ in phrases} == {7, 8, 9, 14, 16}, \
         "Digit speech registry must match the approved action IDs"
     assert ("7", "STOP") in phrases and ("7", "STOP MOVING") in phrases
     assert len({text for _, text in phrases}) == len(phrases), "Duplicate speech phrase"

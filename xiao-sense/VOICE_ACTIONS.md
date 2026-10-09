@@ -121,7 +121,7 @@ Old Say hello, Find me and Follow me phrases are not aliases. The separate
   distinct captures. Camera result and capture age must be within 1.2 seconds.
 - Forward motion brakes on target loss, stale camera/range data, local arrival
   or the end of a bounded target-approach step. Maze exploration has no step timer. Stale motor STATUS aborts. The greeting and exit-battery approach use
-  a 100 mm local braking target, 80 mm hard guard and arrival latch. Range
+  a 100 mm local braking target, below-50-mm obstacle guard and arrival latch. Range
   bounce up to 120 mm still requires visual confirmation before celebrating.
 - Escape scans use three distinct, settled readings per heading and their
   median at the starting heading, +90 and -90 degrees. The rear direction is not sampled. A single far
@@ -350,7 +350,7 @@ under motor/speaker noise require device testing.
 Chase this now targets 50 mm from the front ToF, with chasing resuming at
 100 mm. Below 300 mm it uses short 2400-speed steps with the selected
 acceleration and existing fixed braking. The Zumo brakes locally at 50 mm,
-reports arrival, and retains a 30 mm immediate guard while braking. Happy
+reports arrival, and retains a strictly below-50-mm obstacle guard while braking. Happy
 eyes and the caught-up chirp remain; the 50-to-100 mm waiting band prevents
 repeated forward starts and repeated arrival cues as the range fluctuates.
 The XIAO requires `CLOSE=2` before allowing this action.

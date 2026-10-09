@@ -74,7 +74,8 @@ int main() {
   assert(!accepts(1, nullptr, 7));
   assert(!speech_phrases::find(15,"bump me"));
   assert(!speech_phrases::find(16,"follow me"));
-  assert(sizeof(speech_phrases::phrases)/sizeof(speech_phrases::phrases[0])==6);
+  assert(speech_phrases::find(16,"circle dance"));
+  assert(sizeof(speech_phrases::phrases)/sizeof(speech_phrases::phrases[0])==7);
   for (const auto& phrase : speech_phrases::phrases) {
     assert(accepts(1,phrase.text,phrase.command));
     char padded[128];
@@ -82,7 +83,7 @@ int main() {
     assert(accepts(1,padded,phrase.command));
   }
   for (int id=-1;id<=99;++id)
-    assert(accepts(1,"decoder candidate",id) == (id==7 || id==8 || id==9 || id==14));
+    assert(accepts(1,"decoder candidate",id) == (id==7 || id==8 || id==9 || id==14 || id==16));
   assert(speech_phrases::find(7, "STOP MOVING"));
   assert(speech_phrases::find(7, "STOP"));
   assert(speech_phrases::find(8, "Come Say Hello"));

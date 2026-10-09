@@ -12,6 +12,53 @@ class RangeSensor:
 
 
 class AutomaticDriveTests(unittest.TestCase):
+    def test_safe_obstacle_boundary_is_below_five_cm_for_every_target(self):
+        for suffix in ("", " 50", " 100"):
+            with self.subTest(target=suffix):
+                self.setUp()
+                self.tof.distance_mm = 50
+                self.advance(20)
+                reply = self.send("2 SAFE 2400 2400 6000" + suffix)
+                self.assertNotIn("ERR", reply)
+                self.assertNotIn("0 EVENT OBSTACLE", self.fixture.uart.outgoing)
+                self.send("3 STOP")
+                self.tof.distance_mm = 49
+                self.advance(20)
+                self.assertEqual(self.send("4 SAFE 2400 2400 6000" + suffix), "4 ERR OBSTACLE")
+
+    def test_ordinary_safe_passes_old_limits_and_exact_five_cm(self):
+        command = "2 SAFE 2400 2400 6000"
+        self.send(command)
+        self.fixture.advance(520, command)
+        for distance in (150, 100, 80, 60, 50):
+            self.tof.distance_mm = distance
+            self.advance(20)
+            self.assertGreater(self.fixture.motors.speeds[0], 0)
+            self.assertNotIn("0 EVENT OBSTACLE", self.fixture.uart.outgoing)
+        self.tof.distance_mm = 49
+        self.advance(20)
+        self.assertEqual(self.fixture.motors.speeds, (0, 0))
+        self.assertIn("0 EVENT OBSTACLE", self.fixture.uart.outgoing)
+
+    def test_manual_drive_and_turn_ignore_near_and_missing_front_range(self):
+        for command in ("3 DRIVE 3000 3000 6000", "3 TURN 3000"):
+            for failure in ("near", "stale", "missing", "bus"):
+                with self.subTest(command=command, failure=failure):
+                    self.setUp()
+                    self.send("2 SAFE 2400 2400 6000")
+                    self.send(command)  # Manual takeover removes automatic range guard.
+                    if failure == "near": self.tof.distance_mm = 1
+                    elif failure == "stale": self.tof.data_ready = False
+                    elif failure == "missing": self.fixture.control.tof = None
+                    else:
+                        def broken_read(): raise OSError("I2C disconnected")
+                        self.tof.read_result = broken_read
+                    self.fixture.advance(600, command)
+                    self.assertFalse(self.fixture.control.safe_motion)
+                    self.assertEqual(self.fixture.control.fault, "NONE")
+                    self.assertGreater(max(abs(v) for v in self.fixture.motors.speeds), 0)
+                    self.assertNotIn("0 EVENT OBSTACLE", self.fixture.uart.outgoing)
+
     def test_close_approach_passes_15cm_and_brakes_locally_at_10cm(self):
         command = "2 SAFE 2400 2400 6000 100"
         self.assertEqual(self.send(command), "2 OK SAFE")
@@ -32,7 +79,7 @@ class AutomaticDriveTests(unittest.TestCase):
         self.assertNotIn("0 EVENT OBSTACLE", self.fixture.uart.outgoing)
         self.send("3 STOP")
         self.assertFalse(self.fixture.control.approach_arrived)
-        self.assertEqual(self.send("4 SAFE 2400 2400 6000"), "4 ERR OBSTACLE")
+        self.assertEqual(self.send("4 SAFE 2400 2400 6000"), "4 OK SAFE")
 
     def test_close_approach_keeps_emergency_range_edge_and_stale_sensor_stops(self):
         for failure in ("near", "stale", "edge"):
@@ -41,7 +88,7 @@ class AutomaticDriveTests(unittest.TestCase):
                 self.send("2 SAFE 2400 2400 6000 100")
                 self.fixture.advance(520, "2 SAFE 2400 2400 6000 100")
                 if failure == "near":
-                    self.tof.distance_mm = 80
+                    self.tof.distance_mm = 49
                     self.advance(20)
                     self.assertIn("0 EVENT OBSTACLE", self.fixture.uart.outgoing)
                 elif failure == "stale":
@@ -100,7 +147,7 @@ class AutomaticDriveTests(unittest.TestCase):
                     self.tof.distance_mm = 50
                     self.advance(20)
                     self.assertTrue(self.fixture.control.braking)
-                    self.tof.distance_mm = 30
+                    self.tof.distance_mm = 49
                     self.advance(20)
                     self.assertIn("0 EVENT OBSTACLE", self.fixture.uart.outgoing)
                     self.assertEqual(self.send(command), "2 ERR OBSTACLE")
@@ -168,7 +215,7 @@ class AutomaticDriveTests(unittest.TestCase):
 
     def test_near_obstacle_rejects_forward_and_stops_active_motion(self):
         self.send("2 SAFE 1200 1200")
-        self.tof.distance_mm = 140
+        self.tof.distance_mm = 49
         self.advance(20)
         self.assertEqual(self.fixture.motors.speeds, (0, 0))
         self.assertIn("0 EVENT OBSTACLE", self.fixture.uart.outgoing)
@@ -229,7 +276,7 @@ class AutomaticDriveTests(unittest.TestCase):
                 self.send("3 BRAKE")
                 self.assertTrue(self.fixture.control.safe_motion)
                 if failure == "obstacle":
-                    self.tof.distance_mm = 140
+                    self.tof.distance_mm = 49
                     self.advance(20)
                 else:
                     self.tof.data_ready = False
