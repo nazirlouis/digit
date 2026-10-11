@@ -4,12 +4,19 @@ The XIAO owns mission decisions, perception and speech. The MicroPython Zumo
 owns persistent motor execution, encoder feedback, gyro heading, local edge
 checks, ToF stopping, braking, stopped confirmation and deadlines.
 
+The current Gemini tool layer exposes bounded TURN and measured TRAVEL jobs,
+with independent silent SCENE expressions. Older DRIVE/SPIN/MEASURE commands
+below remain wire compatibility features; their former dashboard routines are
+retired. See [Gemini robot control](GEMINI_ROBOT_CONTROL.md).
+
 ## Wire contract
 
 Legacy commands retain their format. `STATUS` advertises `MOTION=1 BOOT=xxxxxxxx SESSION=<high-water>`
 and, after any session has been opened, emits a second checksummed M2 snapshot.
 The legacy status also includes GAP, OVERRUN, DSUS, TL and TR so timing and
 encoder targets can be inspected while idle without arming a motion session.
+`TRAVEL=1 DCAL=<0|1> EXPR=1 CL=<signed count> CR=<signed count>` advertise travel,
+measured distance readiness, bounded expressions and raw encoder counts.
 Boot is a random eight-character lowercase hexadecimal token generated on boot.
 Autonomous missions must require MOTION=1, ENC=1 and VOICE=1; they must not silently
 fall back to the legacy repeatedly refreshed SAFE/LOOK commands.
@@ -38,6 +45,8 @@ included. Both requests and snapshots have CRCs.
 | DRIVE | left right acceleration stop_mm max_ms | Persistent forward drive. Targets 3000..3200, acceleration 500..6000, stop 50 or 100 mm, deadline 100..60000 ms. Equal targets enable gyro heading hold. |
 | UPDATE | revision left right | Update current DRIVE target without restarting its ramp/deadline. Positive revision increases; duplicate identical revision is harmless. |
 | TURN | degrees acceleration max_ms | Relative gyro turn, positive left; -180..180 degrees, acceleration 500..6000, deadline 100..30000 ms. |
+| TRAVEL | signed_mm speed acceleration max_ms | Encoder distance with gyro heading hold; -100..300 mm, nonzero, speed 3000, acceleration 500..6000, deadline 100..15000 ms. Requires TRAVEL=1 DCAL=1 and encoder/gyro feedback. |
+| SPIN | max_ms | One continuous in-place gyro revolution, positive left; fixed fast opposite track targets, deadline 1000..30000 ms. Requires SPIN=1. |
 | MEASURE | max_ms | Wait for encoder-confirmed rest, then return median of three new valid ToF samples; deadline 100..5000 ms. |
 | ACK | none | Acknowledge current job snapshot; job ID must match. Stops terminal retransmission, does not erase result. No reply. |
 | CANCEL | none | Immediately stop and close the session; job 0 or current job accepted. |
@@ -50,7 +59,8 @@ Snapshot/reply/event:
 
 Wire 0 denotes asynchronous events. States: DISARMED, ARMED, CALIBRATING,
 RUNNING, BRAKING, SETTLING, DONE, FAULT. Successful terminal reasons are
-WALL_STOPPED, TURN_DONE and MEASURED. Protocol rejection is `<wire-id> ERR
+WALL_STOPPED, TURN_DONE, TRAVEL_DONE, SPIN_DONE and MEASURED. Snapshots also carry
+`TRAVEL=<signed actual mm>` for the measured travel result. Protocol rejection is `<wire-id> ERR
 M2_<reason>` and cannot start movement. Snapshot distance is the current ToF
 distance except MEASURED, which retains the median and its age. Heading is
 integrated gyro yaw, not an absolute localization estimate. Job identity binds
@@ -74,6 +84,44 @@ local ToF hard guard and stale-range checks remain active throughout that
 brake. STOP and faults remove motor output immediately.
 
 ## Motion behavior and limits
+
+TRAVEL loads a separate `distance_calibration.json` measured on the physical
+surface; missing/invalid calibration rejects the job. It uses both encoders,
+signed wrap-safe counts, gyro heading hold, local braking and encoder-confirmed
+rest. Reverse uses signed targets and heading correction. Direction disagreement,
+track mismatch, overshoot, loss of encoder/gyro/range feedback, edge, Button C,
+supervisor expiry and job deadlines stop locally. Actual distance calibration
+is deferred until the final powered floor step; velocity calibration does not
+substitute for it.
+
+`SCENE <expression> <caption> [duration_ms]` accepts an optional 500..10000 ms
+duration when EXPR=1. Expressions can render during an autonomous motion job
+without changing its targets or speech. Safety/manual control has priority.
+SCENE_VISIBLE acknowledges actual first-frame rendering. All expressions are
+silent; the previous sound coordination is retired.
+
+`SPIN=1` advertises the separate one-revolution job. Its local profile uses
+opposite signed track targets of 6000 with acceleration/deceleration 30000,
+tapering to the reliable 3000 effort near the endpoint while still moving.
+One stationary gyro calibration and one unwrapped 360-degree reference cover
+the whole motion. It never chains two turns, normalizes 360 to zero, reverses,
+or rests between segments. The final brake begins only after a complete
+revolution; small braking yaw is retained in the snapshot. Rotation beyond
+390 degrees faults with `SPIN_OVERSHOOT` even during final settling.
+`SPIN_DONE` requires
+gyro settling plus zero output and encoder-confirmed rest for 150 ms.
+Fresh ToF status 2 (no return) is usable while rotating, without inventing a
+distance. Sensor failures, stale observations, sustained unreliable status,
+and a valid distance below 50 mm still stop the job locally. Starting at 50 mm
+is permitted; local floor-edge, Button C, heartbeat and timeout guards remain
+active throughout calibration, rotation and settling.
+If a matching `SCENE HAPPY FOUND` is already visible when SPIN is accepted,
+the Zumo holds that exact scene through calibration, rotation and settling.
+It preserves the applied frame and entry clock; it does not send another
+scene or extend the brief sound. DONE, cancellation and faults release the
+matching face hold. A replacement face/scene owns its display immediately
+and cannot be overwritten by a late spin cleanup. Plain SPIN with another
+face does not select or hold a happy scene.
 
 The normalized target is not millimetres/second; calibrated encoder counts/sec
 map it to motor effort, preserving the user's 3000 minimum sustained effort.

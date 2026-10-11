@@ -2,16 +2,16 @@
 
 #include <Arduino.h>
 #include <WiFi.h>
-#include <esp_camera.h>
 #include <esp_http_server.h>
 #include <esp_heap_caps.h>
+#include <cJSON.h>
+#include <cmath>
+#include <cctype>
 
 #include "app_config.h"
 #include "audio_engine.h"
-#include "emotion_voice.h"
 #include "reaction_player.h"
 #include "camera_service.h"
-#include "person_follow.h"
 #include "vision_service.h"
 #include "object_model_config.h"
 #include "zumo_link.h"
@@ -20,7 +20,8 @@
 #include "voice_settings.h"
 #include "robot_actions.h"
 #include "speech_commands.h"
-#include "photo_store.h"
+#include "local_stop.h"
+#include "gemini_client.h"
 
 namespace {
 
@@ -33,6 +34,14 @@ constexpr char kStreamBoundary[] = "\r\n--frame\r\n";
 constexpr char kStreamPartHeader[] =
     "Content-Type: image/jpeg\r\nContent-Length: %u\r\n\r\n";
 
+extern "C" {
+extern const unsigned char dashboard_html_gz_start[];
+extern const unsigned char dashboard_html_gz_end[];
+}
+
+// Editable dashboard source. The build packs this literal as gzip; only the
+// compressed asset is linked into firmware. Preview and tests read it directly.
+#if 0
 const char kIndexHtml[] PROGMEM = R"HTML(
 <!doctype html>
 <html lang="en">
@@ -62,7 +71,7 @@ const char kIndexHtml[] PROGMEM = R"HTML(
     .section-heading{display:flex;justify-content:space-between;align-items:center;gap:16px;padding:22px 24px 18px}.section-heading h2{margin:0}.eyebrow{display:block;font-size:11px;font-weight:750;letter-spacing:1.6px;text-transform:uppercase;color:var(--cyan);margin-bottom:6px}.section-note{font-size:13px;color:var(--muted)}
     .drive-view{display:grid;grid-template-columns:minmax(0,1fr) 400px;align-items:start;border-top:1px solid var(--line)}.drive-view .zumo{border-left:1px solid var(--line);border-radius:0;padding:24px}.drive-view .video{min-width:0}
     .video{aspect-ratio:4/3;background:#152422;display:grid;place-items:center;position:relative;color:#e9f5ef}.video img{width:100%;height:100%;object-fit:contain;color:#c3d5cc;font-size:14px}.video canvas{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
-    .video>span{position:absolute;bottom:16px;left:16px;right:16px;width:fit-content;background:#152422e8;border:1px solid #51665e;border-radius:8px;padding:7px 11px;font-size:12px}
+    .video>span{position:absolute;bottom:16px;left:16px;right:16px;width:fit-content;background:#152422e8;border:1px solid #51665e;border-radius:8px;padding:7px 11px;font-size:12px;pointer-events:none}
     .camera-readouts{position:absolute;top:16px;left:16px;right:16px;display:flex;flex-wrap:wrap;align-items:flex-start;gap:8px;pointer-events:none}.person-badge{padding:8px 12px;border-radius:8px;background:#d8f6e8;color:#154b38;font-size:14px}.distance-badge{margin-left:auto;padding:8px 12px;border:1px solid #9ab7a9;border-radius:8px;background:#f6fbf7;color:#234538;font-size:14px;font-weight:700;font-variant-numeric:tabular-nums}.distance-badge.unavailable{color:#4d6258}
     .zumo{padding:24px;min-width:0}.zumo>p{max-width:90ch}.zumo h2{margin-bottom:8px}.zumo-status{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin:16px 0}.zumo-status span{background:var(--soft);border-radius:7px;padding:7px 9px;font-size:13px;overflow-wrap:anywhere}
     .drive-pad{display:grid;grid-template-columns:repeat(3,minmax(0,96px));gap:8px;justify-content:center;touch-action:none;user-select:none;margin:20px 0}.drive-pad button{min-height:58px;touch-action:none;font-size:19px;background:#e9f0eb}.drive-pad .forward{grid-column:2}.drive-pad .left{grid-column:1}.drive-pad .stop{grid-column:2;font-size:14px;background:#fff0f0}.drive-pad .right{grid-column:3}.drive-pad .back{grid-column:2}
@@ -74,6 +83,7 @@ const char kIndexHtml[] PROGMEM = R"HTML(
     .status-line{background:var(--soft);border-left:3px solid #7fa694;padding:12px 14px;border-radius:0 8px 8px 0;margin:16px 0}#routineState{font-size:18px}.help{border-top:1px solid var(--line);margin-top:18px;padding-top:14px}.help summary{cursor:pointer;font-size:14px;font-weight:650;color:var(--cyan);padding:4px 0}.help[open] summary{margin-bottom:12px}.help p{font-size:14px}.help p:last-child{margin-bottom:0}
     #followPanel{margin-top:18px;padding:16px;background:var(--soft);border-radius:10px;font-size:14px}#followPanel p{margin:6px 0 0}#batteryState{font-size:14px;margin-bottom:0}
     .face-previews{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px;margin:20px 0}.face-previews button{text-align:left;padding:18px 16px;min-height:94px;background:#f6f8f5}.face-previews small{display:block;color:var(--muted);font-size:13px;font-weight:400;margin-top:7px;line-height:1.45}.face-options{display:flex;align-items:center;flex-wrap:wrap;gap:16px}.face-options label{display:flex;align-items:center;gap:9px;font-size:14px}.face-options input{accent-color:var(--cyan);width:19px;height:19px}
+    #geminiKey,#geminiModel{display:block;width:100%;max-width:480px;border:1px solid #becdc3;border-radius:7px;padding:8px}#geminiIdle{width:90px;max-width:100%}
     .led-controls{display:flex;flex-wrap:wrap;align-items:center;gap:14px;margin-top:22px;padding:18px;background:var(--soft);border-radius:12px}.led-controls label{display:flex;align-items:center;gap:8px;font-size:14px}.led-controls select,.led-controls input[type=color]{background:#fff;color:var(--ink);border:1px solid #becdc3;border-radius:7px;padding:5px;min-height:36px}.led-controls input[type=range]{width:100px}.led-controls button{padding:10px 16px}#ledResult{font-size:13px;color:var(--muted)}
     #message,#zumoMessage,#faceMessage,#routineMessage,#voiceResult{font-size:14px;overflow-wrap:anywhere}#message{min-height:24px;color:var(--muted);margin-top:16px}#message.error{color:var(--red)}#faceMessage{color:var(--muted)}#voiceSetup{margin-top:24px;padding-top:24px;border-top:1px solid var(--line)}.footer-note{font-size:12px;color:var(--muted);text-align:center;margin:24px 0 0}
     @media(max-width:1100px){main{padding-inline:24px}.drive-view{grid-template-columns:minmax(0,1fr) 360px}.drive-view .zumo{padding:20px}#actions .zumo-actions{grid-template-columns:repeat(3,minmax(0,1fr))}.face-previews{grid-template-columns:repeat(4,minmax(0,1fr))}}
@@ -88,7 +98,7 @@ const char kIndexHtml[] PROGMEM = R"HTML(
     <div class="brand"><span class="brand-mark" aria-hidden="true"><i></i><i></i></span><div><h1>Digit</h1><div class="subtitle">Your robot, at a glance</div></div></div>
     <div class="top-actions"><div class="pill" id="state" aria-label="Audio status">CONNECTING</div><button class="danger global-stop" id="globalStop" onclick="stopZumo(true,'stop-all')" aria-label="Stop all movement, audio and actions">■ STOP ALL</button></div>
   </header>
-  <nav class="section-nav" aria-label="Dashboard sections"><a href="#drive">Drive</a><a href="#actions">Actions</a><a href="#audio">Audio</a><a href="#vision">Vision</a><a href="#expressions">Face &amp; lights</a><a href="#voice">Voice setup</a></nav>
+  <nav class="section-nav" aria-label="Dashboard sections"><a href="#drive">Drive</a><a href="#actions">Task</a><a href="#audio">Audio</a><a href="#expressions">Face &amp; lights</a><a href="#voice">Voice setup</a></nav>
   <div class="workspace">
     <section class="panel" id="drive" aria-labelledby="driveTitle">
       <div class="section-heading"><div><span class="eyebrow">01 / Live view</span><h2 id="driveTitle">See &amp; drive</h2></div><span class="section-note">Hold to move · Release to stop</span></div>
@@ -106,30 +116,23 @@ const char kIndexHtml[] PROGMEM = R"HTML(
       </div>
       <label class="speed" for="driveSpeed">Drive speed <input id="driveSpeed" type="range" min="3000" max="6000" step="100" value="4000"><b id="driveSpeedValue">4000</b></label>
       <label class="speed" for="driveAcceleration">Acceleration <input id="driveAcceleration" type="range" min="500" max="6000" step="100" value="6000" aria-describedby="accelerationHint"><b id="driveAccelerationValue">6000</b></label>
-      <p class="acceleration-hint" id="accelerationHint">Lower acceleration feels gentler. Applies to driving and voice turns; greeting wiggles use their own ramp.</p>
+      <p class="acceleration-hint" id="accelerationHint">Lower acceleration feels gentler. Applies to driving and voice turns; Gemini travel uses a fixed gentle speed.</p>
       <div class="zumo-actions"><button id="zumoCalibrate">Calibrate surface</button></div>
+      <div class="controls vision-controls"><button id="visionToggle" onclick="toggleVision()" disabled>Person detection</button><button id="batteryToggle" onclick="toggleBattery()" disabled>Object detection</button></div>
+      <p id="batteryState" role="status">Object model: checking...</p>
       <div id="zumoMessage" role="status">Connecting to Zumo...</div>
     </aside>
     </div>
 
     </section>
-    <section class="panel zumo" id="actions" aria-labelledby="actionsTitle"><span class="eyebrow">02 / Do something</span><h2 id="actionsTitle">Digit actions</h2>
+    <section class="panel zumo" id="actions" aria-labelledby="actionsTitle"><span class="eyebrow">02 / Current goal</span><h2 id="actionsTitle">Gemini task</h2>
 
-      <p id="commandState">Checking voice commands...</p>
+      <p id="commandState" role="status" aria-live="polite">Checking voice commands...</p>
       <p class="status-line"><strong id="routineState">Idle</strong></p>
       <p id="actionAvailability" role="status"></p>
-      <div class="zumo-actions">
-        <button data-routine="8" onclick="startRoutine(8)">Come say hello<small>Find you, come closer, and greet you</small></button>
-        <button data-routine="9" onclick="startRoutine(9)">What's this?<small>Show Digit a battery, marker, or screwdriver</small></button>
-        <button data-routine="16" onclick="startRoutine(16)">Circle dance<small>Three 6-inch circles with music; both tracks moving</small></button>
-        <button data-routine="14" onclick="startRoutine(14)">Find a way out<small>Find the battery, approach it, and celebrate escaping</small></button>
-      </div>
-      <details class="help"><summary>Meet Digit's three tricks</summary>
-      <p>Say “Digit”, wait for his reply, then say the action. Come say hello looks for a person, approaches to 10 cm using the front distance sensor, and finishes with a wiggle and affectionate eyes.</p>
-      <p>For What's this, hold one battery, marker, or screwdriver clearly in front of the camera. Digit stays still, takes a good look, then shows the name. If he is unsure, he lets you know.</p>
-      <p>For Find a way out, place a battery at the exit of a small desk course. Digit moves forward while there is more than 5 cm ahead, then stops to compare ahead, 90° left and 90° right without checking behind him, and approaches the battery to about 10 cm before celebrating. Moving actions need surface calibration and a working distance sensor.</p>
-      <p>STOP ALL cancels movement, sounds, and pending commands. Saying “Digit” during an action stops it to listen.</p>
-      </details>
+      <p id="taskGoal">Ask Digit for a goal after saying “Digit”.</p>
+      <p id="taskProgress" role="status"></p><p id="taskResult" role="status"></p>
+      <p>Digit looks when needed and after each move. One step is limited to 30 cm forward, 10 cm backward, or a 90° turn.</p>
       <p id="routineMessage" role="status"></p>
       <details class="help" id="actionDebug"><summary>Why did Digit stop? · Debug log</summary>
         <p>Recent events are saved on Digit until he restarts, including stops from other dashboard tabs. Times are seconds since startup; newest events come first.</p>
@@ -141,34 +144,20 @@ const char kIndexHtml[] PROGMEM = R"HTML(
 
     </section>
     <div class="two-column">
-      <section class="panel zumo" id="audio" aria-labelledby="audioTitle"><span class="eyebrow">03 / Sound</span><h2 id="audioTitle">Audio &amp; speaker</h2><p>Record up to 10 seconds, play it back, or test the speaker.</p>
+      <section class="panel zumo" id="audio" aria-labelledby="audioTitle"><span class="eyebrow">03 / Sound</span><h2 id="audioTitle">Speaker</h2><p>Adjust Digit’s speaking volume.</p>
         <div class="volume">
       <label for="volume"><span>Speaker volume</span><b><span id="volumeValue">100</span>%</b></label>
       <input id="volume" type="range" min="0" max="100" step="1" value="100" oninput="queueVolume(this.value)" aria-label="Speaker volume">
       <p class="volume-note">Starts at 100% when Digit powers on.</p>
     </div>
 
-        <div class="controls"><button class="primary" id="record" onclick="action('/api/record/start')">Record</button>
-      <button class="danger" id="stopRecord" onclick="action('/api/record/stop')">Stop &amp; play</button>
-      <button id="replay" onclick="action('/api/play')">Replay</button>
-      <button id="tone" onclick="action('/api/tone')">Test speaker</button>
-      <button id="stopPlay" onclick="action('/api/play/stop')">Stop playback</button></div>
-        <div class="metric"><small>Recording length</small><b id="duration">0.0 s</b></div>
         <div id="message" role="status">Waiting for device status...</div>
       </section>
-      <section class="panel zumo" id="vision" aria-labelledby="visionTitle"><span class="eyebrow">04 / Camera</span><h2 id="visionTitle">Vision tools</h2><p>Take a picture or explore what Digit can see.</p>
-        <div class="controls vision-controls">      <button id="takePhoto" onclick="takePhoto()" disabled>Take picture</button>
-      <button id="visionToggle" onclick="toggleVision()" disabled>Start person detection</button>
-      <button id="batteryToggle" onclick="toggleBattery()" disabled>Test object model</button>
-      <button id="followToggle" onclick="toggleFollow()" disabled>Turn with person</button></div>
-        <p id="batteryState" role="status">Object model: checking...</p>
-<div class="zumo" id="followPanel">Person turning: <strong id="followState">Off</strong><p>Tracks rotate in place toward the largest person box. Stops when centered or the person is lost.</p></div>
-      </section>
+
     </div>
-    <section class="panel zumo" id="expressions" aria-labelledby="facePreviewTitle"><span class="eyebrow">05 / Personality</span><h2 id="facePreviewTitle">Digit face &amp; voice</h2><p>Tap an emotion to preview Digit's eyes and voice while stopped. Each phrase plays once through his speaker. Try another to replace it.</p>
+    <section class="panel zumo" id="expressions" aria-labelledby="facePreviewTitle"><span class="eyebrow">05 / Personality</span><h2 id="facePreviewTitle">Digit expressions</h2><p>Tap an expression to see Digit’s animated eyes. Gemini can use these silently during a conversation.</p>
       <div class="face-options">
-        <label><input id="faceVoice" type="checkbox" checked>Play voice with face</label>
-        <button class="danger" id="faceStop" onclick="stopFacePreview()">Stop preview / wake up</button>
+        <button class="danger" id="faceStop" onclick="stopFacePreview()">Neutral eyes</button>
       </div>
       <div class="face-previews" id="faceButtons">
         <button data-face="NEUTRAL" disabled>Neutral<small>Soft acknowledgment</small></button>
@@ -179,7 +168,7 @@ const char kIndexHtml[] PROGMEM = R"HTML(
         <button data-face="SLEEPY" disabled>Sleepy<small>A long yawn and drowsy sigh</small></button><button data-face="EXCITED" disabled>Excited<small>A bouncing series of trills</small></button>
         <button data-face="CRYING" disabled>Crying<small>Three trembling sobs</small></button><button data-face="LOVE" disabled>Love<small>A warm, pulsing two-note coo</small></button>
       </div>
-      <p>Adjust loudness in Audio &amp; speaker. Sleeping keeps the eyes closed until another face is chosen; its sound does not loop.</p>
+      <p>Adjust loudness with the speaker slider. Gemini expressions return to neutral after their requested duration.</p>
       <div id="faceMessage" role="status">Connect Digit and stop movement to preview. Floor calibration is not required.</div>
       <div class="led-controls">
         <strong>RGB LEDs</strong>
@@ -191,10 +180,24 @@ const char kIndexHtml[] PROGMEM = R"HTML(
 
     </section>
     <section class="panel zumo" id="voice" aria-labelledby="voiceTitle"><span class="eyebrow">06 / Listening</span><h2 id="voiceTitle">Voice &amp; wake word</h2>
-      <p>Say “Digit”, wait for his answering voice, then give a command within six seconds. Person detection briefly yields while listening for a command.</p>
+      <p>Digit keeps a Gemini connection ready after startup. Say “Digit”, wait for his answering voice, then talk naturally. Gemini Live receives microphone audio and requested camera frames only after wake or a dashboard start. After inactivity or Stop, upload and playback stop while the connection stays ready. Digit's wake word and Stop listener stay local.</p>
+      <div class="status-line"><strong id="geminiState">Checking Gemini Live...</strong><p id="geminiDetail"></p><p id="geminiTranscript"></p><p id="geminiResponse"></p></div>
+      <div class="zumo-actions"><button id="geminiBegin" onclick="liveAction('conversation')" disabled>Begin conversation</button><button id="geminiTestOnly" onclick="liveAction('test_only')" disabled>Test-only stream</button><button id="geminiEnd" class="danger" onclick="endLive()">End conversation</button></div>
+      <p>Test-only stream sends audio and requested camera frames and plays the reply with robot actions disabled. Begin conversation uses the action setting below. End conversation and STOP ALL cancel streaming, speaker audio, and pending robot work, then leave Gemini ready for the next wake.</p>
+      <details class="help"><summary>Gemini Live setup</summary>
+        <p id="geminiKeyState">Checking saved key...</p>
+        <label for="geminiKey">Gemini API key <input id="geminiKey" type="password" maxlength="511" autocomplete="new-password" placeholder="Enter a key to save on Digit"></label>
+        <p><label for="geminiModel">Live model <input id="geminiModel" type="text" maxlength="63" value="gemini-3.8-live" autocomplete="off"></label></p>
+        <p><label for="geminiIdle">End after silence (seconds) <input id="geminiIdle" type="number" min="10" max="300" step="1" value="30"></label></p>
+        <p><label><input id="geminiDryRun" type="checkbox" checked> Preview robot actions only</label><br><small>Leave this on while testing. Turn it off to let Gemini request Digit's existing actions, subject to local readiness and safety checks.</small></p>
+        <div class="zumo-actions"><button id="geminiSave" onclick="saveGemini()">Save settings</button><button id="geminiRemove" onclick="saveGemini(true)" class="danger">Remove saved key</button><button id="geminiTest" onclick="liveAction('probe')" disabled>Test connection</button></div>
+        <p>Test connection checks the ready service connection or reconnects if needed without sending microphone or camera data, playing audio, or running actions. Changing the saved key reconnects with upload off. The key is saved on the XIAO and is never sent back to this page. This dashboard uses HTTP: save keys only on your trusted local network.</p>
+        <p id="geminiMessage" role="status"></p>
+      </details>
       <p><strong id="wakeState">Starting...</strong> <span id="wakeLast"></span></p>
       <p id="wakeResult"></p>
       <button id="wakeTest" onclick="action('/api/wake/test')" disabled>Test wake reaction</button>
+      <p id="localStopState" role="status">Local Stop: checking...</p>
       <div id="voiceSetup"><h3>Turn toward my voice</h3>
       <p>Fixed microphone orientation: 270° is straight ahead; 0°/360° is directly left. Keep the array fastened in this position so it turns with Digit. No voice direction calibration is needed.</p>
       <p><strong id="voiceState">Checking direction...</strong> <span id="voiceAngle"></span></p>
@@ -203,7 +206,7 @@ const char kIndexHtml[] PROGMEM = R"HTML(
       </div>
       <p id="voiceMessage">Voice turning starts on by default. Your on/off choice is saved. Surface calibration is still required before movement.</p>
       <p id="voiceResult"></p>
-      <p>Once enabled, “Digit” requests one turn, then the lights, face and answering voice. If the direction is unclear, Digit only reacts. The reaction test above never turns the tracks.</p>
+      <p>Once enabled, “Digit” requests one turn, then the lights and face before listening. If the direction is unclear, Digit only reacts. The reaction test above never turns the tracks.</p>
     </div>
 
     </section>
@@ -219,18 +222,34 @@ const char kIndexHtml[] PROGMEM = R"HTML(
 <script>
 const $=id=>document.getElementById(id);
 $('stream').src=`http://${location.hostname}:81/stream`;
-let heldDirection=null,driveTimer=null,driveInFlight=false,zumoReady=false,cameraReady=false,photoPending=false,visionEnabled=false,visionPending=false,followEnabled=false,followPending=false,followHeartbeatPending=false;
+let heldDirection=null,driveTimer=null,driveInFlight=false,zumoReady=false,cameraReady=false,visionEnabled=false,visionPending=false,unusedDriveFlag=false;
 let voiceEnabled=false,voicePending=false,batteryEnabled=false,batteryPending=false,batteryNotice='';
-let controlGeneration=0,routinePending=false,stopPending=false,hardStopPending=false,stopRequests=0,actionActive=false;
-const routineButtons=[...document.querySelectorAll('[data-routine]')];
-const actionNames={7:'Stop',8:'Come say hello',9:"What's this?",14:'Find a way out',16:'Circle dance'};
-async function refreshActions(){try{const response=await fetch('/api/actions',{cache:'no-store'});if(!response.ok)throw Error('Action status unavailable');const s=await response.json();controlGeneration=Math.max(controlGeneration,s.generation);actionActive=s.active;if(Number.isFinite(s.drive_speed)&&!driveSpeedDirty){$('driveSpeed').value=s.drive_speed;$('driveSpeedValue').textContent=s.drive_speed;}$('routineState').textContent=s.action+' · '+s.phase;$('commandState').textContent=s.listening?(s.voice_result==='Wake voice'?'Digit is answering…':'Listening for your command…'):s.voice_ready?(s.voice_result==='No command recognized'?'No command heard. Say Digit and try again.':(s.voice_result==='Audio queue overflow'||s.voice_result==='Audio interrupted')?'Listening interrupted. Say Digit and try again.':s.voice_result==='Recognized'?'Heard: '+(actionNames[s.last_command]||'command'):'Say Digit, then a command'):s.voice_error||'Voice commands unavailable';$('actionAvailability').textContent=s.movement_reason||'';for(const b of routineButtons){const id=Number(b.dataset.routine);const ready=id===16?s.circle_ready:id===9?s.identify_ready:id===8?s.person_action_ready:s.object_action_ready;b.disabled=!ready||routinePending||stopPending;}}catch(error){$('commandState').textContent=error.message;for(const b of routineButtons)b.disabled=true}}
+let controlGeneration=0,stopPending=false,hardStopPending=false,stopRequests=0,actionActive=false;
+function voiceCommandMessage(s){
+   if(s.live_active)return s.live_reason||'Gemini Live conversation active';
+   if(s.listening)return s.voice_result==='Wake voice'?'Digit is answering…':'Connecting to Gemini Live…';
+  if(!s.voice_ready)return s.voice_error||'Voice commands unavailable';
+   if(s.live_probe)return 'Checking Gemini connection…';
+   if(s.live_connected)return 'Ready · say Digit';
+   if(s.live_connecting)return 'Connecting to Gemini Live…';
+   if(s.voice_result==='Audio queue overflow'||s.voice_result==='Audio interrupted')return 'Conversation interrupted. Say Digit and try again.';
+   return s.voice_result&&s.voice_result!=='Idle'?s.voice_result:'Say Digit to begin a conversation';
+}
+function localStopMessage(s){return 'Local Stop: '+(!s.local_stop_ready?'unavailable'+(s.local_stop_error?' · '+s.local_stop_error:''):s.local_stop_active?'listening on Digit':'ready · listens during robot activity')+(s.local_stop_detections>0?' · '+s.local_stop_detections+' heard':'');}
+async function refreshActions(){try{const r=await fetch('/api/actions',{cache:'no-store'});if(!r.ok)throw Error('Task status unavailable');const s=await r.json();controlGeneration=Math.max(controlGeneration,s.generation);actionActive=s.active;if(Number.isFinite(s.drive_speed)&&!driveSpeedDirty){$('driveSpeed').value=s.drive_speed;$('driveSpeedValue').textContent=s.drive_speed;}updateGeminiStatus(s);$('routineState').textContent=s.phase;$('commandState').textContent=voiceCommandMessage(s);$('localStopState').textContent=localStopMessage(s);$('actionAvailability').textContent=s.movement_reason||'';$('taskGoal').textContent=s.task_goal||'Ask Digit for a goal after saying “Digit”.';$('taskProgress').textContent=s.task_active?s.task_phase+' · '+s.task_moves+' of 12 moves':'';$('taskResult').textContent=s.task_result||'';}catch(error){geminiStatusAvailable=false;$('geminiState').textContent='Gemini status unavailable';updateGeminiControls();$('commandState').textContent=error.message;$('localStopState').textContent='Local Stop: status unavailable';}}
+ let geminiConfigured=false,geminiPending=false,geminiActive=false,geminiSettingsLoaded=false,geminiStatusAvailable=false,geminiLastStatus=null;
+ function updateGeminiControls(){for(const id of ['geminiBegin','geminiTestOnly','geminiTest'])$(id).disabled=!geminiConfigured||!geminiStatusAvailable||geminiActive||geminiPending||stopPending||!controlGeneration;for(const id of ['geminiSave','geminiRemove'])$(id).disabled=geminiPending||stopPending||!controlGeneration;}
+ function updateGeminiStatus(s){geminiLastStatus=s;geminiStatusAvailable=true;const mediaActive=!!s.live_active,probe=!!s.live_probe;geminiActive=mediaActive||probe;$('geminiState').textContent=mediaActive?s.live_reason||s.voice_error||'Gemini Live conversation active':probe?'Checking Gemini connection…':!geminiConfigured?s.voice_error||'Add an API key to begin':s.live_connected?'Ready · say Digit':s.voice_error||'Connecting to Gemini Live…';const videoAge=s.live_video_capture_age_ms;const mode=s.live_dry_run?'Preview actions':'Robot actions enabled';$('geminiDetail').textContent=mediaActive?mode+' · '+(s.live_connected?'connected':'connecting')+' · '+(s.live_video_frames||0)+' requested camera frames'+(Number.isFinite(videoAge)&&videoAge<10000?' · latest '+(videoAge/1000).toFixed(1)+' s ago':'')+(s.live_idle_remaining_ms>0?' · idle timeout '+Math.ceil(s.live_idle_remaining_ms/1000)+' s':''):geminiConfigured?(s.live_connected?'Connected · ':'')+'Microphone and camera upload off':'';$('geminiTranscript').textContent=s.live_transcript?'You: '+s.live_transcript:'';$('geminiResponse').textContent=s.live_response?'Digit: '+s.live_response:'';updateGeminiControls();}
+ async function refreshGeminiSettings(){try{const r=await fetch('/api/gemini/settings',{cache:'no-store'});const s=await r.json();if(!r.ok||typeof s.configured!=='boolean'||typeof s.model!=='string'||typeof s.dry_run!=='boolean'||!Number.isFinite(s.generation)||!Number.isFinite(s.idle_timeout_sec))throw Error(s.message||'Gemini settings unavailable');geminiConfigured=!!s.configured;controlGeneration=Math.max(controlGeneration,s.generation);$('geminiKeyState').textContent=geminiConfigured?'API key saved on Digit':'No API key saved';if(!geminiSettingsLoaded){$('geminiModel').value=s.model;$('geminiDryRun').checked=!!s.dry_run;$('geminiIdle').value=s.idle_timeout_sec;geminiSettingsLoaded=true;}if(geminiLastStatus)updateGeminiStatus(geminiLastStatus);else updateGeminiControls();}catch(error){geminiConfigured=false;$('geminiKeyState').textContent=error.message;updateGeminiControls();}}
+ async function geminiPost(url,body={}){const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...body,generation:controlGeneration})});const s=await r.json();if(Number.isFinite(s.generation))controlGeneration=Math.max(controlGeneration,s.generation);if(!r.ok)throw Error(s.message||'Gemini request failed');return s;}
+ async function saveGemini(remove=false){if(geminiPending||stopPending||!controlGeneration)return;geminiPending=true;updateGeminiControls();try{const body=remove?{remove_key:true}:{api_key:$('geminiKey').value,model:$('geminiModel').value,dry_run:$('geminiDryRun').checked,idle_timeout_sec:Number($('geminiIdle').value)};const s=await geminiPost('/api/gemini/settings',body);$('geminiKey').value='';$('geminiMessage').textContent=s.message;geminiSettingsLoaded=false;await refreshGeminiSettings();}catch(error){$('geminiMessage').textContent=error.message;}finally{geminiPending=false;updateGeminiControls();await refreshActions();}}
+ async function liveAction(mode){if(geminiPending||stopPending||!controlGeneration)return;geminiPending=true;updateGeminiControls();try{const s=await geminiPost(mode==='probe'?'/api/gemini/live/test':'/api/gemini/live/start',mode==='probe'?{}:{mode});$('geminiMessage').textContent=s.message;}catch(error){$('geminiMessage').textContent=error.message;}finally{geminiPending=false;updateGeminiControls();await refreshActions();}}
+ async function endLive(){try{await refreshActions();const s=await geminiPost('/api/gemini/live/stop');$('geminiMessage').textContent=s.message;}catch(error){$('geminiMessage').textContent=error.message;}finally{await refreshActions();}}
 let debugData=null,debugPending=false;
 function motionDebug(s){return !s.motion_supported&&!s.motion_state?'Motion jobs: update both controllers':`Zumo job ${s.motion_job??0}: ${s.motion_state||'IDLE'} · ${s.motion_result||'NONE'} | Target L/R: ${s.target_left_cps??0}/${s.target_right_cps??0} counts/s | Heading: ${((s.heading_deci_deg??0)/10).toFixed(1)}° | Longest control gap: ${s.control_max_gap_ms??0} ms · overruns ${s.control_overruns??0} · longest display slice ${((s.display_max_slice_us??0)/1000).toFixed(1)} ms`;}
 async function refreshDebug(){if(!$('actionDebug').open||debugPending)return;debugPending=true;try{const r=await fetch('/api/actions/debug',{cache:'no-store'});if(!r.ok)throw Error('Debug log unavailable');const d=await r.json();debugData=d;$('debugLog').textContent=d.events.length?d.events.map(e=>`#${e.id} · ${(e.ms/1000).toFixed(1)}s · ${e.kind} · ${e.action}\n${e.reason}\nDistance ${e.range_valid?e.distance_mm+' mm':'unavailable'} (raw ${e.raw_distance_mm}, status ${e.range_status}, age ${e.range_age_ms} ms) | Motor power ${e.left}/${e.right} | Encoders ${e.encoder_left_cps}/${e.encoder_right_cps} counts/s\nFault ${e.fault} | Link ${e.connected?'connected':'lost'}, reply ${e.reply_age_ms} ms | Turn ${e.turn} | Generation ${e.generation}\n${motionDebug(e)}`).join('\n\n'):'No events yet. Start an action to record its progress.';$('debugMessage').textContent='Log connected · '+d.events.length+' recent events'}catch(error){$('debugMessage').textContent=error.message+'; last log retained'}finally{debugPending=false}}
 async function copyDebugLog(){if(!debugData)return;try{const text=JSON.stringify(debugData,null,2);if(navigator.clipboard&&window.isSecureContext){await navigator.clipboard.writeText(text)}else{const field=document.createElement('textarea');field.value=text;field.style.cssText='position:fixed;left:-10000px';document.body.appendChild(field);field.select();let copied=false;try{copied=document.execCommand('copy')}finally{field.remove()}if(!copied)throw Error('Copy unavailable')}$('debugMessage').textContent='Debug log copied'}catch(error){$('debugMessage').textContent='Clipboard unavailable. Select and copy the log below.'}}
 $('actionDebug').addEventListener('toggle',refreshDebug);setInterval(refreshDebug,1000);
-async function startRoutine(id){if(!actionNames[id]||id===7||routinePending||stopPending||!controlGeneration)return;routinePending=true;try{const response=await fetch('/api/actions?command='+id+'&generation='+controlGeneration+'&speed='+Number($('driveSpeed').value)+'&acceleration='+Number($('driveAcceleration').value),{method:'POST'});const s=await response.json();if(!response.ok)throw Error(s.message);controlGeneration=Math.max(controlGeneration,s.generation);$('routineMessage').textContent=s.message}catch(error){$('routineMessage').textContent=error.message}finally{routinePending=false;await refreshActions()}}
 async function voiceAction(value){if(voicePending)return;voicePending=true;try{const response=await fetch('/api/voice/setup?action='+value,{method:'POST'});const data=await response.json();if(!response.ok)throw Error(data.message);$('voiceMessage').textContent=data.message}catch(error){$('voiceMessage').textContent=error.message}finally{voicePending=false;await refreshVoice()}}
 async function refreshVoice(){try{const response=await fetch('/api/voice/status',{cache:'no-store'});if(!response.ok)throw Error('Unavailable');const s=await response.json();voiceEnabled=s.enabled;$('voiceState').textContent=s.turning?'Turning toward saved voice direction':s.paused?'Paused for vision':s.error||(!s.available?'Direction unavailable':s.enabled?(!s.gyro_ready?'Voice turning on · update Zumo turn files':!s.drive_ready?'Voice turning on · calibrate the surface':'Voice turning enabled'):'Direction ready · turning off');$('voiceAngle').textContent=s.stable?` · ${Math.round(s.degrees)}° at array`+(s.calibrated?` · ${Math.round(Math.abs(s.relative))}° ${s.relative>=0?'left':'right'}`:''):' · waiting for clear speech';$('voiceToggle').textContent=s.enabled?'Disable voice turning':'Enable voice turning';$('voiceToggle').disabled=voicePending;$('voiceResult').textContent=s.turn_reason||(s.result==='NONE'?'':s.result==='DONE'?'Last turn completed':`Last turn: ${s.result}`);if(!s.gyro_ready)$('voiceResult').textContent+=' · Check Zumo connection, updated turn files, and gyro'}catch(error){$('voiceState').textContent='Direction unavailable';$('voiceToggle').disabled=true}}
 const driveButtons=[...document.querySelectorAll('[data-drive]')];
@@ -242,12 +261,12 @@ async function saveAcceleration(){
   catch(error){$('zumoMessage').textContent=error.message;}
   finally{accelerationSending=false;}
 }
-let facePending=false,faceStopping=false,faceAvailable=false,faceAudioReady=false,faceRequest=0;
-function updateFaceControls(){for(const button of faceButtons)button.disabled=!faceAvailable||facePending||faceStopping||stopPending||!controlGeneration||($('faceVoice').checked&&!faceAudioReady);$('faceStop').disabled=faceStopping||stopPending;$('faceVoice').disabled=facePending||faceStopping;}
+let facePending=false,faceStopping=false,faceAvailable=false,faceRequest=0;
+function updateFaceControls(){for(const button of faceButtons)button.disabled=!faceAvailable||facePending||faceStopping||stopPending||!controlGeneration;$('faceStop').disabled=faceStopping||stopPending;}
 async function previewFace(name){
-  if(facePending||faceStopping||stopPending||!faceAvailable||!controlGeneration||($('faceVoice').checked&&!faceAudioReady))return;
+  if(facePending||faceStopping||stopPending||!faceAvailable||!controlGeneration)return;
   const request=++faceRequest;facePending=true;updateFaceControls();
-  try{const data=await postZumo('/api/zumo/face?value='+encodeURIComponent(name)+'&voice='+($('faceVoice').checked?'1':'0')+'&generation='+controlGeneration);if(Number.isFinite(data.generation))controlGeneration=Math.max(controlGeneration,data.generation);if(request===faceRequest)$('faceMessage').textContent=name.charAt(0)+name.slice(1).toLowerCase()+': '+data.message;}
+  try{const data=await postZumo('/api/zumo/face?value='+encodeURIComponent(name)+'&generation='+controlGeneration);if(Number.isFinite(data.generation))controlGeneration=Math.max(controlGeneration,data.generation);if(request===faceRequest)$('faceMessage').textContent=name.charAt(0)+name.slice(1).toLowerCase()+': '+data.message;}
   catch(error){if(request===faceRequest)$('faceMessage').textContent=error.message;}
   finally{facePending=false;await refreshActions();updateFaceControls();}
 }
@@ -257,7 +276,6 @@ async function stopFacePreview(){
   catch(error){$('faceMessage').textContent=error.message;}
   finally{faceStopping=false;await refreshActions();await refreshZumo();updateFaceControls();}
 }
-$('faceVoice').addEventListener('change',updateFaceControls);
 function speeds(direction){const value=Number($('driveSpeed').value);return {forward:[value,value],back:[-value,-value],left:[-value,value],right:[value,-value]}[direction]||[0,0]}
 async function postZumo(path){const response=await fetch(path,{method:'POST',cache:'no-store'});const data=await response.json();if(!response.ok)throw Error(data.message||'Zumo command failed');return data}
 async function stopZumo(hard=false,source='stop-button'){hard=hard===true;++faceRequest;heldDirection=null;if(driveTimer!==null){clearInterval(driveTimer);driveTimer=null}if((stopPending&&!hard)||hardStopPending)return;stopPending=true;if(hard)hardStopPending=true;++stopRequests;try{const s=await postZumo('/api/zumo/stop?source='+encodeURIComponent(source)+(hard?'&hard=1':''));controlGeneration=Math.max(controlGeneration,s.generation);$('routineMessage').textContent=s.message}catch(error){$('zumoMessage').textContent=error.message}finally{--stopRequests;stopPending=stopRequests>0;if(hard)hardStopPending=false;await refreshActions()}}
@@ -265,12 +283,8 @@ async function sendDrive(){if(!heldDirection||driveInFlight||stopPending)return;
 function beginDrive(direction,event){if(!zumoReady||heldDirection||stopPending||!controlGeneration)return;event.preventDefault();event.currentTarget.setPointerCapture(event.pointerId);heldDirection=direction;sendDrive();driveTimer=setInterval(sendDrive,100)}
 for(const button of driveButtons){button.addEventListener('pointerdown',event=>beginDrive(button.dataset.drive,event));button.addEventListener('pointerup',()=>{if(heldDirection)return stopZumo(false,'release')});button.addEventListener('pointercancel',()=>{if(heldDirection)return stopZumo(true,'pointer-cancel')});button.addEventListener('lostpointercapture',()=>{if(heldDirection)return stopZumo(true,'capture-lost')})}
 $('zumoStop').addEventListener('click',stopZumo);
-async function takePhoto(){if(photoPending)return;photoPending=true;const button=$('takePhoto');button.disabled=true;try{const response=await fetch('/api/camera/photo',{cache:'no-store'});if(!response.ok)throw Error((await response.text())||'Photo capture failed');const blob=await response.blob();if(blob.type!=='image/jpeg'||blob.size===0)throw Error('Camera returned an invalid photo');const url=URL.createObjectURL(blob);const link=document.createElement('a');link.href=url;link.download='digit-'+new Date().toISOString().replace(/[:.]/g,'-')+'.jpg';document.body.append(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),10000);$('message').textContent='Picture saved';$('message').className=''}catch(error){$('message').textContent=error.message;$('message').className='error'}finally{photoPending=false;button.disabled=!cameraReady}}
 async function toggleVision(){if(visionPending)return;visionPending=true;$('visionToggle').disabled=true;try{const response=await fetch('/api/vision?enabled='+(visionEnabled?'0':'1'),{method:'POST',cache:'no-store'});const data=await response.json();if(!response.ok)throw Error(data.message||'Could not change person detection');$('message').textContent=data.message;$('message').className=''}catch(error){$('message').textContent=error.message;$('message').className='error'}finally{visionPending=false;await refresh()}}
 async function toggleBattery(){if(batteryPending||stopPending||!Number.isFinite(controlGeneration)||!controlGeneration)return;batteryNotice='';batteryPending=true;$('batteryToggle').disabled=true;try{const response=await fetch('/api/vision/objects?enabled='+(batteryEnabled?'0':'1')+'&generation='+controlGeneration,{method:'POST',cache:'no-store'});const data=await response.json();if(Number.isFinite(data.generation))controlGeneration=Math.max(controlGeneration,data.generation);if(!response.ok)throw Error(data.message||'Could not change object detection');$('message').textContent=data.message;$('message').className=''}catch(error){batteryNotice=error.message;$('message').textContent=error.message;$('message').className='error'}finally{batteryPending=false;await refresh()}}
-async function toggleFollow(){if(followPending)return;followPending=true;$('followToggle').disabled=true;try{const response=await fetch('/api/follow?enabled='+(followEnabled?'0':'1'),{method:'POST',cache:'no-store'});const data=await response.json();if(!response.ok)throw Error(data.message||'Could not change person turning');$('message').textContent=data.message;$('message').className=''}catch(error){$('message').textContent=error.message;$('message').className='error'}finally{followPending=false;await refresh()}}
-async function followHeartbeat(){if(!followEnabled||followHeartbeatPending||document.hidden)return;followHeartbeatPending=true;try{const response=await fetch('/api/follow/heartbeat',{method:'POST',cache:'no-store'});if(!response.ok)followEnabled=false}catch(error){followEnabled=false}finally{followHeartbeatPending=false}}
-setInterval(followHeartbeat,500);
 let driveSpeedDirty=false;
 $('driveSpeed').addEventListener('input',event=>{driveSpeedDirty=true;$('driveSpeedValue').textContent=event.target.value});
 $('driveSpeed').addEventListener('change',async()=>{try{const response=await fetch('/api/zumo/speed?value='+Number($('driveSpeed').value),{method:'POST'});if(!response.ok)throw Error('Could not save drive speed');driveSpeedDirty=false}catch(error){$('zumoMessage').textContent=error.message}});
@@ -293,7 +307,7 @@ function updateDistance(s){
   // A stalled request must not leave the last number looking live indefinitely.
   if(fresh||noReturn)distanceTimer=setTimeout(()=>{badge.textContent='ToF: stale';badge.className='distance-badge unavailable';distanceTimer=null;},1500);
 }
-async function refreshZumo(){if(zumoRefreshPending)return;zumoRefreshPending=true;try{const response=await fetch('/api/zumo/status',{cache:'no-store'});if(!response.ok)throw Error('Status unavailable');const s=await response.json();updateDistance(s);$('debugSensors').textContent=`Distance: ${s.range_valid?s.distance_mm+' mm':'unavailable'} · raw ${s.raw_distance_mm??'—'} mm · sensor status ${s.range_status??'—'} · age ${s.range_age_ms} ms | Encoders L/R: ${s.encoder_left_cps??0}/${s.encoder_right_cps??0} counts/s · feedback ${s.encoder_control?'on':'off'} | Controller: ${s.fault} · reply ${s.reply_age_ms} ms\n${motionDebug(s)}`;zumoReady=s.connected&&s.ready&&!s.calibrating;if(Number.isFinite(s.acceleration)&&!accelerationDirty&&!accelerationSending){$('driveAcceleration').value=s.acceleration;$('driveAccelerationValue').textContent=s.acceleration;}$('zumoLink').textContent=s.connected?'Zumo: connected':'Zumo: disconnected';$('zumoReady').textContent=s.calibrating?'Drive: calibrating':zumoReady?'Drive: ready':'Drive: locked';$('zumoBattery').textContent=s.battery_mv>=0?`Battery: ${(s.battery_mv/1000).toFixed(2)} V`:'Battery: --';$('zumoFault').textContent='Fault: '+s.fault;$('ledApply').disabled=$('ledOff').disabled=!s.connected;$('ledResult').textContent=s.connected?(s.led_result==='APPLIED'?'Zumo acknowledged':s.led_result==='SENDING'?'Sending...':s.led_result==='NONE'?'--':s.led_result):'Disconnected';for(const button of driveButtons)button.disabled=!zumoReady||followEnabled;$('zumoCalibrate').disabled=!s.connected||s.calibrating||!!heldDirection||followEnabled;faceAvailable=s.connected&&!s.calibrating&&!s.left&&!s.right&&!s.look_active&&!s.manual_driving&&!heldDirection&&!followEnabled&&!actionActive;updateFaceControls();if(!zumoReady&&heldDirection)stopZumo(true,'status-locked');let message='Waiting for Zumo connection...';if(s.connected){if(s.calibrating)message='Calibrating surface...';else if(s.fault!=='NONE')message='Zumo fault: '+s.fault;else if(s.last_error!=='NONE')message=s.last_error;else if(zumoReady)message='Hold a direction to drive.';else message='Connected. Calibrate surface on a safe surface to enable driving.'}$('zumoMessage').textContent=message}catch(error){updateDistance(null);zumoReady=false;faceAvailable=false;updateFaceControls();for(const button of [...driveButtons,...faceButtons])button.disabled=true;$('ledApply').disabled=$('ledOff').disabled=true;$('ledResult').textContent='Unavailable';$('zumoLink').textContent='Zumo: unavailable';$('zumoMessage').textContent='Zumo status unavailable';if(heldDirection)stopZumo(true,'status-offline')}finally{zumoRefreshPending=false}}
+async function refreshZumo(){if(zumoRefreshPending)return;zumoRefreshPending=true;try{const response=await fetch('/api/zumo/status',{cache:'no-store'});if(!response.ok)throw Error('Status unavailable');const s=await response.json();updateDistance(s);$('debugSensors').textContent=`Distance: ${s.range_valid?s.distance_mm+' mm':'unavailable'} · raw ${s.raw_distance_mm??'—'} mm · sensor status ${s.range_status??'—'} · age ${s.range_age_ms} ms | Encoders L/R: ${s.encoder_left_cps??0}/${s.encoder_right_cps??0} counts/s · feedback ${s.encoder_control?'on':'off'} | Controller: ${s.fault} · reply ${s.reply_age_ms} ms\n${motionDebug(s)}`;zumoReady=s.connected&&s.ready&&!s.calibrating;if(Number.isFinite(s.acceleration)&&!accelerationDirty&&!accelerationSending){$('driveAcceleration').value=s.acceleration;$('driveAccelerationValue').textContent=s.acceleration;}$('zumoLink').textContent=s.connected?'Zumo: connected':'Zumo: disconnected';$('zumoReady').textContent=s.calibrating?'Drive: calibrating':zumoReady?'Drive: ready':'Drive: locked';$('zumoBattery').textContent=s.battery_mv>=0?`Battery: ${(s.battery_mv/1000).toFixed(2)} V`:'Battery: --';$('zumoFault').textContent='Fault: '+s.fault;$('ledApply').disabled=$('ledOff').disabled=!s.connected;$('ledResult').textContent=s.connected?(s.led_result==='APPLIED'?'Zumo acknowledged':s.led_result==='SENDING'?'Sending...':s.led_result==='NONE'?'--':s.led_result):'Disconnected';for(const button of driveButtons)button.disabled=!zumoReady;$('zumoCalibrate').disabled=!s.connected||s.calibrating||!!heldDirection;faceAvailable=s.connected&&!s.calibrating&&!s.left&&!s.right&&!s.look_active&&!s.manual_driving&&!heldDirection&&!actionActive;updateFaceControls();if(!zumoReady&&heldDirection)stopZumo(true,'status-locked');let message='Waiting for Zumo connection...';if(s.connected){if(s.calibrating)message='Calibrating surface...';else if(s.fault!=='NONE')message='Zumo fault: '+s.fault;else if(s.last_error!=='NONE')message=s.last_error;else if(zumoReady)message='Hold a direction to drive.';else message='Connected. Calibrate surface on a safe surface to enable driving.'}$('zumoMessage').textContent=message}catch(error){updateDistance(null);zumoReady=false;faceAvailable=false;updateFaceControls();for(const button of [...driveButtons,...faceButtons])button.disabled=true;$('ledApply').disabled=$('ledOff').disabled=true;$('ledResult').textContent='Unavailable';$('zumoLink').textContent='Zumo: unavailable';$('zumoMessage').textContent='Zumo status unavailable';if(heldDirection)stopZumo(true,'status-offline')}finally{zumoRefreshPending=false}}
 refreshZumo();setInterval(refreshZumo,500);
 async function action(path){
   try{const response=await fetch(path,{method:'POST'});const data=await response.json();$('message').textContent=data.message||'';$('message').className=response.ok?'':'error';await refresh();}
@@ -313,38 +327,40 @@ async function sendVolume(value){
 }
 function formatBytes(bytes){return bytes>1048576?(bytes/1048576).toFixed(1)+' MB':Math.round(bytes/1024)+' KB'}
 function freshVision(s){return (s.vision_age_ms??0)<=1200&&(s.vision_capture_age_ms??0)<=1200}
-function drawBoxes(s){const ctx=$('boxes').getContext('2d');ctx.clearRect(0,0,640,480);if(!s.vision_enabled||!s.boxes||!freshVision(s))return;const sx=640/(s.vision_width||320),sy=480/(s.vision_height||240);ctx.lineWidth=4;ctx.font='bold 18px system-ui';for(const b of s.boxes){const label=s.battery_mode?(b.label||s.object_classes?.[b.class_id]||'Object'):'Person';ctx.strokeStyle=s.battery_mode?(['#ffcf45','#38e4ff','#ff74d4'][b.class_id]||'#ffcf45'):'#36e4ff';ctx.fillStyle=ctx.strokeStyle;const x=b.x1*sx,y=b.y1*sy,w=(b.x2-b.x1)*sx,h=(b.y2-b.y1)*sy;ctx.strokeRect(x,y,w,h);ctx.fillText(`${label} ${b.score}%`,x+4,Math.max(22,y-7))}}
+function drawBoxes(v){
+  const ctx=$('boxes').getContext('2d');ctx.clearRect(0,0,640,480);ctx.setLineDash?.([]);ctx.lineWidth=4;ctx.font='bold 18px system-ui';
+  if(!v?.vision_enabled||!v.boxes||!freshVision(v))return;const sx=640/(v.vision_width||320),sy=480/(v.vision_height||240);for(const b of v.boxes){const label=v.battery_mode?(b.label||v.object_classes?.[b.class_id]||'Object'):'Person';ctx.strokeStyle=v.battery_mode?(['#ffcf45','#38e4ff','#ff74d4'][b.class_id]||'#ffcf45'):'#36e4ff';ctx.fillStyle=ctx.strokeStyle;const x=b.x1*sx,y=b.y1*sy,w=(b.x2-b.x1)*sx,h=(b.y2-b.y1)*sy;ctx.strokeRect(x,y,w,h);ctx.fillText(`${label} ${b.score}%`,x+4,Math.max(22,y-7))}
+}
 let refreshPending=false;
 async function refresh(){
   if(refreshPending)return;
   refreshPending=true;
   try{
     const response=await fetch('/api/status',{cache:'no-store'});if(!response.ok)throw new Error('Status HTTP '+response.status);const s=await response.json();
-    cameraReady=s.camera_ready;visionEnabled=s.vision_enabled&&!s.battery_mode;batteryEnabled=s.vision_enabled&&!!s.battery_mode;followEnabled=s.follow_enabled;$('takePhoto').disabled=!cameraReady||photoPending;$('visionToggle').disabled=!s.vision_ready||visionPending||batteryPending;$('visionToggle').textContent=visionEnabled?'Stop person detection':'Start person detection';$('followToggle').disabled=!followEnabled&&(!visionEnabled||!zumoReady)||followPending;$('followToggle').textContent=followEnabled?'Stop turning':'Turn with person';$('followState').textContent=s.follow_state+(s.follow_target_x>=0?` · target ${s.follow_target_x}/${s.vision_width}`:'');$('state').textContent=s.audio_state;const rate=s.vision_interval_ms>0&&s.vision_age_ms<2000?` · ${(1000/s.vision_interval_ms).toFixed(1)} fps`:' · measuring';$('camera').textContent=cameraReady?((s.vision_ready||s.battery_ready)?(s.vision_enabled?'LIVE · 640×480 · '+(s.battery_mode?'Object':'Person')+' detection'+rate:'LIVE · 640×480 · Vision off'):'LIVE · 640×480 · Vision unavailable'):s.camera_error;$('personBadge').hidden=!visionEnabled||!s.person_detected||!freshVision(s);drawBoxes(s);
+    cameraReady=s.camera_ready;visionEnabled=s.vision_enabled&&!s.battery_mode;batteryEnabled=s.vision_enabled&&!!s.battery_mode;$('visionToggle').disabled=!s.vision_ready||visionPending||batteryPending;$('visionToggle').textContent=visionEnabled?'Stop person detection':'Start person detection';$('state').textContent=s.audio_state;const rate=s.vision_interval_ms>0&&s.vision_age_ms<2000?` · ${(1000/s.vision_interval_ms).toFixed(1)} fps`:' · measuring';$('camera').textContent=cameraReady?((s.vision_ready||s.battery_ready)?(s.vision_enabled?'LIVE · 640×480 · '+(s.battery_mode?'Object':'Person')+' detection'+rate:'LIVE · 640×480 · Vision off'):'LIVE · 640×480 · Vision unavailable'):s.camera_error;$('personBadge').hidden=!visionEnabled||!s.person_detected||!freshVision(s);drawBoxes(s);
     $('batteryToggle').disabled=!s.battery_ready||batteryPending||visionPending||stopPending;$('batteryToggle').textContent=batteryEnabled?'Stop object test':'Test object model';const objectSummary=(s.boxes||[]).map(b=>(b.label||s.object_classes?.[b.class_id]||'Object')+' '+b.score+'%').join(' · ');$('batteryState').textContent=batteryNotice||(!s.battery_ready?'Object model unavailable':!batteryEnabled?'Battery, Marker, Screwdriver · camera test only':s.vision_error||((s.vision_age_ms<2000?(objectSummary||'No objects detected'):'Waiting for object result')+' · '+s.vision_inference_ms+' ms'));
     $('wakeState').textContent=!s.wake_ready?'Wake unavailable':s.wake_paused?'Paused for vision':s.wake_reacting?'Listening · wake reaction':'Listening for Digit';
     $('wakeLast').textContent=s.wake_detections?` · ${s.wake_detections} heard · last ${Math.floor(s.wake_age_ms/1000)}s ago (${Math.round(s.wake_score*100)}%)`:'';
-    $('wakeResult').textContent=s.wake_error||({'APPLIED':'Zumo acknowledged the reaction','SENDING':'Sending reaction to Zumo...','NONE':'','DISCONNECTED':'Zumo disconnected · speaker reaction remains available','BUSY':'Zumo busy · face and lights skipped','CANCELLED':'Zumo reaction cancelled','NO_REPLY':'No wake acknowledgement from Zumo · check its updated files','UNKNOWN_COMMAND':'Update the Zumo controller for wake reactions'}[s.wake_zumo]||s.wake_zumo);
+    $('wakeResult').textContent=s.wake_error||(s.wake_zumo==='NONE'?'':({'APPLIED':'Zumo acknowledged the reaction','SENDING':'Sending reaction to Zumo...','NONE':'','DISCONNECTED':'Zumo disconnected · speaker reaction remains available','BUSY':'Zumo busy · face and lights skipped','CANCELLED':'Zumo reaction cancelled','NO_REPLY':'No wake acknowledgement from Zumo · check its updated files','UNKNOWN_COMMAND':'Update the Zumo controller for wake reactions'}[s.wake_zumo]||s.wake_zumo||''));
     $('wakeTest').disabled=s.wake_paused||s.wake_reacting||(!s.audio_available&&!s.wake_zumo_connected);
-    const elapsed=s.audio_state==='RECORDING'?s.recording_elapsed_ms:s.captured_ms;
-    $('duration').textContent=(Math.min(elapsed,s.max_recording_ms)/1000).toFixed(1)+' s';
     $('memory').textContent=formatBytes(s.psram_free);$('network').textContent=s.wifi_ip;
     if(volumeTimer===null&&!volumeSending){$('volume').value=s.speaker_volume;$('volumeValue').textContent=s.speaker_volume;}
     $('volume').disabled=!s.audio_available;
-    faceAudioReady=s.audio_available&&s.audio_state==='READY';updateFaceControls();$('record').disabled=s.audio_state!=='READY'||!!s.cue_playing;$('stopRecord').disabled=s.audio_state!=='RECORDING';
-    $('replay').disabled=s.audio_state!=='READY'||s.captured_ms===0||!!s.cue_playing;$('tone').disabled=s.audio_state!=='READY'||!!s.cue_playing;$('stopPlay').disabled=s.audio_state!=='PLAYING'&&!s.wake_chime&&!s.cue_playing;
+    updateFaceControls();
     if(s.audio_error){$('message').textContent=s.audio_error;$('message').className='error';}
     else if($('message').className==='error'||$('message').textContent==='Waiting for device status...'){$('message').textContent='Ready';$('message').className='';}
-  }catch(error){faceAudioReady=false;updateFaceControls();$('wakeState').textContent='Unavailable';$('wakeTest').disabled=true;cameraReady=false;$('takePhoto').disabled=true;$('visionToggle').disabled=true;$('batteryToggle').disabled=true;$('batteryState').textContent='Object test unavailable · device offline';$('personBadge').hidden=true;$('state').textContent='OFFLINE';$('message').textContent='Device status unavailable';$('message').className='error';}
+  }catch(error){updateFaceControls();$('wakeState').textContent='Unavailable';$('wakeTest').disabled=true;cameraReady=false;$('visionToggle').disabled=true;$('batteryToggle').disabled=true;$('batteryState').textContent='Object test unavailable · device offline';$('personBadge').hidden=true;$('state').textContent='OFFLINE';$('message').textContent='Device status unavailable';$('message').className='error';}
   finally{refreshPending=false;}
 }
 refresh();setInterval(refresh,250);
 refreshVoice();setInterval(refreshVoice,750);
 refreshActions();setInterval(refreshActions,500);
+refreshGeminiSettings();setInterval(refreshGeminiSettings,5000);
 </script>
 </body>
 </html>
 )HTML";
+#endif
 
 void setNoCache(httpd_req_t* request) {
   httpd_resp_set_hdr(request, "Cache-Control", "no-store, no-cache, must-revalidate");
@@ -357,11 +373,26 @@ esp_err_t sendJson(httpd_req_t* request, const char* json) {
   return httpd_resp_sendstr(request, json);
 }
 
+// cJSON owns escaping for action and local recognition status.
+// This helper consumes the object on every path.
+esp_err_t sendJsonObject(httpd_req_t* request, cJSON* object) {
+  if (!object) return httpd_resp_send_err(request, HTTPD_500_INTERNAL_SERVER_ERROR, "No response memory");
+  char* json = cJSON_PrintUnformatted(object);
+  cJSON_Delete(object);
+  if (!json) return httpd_resp_send_err(request, HTTPD_500_INTERNAL_SERVER_ERROR, "No response memory");
+  const esp_err_t result = sendJson(request, json);
+  cJSON_free(json);
+  return result;
+}
+
 esp_err_t rootHandler(httpd_req_t* request) {
   Serial.printf("[%10lu] Web: GET /\n", static_cast<unsigned long>(millis()));
   httpd_resp_set_type(request, "text/html; charset=utf-8");
+  httpd_resp_set_hdr(request, "Content-Encoding", "gzip");
   setNoCache(request);
-  return httpd_resp_send(request, kIndexHtml, HTTPD_RESP_USE_STRLEN);
+  return httpd_resp_send(request,
+      reinterpret_cast<const char*>(dashboard_html_gz_start),
+      dashboard_html_gz_end - dashboard_html_gz_start);
 }
 
 void escapeJsonString(const char* input, char* output, size_t outputSize) {
@@ -386,7 +417,6 @@ esp_err_t statusHandler(httpd_req_t* request) {
   static uint32_t lastStatusLogMs = 0;
   const AudioStatus audio = audioEngine.snapshot();
   const vision_service::Status vision = vision_service::snapshot();
-  const person_follow::Status follow = person_follow::snapshot();
   const auto wake = wake_word::snapshot();
   const auto zumo = zumo_link::snapshot();
   char wakeError[192], wakeZumo[48];
@@ -459,16 +489,12 @@ esp_err_t statusHandler(httpd_req_t* request) {
     used += written > 0 ? static_cast<size_t>(written) : 0;
   }
   snprintf(json + used, sizeof(json) - used,
-           "],\"follow_enabled\":%s,\"follow_state\":\"%s\","
-           "\"follow_target_x\":%d,\"follow_error_px\":%d,"
-           "\"follow_score_percent\":%u,"
+           "],"
            "\"wake_ready\":%s,\"wake_paused\":%s,\"wake_reacting\":%s,"
            "\"wake_detections\":%lu,\"wake_age_ms\":%lu,\"wake_score\":%.3f,"
            "\"wake_dropped_frames\":%lu,\"wake_inference_us\":%lu,\"wake_mic_peak\":%u,"
            "\"wake_error\":\"%s\",\"wake_zumo\":\"%s\",\"wake_chime\":%s,"
            "\"wake_zumo_connected\":%s}",
-           follow.enabled ? "true" : "false", follow.phase,
-           follow.targetX, follow.errorPixels, follow.scorePercent,
            wake.ready ? "true" : "false", wake.pausedForVision ? "true" : "false",
            wake.reacting ? "true" : "false", (unsigned long)wake.detections,
            (unsigned long)(wake.detections ? millis() - wake.lastDetectionMs : 0), wake.lastScore,
@@ -520,6 +546,191 @@ esp_err_t controlReply(httpd_req_t* request, const char* message) {
            (unsigned long)robot_actions::generation());
   return sendJson(request,json);
 }
+
+bool geminiRequestOrigin(httpd_req_t* request) {
+  char site[24] = {}, origin[128] = {}, host[96] = {}, expected[128] = {};
+  const size_t siteLength = httpd_req_get_hdr_value_len(request, "Sec-Fetch-Site");
+  if (siteLength >= sizeof(site)) return false;
+  if (siteLength && (httpd_req_get_hdr_value_str(request, "Sec-Fetch-Site", site, sizeof(site)) != ESP_OK ||
+                     !strcmp(site, "cross-site"))) return false;
+  const size_t originLength = httpd_req_get_hdr_value_len(request, "Origin");
+  // Non-browser clients may omit Origin; browsers still need JSON and generation.
+  if (!originLength) return true;
+  if (originLength >= sizeof(origin) || httpd_req_get_hdr_value_len(request, "Host") >= sizeof(host) ||
+      httpd_req_get_hdr_value_str(request, "Origin", origin, sizeof(origin)) != ESP_OK ||
+      httpd_req_get_hdr_value_str(request, "Host", host, sizeof(host)) != ESP_OK) return false;
+  snprintf(expected, sizeof(expected), "http://%s", host);
+  return !strcmp(origin, expected);
+}
+
+esp_err_t geminiError(httpd_req_t* request, const char* status, const char* message) {
+  httpd_resp_set_status(request, status);
+  return controlReply(request, message);
+}
+
+bool geminiFlatObjectBody(const char* body, size_t size) {
+  bool quoted = false, escaped = false, started = false, ended = false;
+  unsigned depth = 0;
+  for (size_t index = 0; index < size; ++index) {
+    const unsigned char value = static_cast<unsigned char>(body[index]);
+    if (quoted) {
+      if (escaped) escaped = false;
+      else if (value == '\\') escaped = true;
+      else if (value == '"') quoted = false;
+      continue;
+    }
+    if (value == '"') { if (depth != 1) return false; quoted = true; }
+    else if (value == '{') { if (depth || started) return false; depth = 1; started = true; }
+    else if (value == '}') { if (depth != 1) return false; depth = 0; ended = true; }
+    else if (value == '[' || value == ']') return false;
+    else if (!depth && !std::isspace(value)) return false;
+  }
+  return started && ended && !depth && !quoted;
+}
+
+cJSON* geminiRequestJson(httpd_req_t* request) {
+  if (!geminiRequestOrigin(request)) {
+    geminiError(request, "403 Forbidden", "Use the dashboard on Digit's own address"); return nullptr;
+  }
+  char contentType[64] = {};
+  if (httpd_req_get_hdr_value_len(request, "Content-Type") >= sizeof(contentType) ||
+      httpd_req_get_hdr_value_str(request, "Content-Type", contentType, sizeof(contentType)) != ESP_OK) {
+    geminiError(request, "415 Unsupported Media Type", "Send application/json"); return nullptr;
+  }
+  for (char* value = contentType; *value; ++value) *value = static_cast<char>(std::tolower(static_cast<unsigned char>(*value)));
+  if (strncmp(contentType, "application/json", 16) || (contentType[16] && contentType[16] != ';')) {
+    geminiError(request, "415 Unsupported Media Type", "Send application/json"); return nullptr;
+  }
+  constexpr size_t kMaxBody = 1024;
+  if (request->content_len <= 0 || request->content_len > kMaxBody) {
+    geminiError(request, "400 Bad Request", "Send a JSON object of at most 1024 bytes"); return nullptr;
+  }
+  char body[kMaxBody + 1] = {};
+  size_t received = 0;
+  while (received < request->content_len) {
+    const int count = httpd_req_recv(request, body + received, request->content_len - received);
+    if (count <= 0) { geminiError(request, "400 Bad Request", "Incomplete JSON request"); return nullptr; }
+    received += count;
+  }
+  if (strlen(body) != received || strstr(body, "\\u0000") || !geminiFlatObjectBody(body, received)) {
+    geminiError(request, "400 Bad Request", "Invalid JSON request"); return nullptr;
+  }
+  const char* end = nullptr;
+  cJSON* json = cJSON_ParseWithLengthOpts(body, received + 1, &end, true);
+  if (!cJSON_IsObject(json)) {
+    cJSON_Delete(json); geminiError(request, "400 Bad Request", "Send one JSON object"); return nullptr;
+  }
+  return json;
+}
+
+bool geminiFields(cJSON* json, const char* const* allowed, size_t count) {
+  for (cJSON* field = json->child; field; field = field->next) {
+    bool known = false;
+    for (size_t index = 0; index < count; ++index) if (!strcmp(field->string, allowed[index])) known = true;
+    if (!known) return false;
+    for (cJSON* earlier = json->child; earlier != field; earlier = earlier->next)
+      if (!strcmp(earlier->string, field->string)) return false;
+  }
+  return true;
+}
+
+bool geminiGeneration(cJSON* json) {
+  const cJSON* value = cJSON_GetObjectItemCaseSensitive(json, "generation");
+  if (!cJSON_IsNumber(value) || !std::isfinite(value->valuedouble) || value->valuedouble < 1 ||
+      value->valuedouble > UINT32_MAX || value->valuedouble != std::floor(value->valuedouble)) return false;
+  return static_cast<uint32_t>(value->valuedouble) == robot_actions::generation();
+}
+
+bool geminiKeyField(const cJSON* key) {
+  if (!key) return true;
+  if (!cJSON_IsString(key)) return false;
+  const size_t size = strlen(key->valuestring);
+  if (!size) return true;
+  if (size < 16 || size > gemini_client::kMaxApiKeyLength) return false;
+  for (const char* value = key->valuestring; *value; ++value) {
+    const unsigned char character = static_cast<unsigned char>(*value);
+    if (!((character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') ||
+          (character >= '0' && character <= '9') || character == '_' || character == '-' || character == '.')) return false;
+  }
+  return true;
+}
+
+esp_err_t geminiSettingsHandler(httpd_req_t* request) {
+  if (request->method == HTTP_GET) {
+    const auto settings = gemini_client::settings();
+    cJSON* json = cJSON_CreateObject();
+    if (json) {
+      cJSON_AddBoolToObject(json, "configured", settings.configured);
+      cJSON_AddStringToObject(json, "model", settings.model);
+      cJSON_AddBoolToObject(json, "dry_run", settings.dryRun);
+      cJSON_AddNumberToObject(json, "idle_timeout_sec", settings.idleTimeoutSec);
+      cJSON_AddNumberToObject(json, "generation", robot_actions::generation());
+    }
+    return sendJsonObject(request, json);
+  }
+  cJSON* json = geminiRequestJson(request);
+  if (!json) return ESP_OK;
+  constexpr const char* fields[] = {"generation", "api_key", "model", "dry_run", "remove_key", "idle_timeout_sec"};
+  const cJSON* key = cJSON_GetObjectItemCaseSensitive(json, "api_key");
+  const cJSON* model = cJSON_GetObjectItemCaseSensitive(json, "model");
+  const cJSON* dryRun = cJSON_GetObjectItemCaseSensitive(json, "dry_run");
+  const cJSON* remove = cJSON_GetObjectItemCaseSensitive(json, "remove_key");
+  const cJSON* timeout = cJSON_GetObjectItemCaseSensitive(json, "idle_timeout_sec");
+  const bool valid = geminiFields(json, fields, sizeof(fields) / sizeof(fields[0])) &&
+      geminiKeyField(key) &&
+      (!model || (cJSON_IsString(model) && (!model->valuestring[0] || !strcmp(model->valuestring, "gemini-3.8-live")))) &&
+      (!dryRun || cJSON_IsBool(dryRun)) && (!remove || cJSON_IsBool(remove)) &&
+      (!timeout || (cJSON_IsNumber(timeout) && std::isfinite(timeout->valuedouble) &&
+                    timeout->valuedouble >= 10 && timeout->valuedouble <= 300 &&
+                    timeout->valuedouble == std::floor(timeout->valuedouble))) &&
+      !(cJSON_IsTrue(remove) && key && key->valuestring[0]);
+  if (!valid) { cJSON_Delete(json); return geminiError(request, "400 Bad Request", "Invalid settings: use the Live model and an idle timeout of 10 to 300 seconds"); }
+  robot_actions::Guard control;
+  if (!geminiGeneration(json)) { cJSON_Delete(json); return geminiError(request, "409 Conflict", "Settings request cancelled by newer control"); }
+  const auto settings = gemini_client::settings();
+  robot_actions::stop("Gemini settings changed");
+  char error[96] = {};
+  const bool saved = gemini_client::configure(key ? key->valuestring : "", model ? model->valuestring : "",
+      dryRun ? cJSON_IsTrue(dryRun) : settings.dryRun, cJSON_IsTrue(remove), error, sizeof(error),
+      timeout ? static_cast<uint32_t>(timeout->valuedouble) : 0);
+  const bool removed = cJSON_IsTrue(remove);
+  cJSON_Delete(json);
+  if (!saved) return geminiError(request, "400 Bad Request", error[0] ? error : "Could not save Gemini settings");
+  return controlReply(request, removed ? "Saved API key removed" : "Gemini settings saved on Digit");
+}
+
+esp_err_t geminiLiveHandler(httpd_req_t* request) {
+  cJSON* json = geminiRequestJson(request);
+  if (!json) return ESP_OK;
+  const bool start = !strncmp(request->uri, "/api/gemini/live/start", 22) && (request->uri[22] == 0 || request->uri[22] == '?');
+  const bool probe = !strncmp(request->uri, "/api/gemini/live/test", 21) && (request->uri[21] == 0 || request->uri[21] == '?');
+  constexpr const char* startFields[] = {"generation", "mode"};
+  constexpr const char* controlFields[] = {"generation"};
+  const cJSON* mode = cJSON_GetObjectItemCaseSensitive(json, "mode");
+  if (!geminiFields(json, start ? startFields : controlFields, start ? 2 : 1) ||
+      (start && (!cJSON_IsString(mode) || (strcmp(mode->valuestring, "conversation") && strcmp(mode->valuestring, "test_only"))))) {
+    cJSON_Delete(json); return geminiError(request, "400 Bad Request", "Invalid Live request");
+  }
+  const bool testOnly = start && !strcmp(mode->valuestring, "test_only");
+  robot_actions::Guard control;
+  if (!geminiGeneration(json)) { cJSON_Delete(json); return geminiError(request, "409 Conflict", "Live request cancelled by newer control"); }
+  cJSON_Delete(json);
+  if (!start && !probe) {
+    robot_actions::stop("Gemini conversation ended");
+    return controlReply(request, "Conversation, streaming, audio and pending actions stopped");
+  }
+  if (!gemini_client::settings().configured) return geminiError(request, "409 Conflict", "Save a Gemini API key first");
+  const auto zumo = zumo_link::snapshot();
+  if (robot_actions::snapshot().active || wake_word::snapshot().reacting ||
+      zumo.manualDriving || zumo.lookActive ||
+      zumo.motionActive || zumo.left || zumo.right)
+    return geminiError(request, "409 Conflict", "Stop existing robot activity before starting Gemini Live");
+  if (!speech_commands::startLive(robot_actions::generation(), probe, testOnly))
+    return geminiError(request, "409 Conflict", "Live session busy or unavailable; end the current session first");
+  return controlReply(request, probe ? "Connection check requested; microphone/video upload, audio output and actions remain off" :
+      testOnly ? "Test-only stream started; robot actions disabled" : "Gemini Live conversation started");
+}
+
 esp_err_t actionsDebugHandler(httpd_req_t* request) {
   httpd_resp_set_type(request,"application/json");
   httpd_resp_set_hdr(request,"Cache-Control","no-store");
@@ -560,45 +771,70 @@ esp_err_t actionsDebugHandler(httpd_req_t* request) {
 esp_err_t actionsStatusHandler(httpd_req_t* request) {
   const auto action = robot_actions::snapshot();
   const auto speech = speech_commands::snapshot();
+  const auto localStop = local_stop::snapshot();
   const auto z = zumo_link::snapshot();
-  const char* helloReason = robot_actions::unavailableReason(robot_actions::Command::ComeSayHello);
-  const char* escapeReason = robot_actions::unavailableReason(robot_actions::Command::Escape);
-  const bool personReady = !helloReason[0];
-  const bool escapeReady = !escapeReason[0];
-  const bool circleReady = !robot_actions::unavailableReason(robot_actions::Command::CircleDance)[0];
-  const bool identifyReady = !robot_actions::unavailableReason(robot_actions::Command::Identify)[0];
-  const bool driveReady = personReady || escapeReady;
-  const char* movementReason = helloReason[0] ? helloReason : escapeReason;
-  char error[192], phase[192], result[64], decoder[768], json[2400];
-  escapeJsonString(speech.error,error,sizeof(error));
-  escapeJsonString(action.phase,phase,sizeof(phase));
-  escapeJsonString(speech.result,result,sizeof(result));
-  escapeJsonString(speech.decoderText,decoder,sizeof(decoder));
-  snprintf(json,sizeof(json),
-      "{\"action\":\"%s\",\"phase\":\"%s\",\"active\":%s,\"generation\":%lu,"
-      "\"voice_ready\":%s,\"listening\":%s,\"voice_error\":\"%s\",\"recognized\":%lu,"
-      "\"last_command\":%d,\"score\":%.3f,\"drive_ready\":%s,\"range_valid\":%s,"
-      "\"circle_ready\":%s,\"circle_laps\":3,\"circle_target_diameter_inches\":6,\"circle_inner_diameter_inches\":3,\"drive_speed\":%d,"
-      "\"identify_ready\":%s,\"person_action_ready\":%s,\"object_action_ready\":%s,"
-      "\"movement_reason\":\"%s\",\"find_me_stop_mm\":100,\"person_confirm_percent\":%u,"
-      "\"distance_mm\":%d,\"photo_revision\":%lu,\"voice_result\":\"%s\","
-      "\"command_audio_ms\":%lu,\"command_chunks\":%lu,\"command_mic_peak\":%u,"
-      "\"command_inference_us\":%lu,\"candidate_command\":%d,\"candidate_score\":%.3f,"
-      "\"command_feed_chunks\":%lu,\"command_fetch_chunks\":%lu,\"command_model_peak\":%u,"
-      "\"audio_total_feeds\":%lu,\"audio_total_fetches\":%lu,"
-      "\"command_dropped_frames\":%lu,\"command_decoder_text\":\"%s\"}",
-      robot_actions::name(action.command),phase,action.active?"true":"false",(unsigned long)action.generation,
-      speech.ready?"true":"false",speech.listening?"true":"false",error,(unsigned long)speech.recognized,
-      speech.lastCommand,speech.score,driveReady?"true":"false",
-      z.rangeValid?"true":"false",circleReady?"true":"false",robot_actions::driveSpeed(),identifyReady?"true":"false",personReady?"true":"false",
-      escapeReady?"true":"false",movementReason,vision_service::kPersonConfidencePercent,
-      z.distanceMm,(unsigned long)photo_store::revision(),result,
-      (unsigned long)(speech.samples/16),(unsigned long)speech.chunks,speech.micPeak,
-      (unsigned long)speech.inferenceUs,speech.candidateCommand,speech.candidateScore,
-      (unsigned long)speech.feedChunks,(unsigned long)speech.fetchChunks,speech.modelPeak,
-      (unsigned long)speech.totalFeeds,
-      (unsigned long)speech.totalFetches,(unsigned long)speech.droppedFrames,decoder);
-  return sendJson(request,json);
+  const char* movementReason=robot_actions::unavailableReason(robot_actions::Command::Forward);
+  const bool driveReady=!movementReason[0];
+  cJSON* json = cJSON_CreateObject();
+  if (!json) return sendJsonObject(request, json);
+  cJSON_AddStringToObject(json, "action", robot_actions::name(action.command));
+  cJSON_AddStringToObject(json, "phase", action.phase);
+  cJSON_AddBoolToObject(json, "active", action.active);
+  cJSON_AddNumberToObject(json, "generation", action.generation);
+  cJSON_AddBoolToObject(json, "voice_ready", speech.ready);
+  cJSON_AddBoolToObject(json, "listening", speech.listening);
+  cJSON_AddStringToObject(json, "voice_error", speech.error);
+  cJSON_AddNumberToObject(json, "recognized", speech.recognized);
+  cJSON_AddNumberToObject(json, "last_command", speech.lastCommand);
+  cJSON_AddNumberToObject(json, "score", speech.score);
+  cJSON_AddBoolToObject(json, "drive_ready", driveReady);
+  cJSON_AddBoolToObject(json, "range_valid", z.rangeValid);
+  cJSON_AddNumberToObject(json,"drive_speed",robot_actions::driveSpeed());
+  cJSON_AddStringToObject(json,"movement_reason",movementReason);
+  cJSON_AddBoolToObject(json,"distance_calibrated",z.distanceCalibrated);
+  cJSON_AddBoolToObject(json,"task_active",speech.taskActive);
+  cJSON_AddNumberToObject(json,"task_moves",speech.taskMoves);
+  cJSON_AddStringToObject(json,"task_goal",speech.taskGoal);
+  cJSON_AddStringToObject(json,"task_phase",speech.taskPhase);
+  cJSON_AddStringToObject(json,"task_result",speech.taskResult);
+  cJSON_AddNumberToObject(json, "distance_mm", z.distanceMm);
+  cJSON_AddStringToObject(json, "voice_result", speech.result);
+  cJSON_AddBoolToObject(json, "live_active", speech.liveActive);
+  cJSON_AddBoolToObject(json, "live_connected", speech.liveConnected);
+  cJSON_AddBoolToObject(json, "live_connecting", speech.liveConnecting);
+  cJSON_AddNumberToObject(json, "live_connections", speech.liveConnectionCount);
+  cJSON_AddBoolToObject(json, "live_speaking", speech.liveSpeaking);
+  cJSON_AddBoolToObject(json, "live_probe", speech.liveProbe);
+  cJSON_AddBoolToObject(json, "live_dry_run", speech.dryRun);
+  cJSON_AddNumberToObject(json, "live_latency_ms", speech.latencyMs);
+  cJSON_AddNumberToObject(json, "live_sent_samples", speech.liveSentSamples);
+  cJSON_AddNumberToObject(json, "live_received_samples", speech.liveReceivedSamples);
+  cJSON_AddNumberToObject(json, "live_played_samples", speech.livePlayedSamples);
+  cJSON_AddNumberToObject(json, "live_video_frames", speech.liveVideoFrames);
+  cJSON_AddNumberToObject(json, "live_video_bytes", speech.liveVideoBytes);
+  cJSON_AddNumberToObject(json, "live_video_capture_age_ms", speech.liveVideoCapturedAt ? millis() - speech.liveVideoCapturedAt : UINT32_MAX);
+  cJSON_AddNumberToObject(json, "live_idle_remaining_ms", speech.idleRemainingMs);
+  cJSON_AddStringToObject(json, "live_transcript", speech.transcript);
+  cJSON_AddStringToObject(json, "live_response", speech.liveResponse);
+  cJSON_AddStringToObject(json, "live_reason", speech.reason);
+  cJSON_AddBoolToObject(json, "local_stop_ready", localStop.ready);
+  cJSON_AddBoolToObject(json, "local_stop_active", localStop.active);
+  cJSON_AddNumberToObject(json, "local_stop_detections", localStop.detections);
+  cJSON_AddStringToObject(json, "local_stop_error", localStop.error);
+  cJSON_AddNumberToObject(json, "command_audio_ms", speech.samples / 16);
+  cJSON_AddNumberToObject(json, "command_chunks", speech.chunks);
+  cJSON_AddNumberToObject(json, "command_mic_peak", speech.micPeak);
+  cJSON_AddNumberToObject(json, "command_inference_us", speech.inferenceUs);
+  cJSON_AddNumberToObject(json, "candidate_command", speech.candidateCommand);
+  cJSON_AddNumberToObject(json, "candidate_score", speech.candidateScore);
+  cJSON_AddNumberToObject(json, "command_feed_chunks", speech.feedChunks);
+  cJSON_AddNumberToObject(json, "command_fetch_chunks", speech.fetchChunks);
+  cJSON_AddNumberToObject(json, "command_model_peak", speech.modelPeak);
+  cJSON_AddNumberToObject(json, "audio_total_feeds", speech.totalFeeds);
+  cJSON_AddNumberToObject(json, "audio_total_fetches", speech.totalFetches);
+  cJSON_AddNumberToObject(json, "command_dropped_frames", speech.droppedFrames);
+  cJSON_AddStringToObject(json, "command_decoder_text", speech.decoderText);
+  return sendJsonObject(request, json);
 }
 esp_err_t audioProcessingHandler(httpd_req_t* request) {
   const auto& p = audioEngine.processing();
@@ -611,64 +847,6 @@ esp_err_t audioProcessingHandler(httpd_req_t* request) {
       p.leftCategory,p.leftSource,p.rightCategory,p.rightSource,p.packedLeft,p.packedRight,p.asrOutput,p.asrGain,
       p.aecBypass,p.agc,p.agcGain,p.limiter,p.stationaryNoiseFloor,p.speechNoiseFloor,p.echoSuppression,p.nonlinearEcho);
   return sendJson(request,json);
-}
-esp_err_t commandAudioHandler(httpd_req_t* request) {
-  const auto capture = speech_commands::copyAudio();
-  if (!capture.samples) {
-    httpd_resp_set_status(request, "409 Conflict");
-    return sendJson(request, "{\"message\":\"No complete command recording available yet\"}");
-  }
-  // ESP32 is little-endian: lossless 16 kHz signed PCM from detect(), no gain.
-  uint8_t header[44]{};
-  memcpy(header, "RIFF", 4); memcpy(header + 8, "WAVEfmt ", 8); memcpy(header + 36, "data", 4);
-  const uint32_t bytes = capture.count * sizeof(int16_t);
-  const auto put32 = [&](size_t offset, uint32_t value) { memcpy(header + offset, &value, 4); };
-  const auto put16 = [&](size_t offset, uint16_t value) { memcpy(header + offset, &value, 2); };
-  put32(4, 36 + bytes); put32(16, 16); put16(20, 1); put16(22, 1);
-  put32(24, 16000); put32(28, 32000); put16(32, 2); put16(34, 16); put32(40, bytes);
-  char session[16]; snprintf(session, sizeof(session), "%lu", (unsigned long)capture.session);
-  httpd_resp_set_type(request, "audio/wav");
-  httpd_resp_set_hdr(request, "Cache-Control", "no-store");
-  httpd_resp_set_hdr(request, "X-Command-Session", session);
-  httpd_resp_set_hdr(request, "Content-Disposition", "attachment; filename=command-input.wav");
-  esp_err_t result = httpd_resp_send_chunk(request, reinterpret_cast<const char*>(header), sizeof(header));
-  const char* pcm = reinterpret_cast<const char*>(capture.samples);
-  for (size_t offset = 0; result == ESP_OK && offset < bytes; offset += 4096) {
-    result = httpd_resp_send_chunk(request, pcm + offset, min(size_t(4096), size_t(bytes) - offset));
-  }
-  free(capture.samples);
-  if (result == ESP_OK) result = httpd_resp_send_chunk(request, nullptr, 0);
-  return result;
-}
-esp_err_t commandAudioTestHandler(httpd_req_t* request) {
-  if (request->method == HTTP_POST) {
-    char gainText[4];
-    if (!queryValue(request, "gain", gainText, sizeof(gainText)) || gainText[0] < '1' || gainText[0] > '8' || gainText[1] ||
-        request->content_len <= 0 || request->content_len > 16000*7*2 || request->content_len % (512*2)) {
-      httpd_resp_set_status(request, "400 Bad Request");
-      return sendJson(request, "{\"message\":\"Send 16 kHz mono signed PCM in complete 512-sample frames, gain 1 through 8\"}");
-    }
-    auto* pcm = static_cast<int16_t*>(heap_caps_aligned_alloc(16, request->content_len, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-    if (!pcm) return httpd_resp_send_err(request, HTTPD_500_INTERNAL_SERVER_ERROR, "No diagnostic memory");
-    size_t received = 0;
-    while (received < request->content_len) {
-      const int count = httpd_req_recv(request, reinterpret_cast<char*>(pcm) + received, request->content_len - received);
-      if (count <= 0) { free(pcm); return ESP_FAIL; }
-      received += count;
-    }
-    if (!speech_commands::testAudio(pcm, received / sizeof(int16_t), gainText[0] - '0')) {
-      free(pcm); httpd_resp_set_status(request, "409 Conflict");
-      return sendJson(request, "{\"message\":\"Decoder busy or unavailable\"}");
-    }
-    return sendJson(request, "{\"message\":\"Decoder test queued; no robot actions\"}");
-  }
-  const auto probe = speech_commands::audioTestStatus();
-  char escaped[768], json[1000];
-  escapeJsonString(probe.text, escaped, sizeof(escaped));
-  snprintf(json, sizeof(json), "{\"busy\":%s,\"complete\":%s,\"accepted\":%s,\"gain\":%u,\"chunks\":%lu,\"state\":%d,\"command\":%d,\"score\":%.3f,\"text\":\"%s\"}",
-           probe.busy?"true":"false", probe.complete?"true":"false", probe.accepted?"true":"false", probe.gain, (unsigned long)probe.chunks,
-           probe.decoderState, probe.command, probe.score, escaped);
-  return sendJson(request, json);
 }
 bool readDriveSpeed(httpd_req_t* request, const char* key, int& speed) {
   char text[12];
@@ -683,45 +861,16 @@ esp_err_t driveSpeedHandler(httpd_req_t* request) {
     return controlReply(request,"Choose a drive speed from 3000 to 6000");
   }
   robot_actions::setDriveSpeed(speed);
-  return controlReply(request,"Drive speed saved for circle dance");
+  return controlReply(request,"Manual drive speed saved");
 }
 
 esp_err_t actionsHandler(httpd_req_t* request) {
   robot_actions::Guard control;
-  char value[4];
-  int id = 0;
-  if (!queryValue(request,"command",value,sizeof(value)) || !value[0] ||
-      strspn(value,"0123456789") != strlen(value) || value[0]=='0' ||
-      !robot_actions::validCommand(id = atoi(value))) {
-    httpd_resp_set_status(request,"400 Bad Request");
-    return controlReply(request,"Choose an available Digit action");
+  char value[8];
+  if (!queryValue(request,"command",value,sizeof(value)) || strcmp(value,"7")) {
+    httpd_resp_set_status(request,"410 Gone"); return controlReply(request,"Fixed routines retired; ask Gemini for a task");
   }
-  if (!currentGeneration(request)) {
-    httpd_resp_set_status(request,"409 Conflict");
-    return controlReply(request,"This request was cancelled by Stop or another action. Try again.");
-  }
-  if (id==16) {
-    int speed;
-    if (!readDriveSpeed(request,"speed",speed)) {
-      httpd_resp_set_status(request,"400 Bad Request");
-      return controlReply(request,"Circle dance requires the dashboard drive speed (3000 to 6000)");
-    }
-    robot_actions::setDriveSpeed(speed);
-  }
-  char accelerationText[8];
-  int acceleration = 6000;
-  if (id != 7 && queryValue(request, "acceleration", accelerationText, sizeof(accelerationText))) {
-    if (!readAcceleration(request, "acceleration", acceleration)) {
-      httpd_resp_set_status(request, "400 Bad Request");
-      return controlReply(request, "Use acceleration from 500 to 6000");
-    }
-    zumo_link::setAcceleration(acceleration);
-  }
-  if (!robot_actions::start(static_cast<robot_actions::Command>(id),robot_actions::generation())) {
-    httpd_resp_set_status(request,"409 Conflict");
-    return controlReply(request,robot_actions::snapshot().phase);
-  }
-  return controlReply(request,"Action accepted");
+  robot_actions::stop("Dashboard Stop"); return controlReply(request,"Stopped");
 }
 
 esp_err_t wakeTestHandler(httpd_req_t* request) {
@@ -791,7 +940,6 @@ esp_err_t visionHandler(httpd_req_t* request) {
   }
   const bool enabled = strcmp(value, "1") == 0;
   robot_actions::manualOverride();
-  if (!enabled) person_follow::setEnabled(false);
   if (!vision_service::setEnabled(enabled)) {
     httpd_resp_set_status(request, "503 Service Unavailable");
     return sendJson(request, "{\"message\":\"Person detection is unavailable\"}");
@@ -826,33 +974,6 @@ esp_err_t batteryVisionHandler(httpd_req_t* request) {
   }
   return controlReply(request, enabled ? "Object detection started; camera test only"
                                       : "Object detection stopped");
-}
-
-esp_err_t followHandler(httpd_req_t* request) {
-  robot_actions::Guard control;
-  char value[4];
-  if (!queryValue(request, "enabled", value, sizeof(value)) ||
-      (strcmp(value, "0") != 0 && strcmp(value, "1") != 0)) {
-    httpd_resp_set_status(request, "400 Bad Request");
-    return sendJson(request, "{\"message\":\"Use enabled=0 or enabled=1\"}");
-  }
-  const bool enabled = strcmp(value, "1") == 0;
-  robot_actions::manualOverride();
-  if (!person_follow::setEnabled(enabled)) {
-    httpd_resp_set_status(request, "409 Conflict");
-    return sendJson(request, "{\"message\":\"Start person detection and calibrate the connected Zumo first\"}");
-  }
-  return sendJson(request, enabled
-                               ? "{\"message\":\"Turn-only person tracking started\"}"
-                               : "{\"message\":\"Person turning stopped\"}");
-}
-
-esp_err_t followHeartbeatHandler(httpd_req_t* request) {
-  if (!person_follow::heartbeat()) {
-    httpd_resp_set_status(request, "409 Conflict");
-    return sendJson(request, "{\"message\":\"Person turning is off\"}");
-  }
-  return sendJson(request, "{\"message\":\"OK\"}");
 }
 
 bool parseSpeed(const char* value, int* result) {
@@ -898,7 +1019,7 @@ esp_err_t zumoStatusHandler(httpd_req_t* request) {
            "\"motion_state\":\"%s\",\"motion_result\":\"%s\",\"motion_distance_mm\":%d,"
            "\"motion_range_age_ms\":%lu,\"motion_sample\":%lu,\"heading_deci_deg\":%d,"
            "\"target_left_cps\":%d,\"target_right_cps\":%d,\"control_max_gap_ms\":%lu,"
-           "\"control_overruns\":%lu,\"display_max_slice_us\":%lu}",
+           "\"control_overruns\":%lu,\"display_max_slice_us\":%lu,\"distance_calibrated\":%s,\"travelled_mm\":%d,\"encoder_left_count\":%d,\"encoder_right_count\":%d,\"expression_supported\":%s}",
            zumo.connected ? "true" : "false", zumo.ready ? "true" : "false",
            zumo.calibrating ? "true" : "false", zumo.edge ? "true" : "false",
            zumo.left, zumo.right, zumo.batteryMillivolts,
@@ -914,7 +1035,8 @@ esp_err_t zumoStatusHandler(httpd_req_t* request) {
            (unsigned long)zumo.motionBoot,(unsigned long)zumo.motionSession,(unsigned long)zumo.motionJob,
            motionState,motionResult,zumo.motionDistanceMm,(unsigned long)zumo.motionRangeAgeMs,
            (unsigned long)zumo.motionSample,zumo.motionHeadingDeciDeg,zumo.targetLeftCps,zumo.targetRightCps,
-           (unsigned long)zumo.controlMaxGapMs,(unsigned long)zumo.controlOverruns,(unsigned long)zumo.displayMaxSliceUs);
+           (unsigned long)zumo.controlMaxGapMs,(unsigned long)zumo.controlOverruns,(unsigned long)zumo.displayMaxSliceUs,
+           zumo.distanceCalibrated?"true":"false",zumo.motionTravelledMm,zumo.encoderLeftCount,zumo.encoderRightCount,zumo.expressionCapable?"true":"false");
   return sendJson(request, json);
 }
 
@@ -937,7 +1059,6 @@ esp_err_t zumoDriveHandler(httpd_req_t* request) {
     httpd_resp_set_status(request, "400 Bad Request");
     return sendJson(request, "{\"message\":\"Use acceleration from 500 to 6000 speed units per second\"}");
   }
-  person_follow::setEnabled(false);
   robot_actions::manualOverride();
   if (!zumo_link::drive(left, right, acceleration)) {
     httpd_resp_set_status(request, "409 Conflict");
@@ -990,7 +1111,6 @@ esp_err_t zumoStopHandler(httpd_req_t* request) {
 esp_err_t zumoCalibrateHandler(httpd_req_t* request) {
   robot_actions::Guard control;
   robot_actions::manualOverride();
-  person_follow::setEnabled(false);
   if (!zumo_link::calibrate()) {
     httpd_resp_set_status(request, "409 Conflict");
     return sendJson(request, "{\"message\":\"Zumo must be connected and stopped\"}");
@@ -999,40 +1119,12 @@ esp_err_t zumoCalibrateHandler(httpd_req_t* request) {
 }
 
 esp_err_t zumoFaceHandler(httpd_req_t* request) {
-  robot_actions::Guard control;
-  char value[12];
-  if (!queryValue(request, "value", value, sizeof(value)) ||
-      !zumo_link::isFaceName(value)) {
-    httpd_resp_set_status(request, "400 Bad Request");
-    return sendJson(request, "{\"message\":\"Unknown face expression\"}");
-  }
-  char voiceText[8];
-  const bool preview = queryValue(request, "voice", voiceText, sizeof(voiceText));
-  if (preview && strcmp(voiceText, "0") && strcmp(voiceText, "1")) {
-    httpd_resp_set_status(request, "400 Bad Request");
-    return controlReply(request, "Use voice=0 or voice=1");
-  }
-  if (preview && !currentGeneration(request)) {
-    httpd_resp_set_status(request, "409 Conflict");
-    return controlReply(request, "Preview cancelled by Stop or another action. Try again.");
-  }
-  const bool withVoice = preview && !strcmp(voiceText, "1");
-  const auto audio = audioEngine.snapshot();
-  const auto z = zumo_link::snapshot();
-  if (preview && (!z.connected || z.calibrating || z.left || z.right || z.manualDriving ||
-                  z.lookActive || person_follow::snapshot().enabled || robot_actions::snapshot().active)) {
-    httpd_resp_set_status(request, "409 Conflict");
-    return controlReply(request, "Stop movement and actions before previewing an emotion");
-  }
-  if (withVoice && (!audio.available || audio.state != AudioState::Ready)) {
-    httpd_resp_set_status(request, "409 Conflict");
-    return controlReply(request, "Voice needs the speaker ready. Stop recording or playback, or turn off Play voice with face.");
-  }
-  person_follow::setEnabled(false);
+  robot_actions::Guard control; char value[12];
+  if (!queryValue(request,"value",value,sizeof(value)) || !zumo_link::isFaceName(value)) return geminiError(request,"400 Bad Request","Unknown expression");
+  if (!currentGeneration(request)) return geminiError(request,"409 Conflict","Expression request cancelled by Stop or manual control");
   robot_actions::manualOverride();
-  reaction_player::play(value,"NONE",withVoice ? emotionCueForFace(value) : AudioCue::None,
-                        reaction_player::Source::Preview);
-  return controlReply(request, withVoice ? "Preview queued; voice starts when the face is visible" : "Face preview queued");
+  if (!robot_actions::setExpression(value,3000)) return geminiError(request,"409 Conflict","Face unavailable or safety stop has priority");
+  return controlReply(request,"Silent expression requested");
 }
 
 esp_err_t zumoFaceStopHandler(httpd_req_t* request) {
@@ -1079,77 +1171,6 @@ esp_err_t zumoLedHandler(httpd_req_t* request) {
   return sendJson(request, "{\"message\":\"LED command sent\"}");
 }
 
-esp_err_t sendActionResult(httpd_req_t* request, AudioActionResult result,
-                           const char* acceptedMessage) {
-  const char* status = "200 OK";
-  const char* message = acceptedMessage;
-  switch (result) {
-    case AudioActionResult::Accepted:
-      break;
-    case AudioActionResult::Conflict:
-      status = "409 Conflict";
-      message = "That action is not allowed in the current audio state";
-      break;
-    case AudioActionResult::NoRecording:
-      status = "409 Conflict";
-      message = "There is no recording to replay yet";
-      break;
-    case AudioActionResult::Unavailable:
-    default:
-      status = "503 Service Unavailable";
-      message = "The ReSpeaker audio engine is unavailable";
-      break;
-  }
-
-  char json[180];
-  snprintf(json, sizeof(json), "{\"message\":\"%s\"}", message);
-  httpd_resp_set_status(request, status);
-  Serial.printf("[%10lu] Web action: result=%d HTTP=%s message=\"%s\"\n",
-                static_cast<unsigned long>(millis()),
-                static_cast<int>(result), status, message);
-  return sendJson(request, json);
-}
-
-esp_err_t startRecordingHandler(httpd_req_t* request) {
-  Serial.printf("[%10lu] Web: POST /api/record/start\n",
-                static_cast<unsigned long>(millis()));
-  return sendActionResult(request, audioEngine.startRecording(),
-                          "Recording started");
-}
-
-esp_err_t stopRecordingHandler(httpd_req_t* request) {
-  Serial.printf("[%10lu] Web: POST /api/record/stop\n",
-                static_cast<unsigned long>(millis()));
-  return sendActionResult(request, audioEngine.stopRecording(),
-                          "Recording will stop and play automatically");
-}
-
-esp_err_t playHandler(httpd_req_t* request) {
-  Serial.printf("[%10lu] Web: POST /api/play\n",
-                static_cast<unsigned long>(millis()));
-  return sendActionResult(request, audioEngine.playLatest(),
-                          "Playback started");
-}
-
-esp_err_t toneHandler(httpd_req_t* request) {
-  Serial.printf("[%10lu] Web: POST /api/tone\n",
-                static_cast<unsigned long>(millis()));
-  return sendActionResult(request, audioEngine.playTestTone(),
-                          "Playing a two-second speaker test tone");
-}
-
-esp_err_t stopPlaybackHandler(httpd_req_t* request) {
-  robot_actions::Guard control;
-  if (robot_actions::snapshot().command==robot_actions::Command::CircleDance) {
-    robot_actions::stop("Circle dance stopped from audio controls");
-    return sendJson(request,"{\"message\":\"Circle dance and music stopped\"}");
-  }
-  Serial.printf("[%10lu] Web: POST /api/play/stop\n",
-                static_cast<unsigned long>(millis()));
-  return sendActionResult(request, audioEngine.stopPlayback(),
-                          "Playback will stop");
-}
-
 esp_err_t volumeHandler(httpd_req_t* request) {
   char query[48] = {};
   char valueText[8] = {};
@@ -1188,70 +1209,43 @@ esp_err_t streamHandler(httpd_req_t* request) {
     httpd_resp_set_status(request, "503 Service Unavailable");
     return httpd_resp_sendstr(request, camera_service::lastError());
   }
-
   httpd_resp_set_type(request, kStreamContentType);
   setNoCache(request);
-  const TickType_t framePeriod =
-      pdMS_TO_TICKS(1000 / app_config::kTargetCameraFps);
-
+  const TickType_t framePeriod = pdMS_TO_TICKS(1000 / app_config::kTargetCameraFps);
+  bool streamStarted = false;
+  uint8_t* jpeg = static_cast<uint8_t*>(heap_caps_malloc(
+      camera_service::kMaxJpegBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  const auto failStream = [request, &streamStarted, &jpeg](const char* message, esp_err_t error) {
+    if (jpeg) { heap_caps_free(jpeg); jpeg = nullptr; }
+    Serial.println(message);
+    if (streamStarted) return error;
+    httpd_resp_set_status(request, "503 Service Unavailable");
+    httpd_resp_set_type(request, "text/plain");
+    return httpd_resp_sendstr(request, message);
+  };
+  if (!jpeg) return failStream("Camera: insufficient PSRAM for streaming", ESP_ERR_NO_MEM);
   while (true) {
     const TickType_t frameStartedAt = xTaskGetTickCount();
-    camera_fb_t* frame = esp_camera_fb_get();
-    if (frame == nullptr) {
-      Serial.println("Camera: failed to capture a frame");
-      return ESP_FAIL;
+    camera_service::Frame frame;
+    if (!camera_service::copyLatestJpeg(jpeg, camera_service::kMaxJpegBytes, &frame) ||
+        !frame.size || frame.size > camera_service::kMaxJpegBytes) {
+      return failStream("Camera: fresh streaming frame unavailable", ESP_FAIL);
     }
-
+    // The broker lock and camera framebuffer are released before socket writes.
     char partHeader[72];
     const int headerLength = snprintf(partHeader, sizeof(partHeader),
-                                      kStreamPartHeader,
-                                      static_cast<unsigned int>(frame->len));
-    esp_err_t result = httpd_resp_send_chunk(request, kStreamBoundary,
-                                             strlen(kStreamBoundary));
+        kStreamPartHeader, static_cast<unsigned int>(frame.size));
+    esp_err_t result = httpd_resp_send_chunk(request, kStreamBoundary, strlen(kStreamBoundary));
     if (result == ESP_OK) {
+      streamStarted = true;
       result = httpd_resp_send_chunk(request, partHeader, headerLength);
     }
-    if (result == ESP_OK) {
-      result = httpd_resp_send_chunk(
-          request, reinterpret_cast<const char*>(frame->buf), frame->len);
-    }
-    esp_camera_fb_return(frame);
-
-    if (result != ESP_OK) {
-      return result;
-    }
-
+    if (result == ESP_OK) result = httpd_resp_send_chunk(request,
+        reinterpret_cast<const char*>(jpeg), frame.size);
+    if (result != ESP_OK) { heap_caps_free(jpeg); return result; }
     const TickType_t elapsed = xTaskGetTickCount() - frameStartedAt;
-    if (elapsed < framePeriod) {
-      vTaskDelay(framePeriod - elapsed);
-    }
+    if (elapsed < framePeriod) vTaskDelay(framePeriod - elapsed);
   }
-}
-
-esp_err_t photoHandler(httpd_req_t* request) {
-  if (!camera_service::ready()) {
-    httpd_resp_set_status(request, "503 Service Unavailable");
-    return httpd_resp_sendstr(request, camera_service::lastError());
-  }
-
-  camera_fb_t* frame = esp_camera_fb_get();
-  if (frame == nullptr) {
-    httpd_resp_set_status(request, "503 Service Unavailable");
-    return httpd_resp_sendstr(request, "Photo capture failed");
-  }
-
-  if (frame->format != PIXFORMAT_JPEG || frame->len == 0) {
-    esp_camera_fb_return(frame);
-    httpd_resp_set_status(request, "503 Service Unavailable");
-    return httpd_resp_sendstr(request, "Camera returned an invalid photo");
-  }
-
-  httpd_resp_set_type(request, "image/jpeg");
-  setNoCache(request);
-  const esp_err_t result = httpd_resp_send(
-      request, reinterpret_cast<const char*>(frame->buf), frame->len);
-  esp_camera_fb_return(frame);
-  return result;
 }
 
 bool registerUri(httpd_handle_t server, const char* uri,
@@ -1274,7 +1268,7 @@ bool begin() {
   httpd_config_t controlConfig = HTTPD_DEFAULT_CONFIG();
   controlConfig.server_port = app_config::kControlServerPort;
   controlConfig.ctrl_port = 32768;
-  controlConfig.max_uri_handlers = 36;
+  controlConfig.max_uri_handlers = 44;
   controlConfig.stack_size = 8192;
   controlConfig.lru_purge_enable = true;
 
@@ -1289,31 +1283,21 @@ bool begin() {
       registerUri(controlServer, "/", HTTP_GET, rootHandler) &&
       registerUri(controlServer, "/api/status", HTTP_GET, statusHandler) &&
       registerUri(controlServer, "/api/actions", HTTP_GET, actionsStatusHandler) &&
+      registerUri(controlServer, "/api/gemini/settings", HTTP_GET, geminiSettingsHandler) &&
+      registerUri(controlServer, "/api/gemini/settings", HTTP_POST, geminiSettingsHandler) &&
+      registerUri(controlServer, "/api/gemini/live/start", HTTP_POST, geminiLiveHandler) &&
+      registerUri(controlServer, "/api/gemini/live/test", HTTP_POST, geminiLiveHandler) &&
+      registerUri(controlServer, "/api/gemini/live/stop", HTTP_POST, geminiLiveHandler) &&
       registerUri(controlServer, "/api/actions/debug", HTTP_GET, actionsDebugHandler) &&
       registerUri(controlServer, "/api/audio/processing", HTTP_GET, audioProcessingHandler) &&
-      registerUri(controlServer, "/api/actions/audio.wav", HTTP_GET, commandAudioHandler) &&
-      registerUri(controlServer, "/api/actions/audio/test", HTTP_POST, commandAudioTestHandler) &&
-      registerUri(controlServer, "/api/actions/audio/test", HTTP_GET, commandAudioTestHandler) &&
       registerUri(controlServer, "/api/actions", HTTP_POST, actionsHandler) &&
       registerUri(controlServer, "/api/zumo/speed", HTTP_POST, driveSpeedHandler) &&
-      registerUri(controlServer, "/api/actions/photo", HTTP_GET, photo_store::send) &&
       registerUri(controlServer, "/api/wake/test", HTTP_POST, wakeTestHandler) &&
       registerUri(controlServer, "/api/voice/status", HTTP_GET, voiceStatusHandler) &&
       registerUri(controlServer, "/api/voice/setup", HTTP_POST, voiceSetupHandler) &&
       registerUri(controlServer, "/api/vision", HTTP_POST, visionHandler) &&
       registerUri(controlServer, "/api/vision/battery", HTTP_POST, batteryVisionHandler) &&
       registerUri(controlServer, "/api/vision/objects", HTTP_POST, batteryVisionHandler) &&
-      registerUri(controlServer, "/api/follow", HTTP_POST, followHandler) &&
-      registerUri(controlServer, "/api/follow/heartbeat", HTTP_POST, followHeartbeatHandler) &&
-      registerUri(controlServer, "/api/camera/photo", HTTP_GET, photoHandler) &&
-      registerUri(controlServer, "/api/record/start", HTTP_POST,
-                  startRecordingHandler) &&
-      registerUri(controlServer, "/api/record/stop", HTTP_POST,
-                  stopRecordingHandler) &&
-      registerUri(controlServer, "/api/play", HTTP_POST, playHandler) &&
-      registerUri(controlServer, "/api/tone", HTTP_POST, toneHandler) &&
-      registerUri(controlServer, "/api/play/stop", HTTP_POST,
-                  stopPlaybackHandler) &&
       registerUri(controlServer, "/api/volume", HTTP_POST, volumeHandler) &&
       registerUri(controlServer, "/api/zumo/status", HTTP_GET,
                   zumoStatusHandler) &&
@@ -1341,7 +1325,7 @@ bool begin() {
 
   httpd_config_t streamConfig = HTTPD_DEFAULT_CONFIG();
   streamConfig.server_port = app_config::kStreamServerPort;
-  // The stream handler sends camera-owned buffers and has no large JSON locals.
+  // The stream handler sends temporary JPEG copies and has no large JSON locals.
   // Reserve the larger stack for controls; leave internal RAM for motion/audio.
   streamConfig.stack_size = 4096;
   streamConfig.ctrl_port = 32769;

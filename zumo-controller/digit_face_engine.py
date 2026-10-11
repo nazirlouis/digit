@@ -114,6 +114,8 @@ class FaceEngine:
         self.scene_sequence = 0
         self.visible_scene_sequence = 0
         self.active_scene_sequence = None
+        self._held_scene_sequence = None
+        self._held_caption_until = None
         self._scene_frame_id = None
         self._render_scene_sequence = 0
         self.last_slice_us = 0
@@ -182,6 +184,8 @@ class FaceEngine:
         # An interrupted drawing must never later submit its old expression.
         self._render_steps = None
         self.active_scene_sequence = None
+        self._held_scene_sequence = None
+        self._held_caption_until = None
         self._scene_frame_id = None
         self._render_scene_sequence = 0
         if self.cooperative:
@@ -250,6 +254,36 @@ class FaceEngine:
                 self.caption_until = time.ticks_add(self.started, 8000)
         self._scene_frame_id = None
         self._render_scene_sequence = 0
+
+    def hold_scene(self, sequence):
+        """Keep the current visible scene without restarting its first frame."""
+        if (sequence is None or self.active_scene_sequence != sequence or
+                self.visible_scene_sequence != sequence or self.returning):
+            return False
+        if self._held_scene_sequence == sequence:
+            return True
+        self._held_scene_sequence = sequence
+        self._held_caption_until = self.caption_until
+        self.hold_ms = None
+        self.caption_until = None
+        return True
+
+    def release_scene(self, sequence):
+        """Release only this hold; a replacement scene always keeps ownership."""
+        if (sequence is None or self._held_scene_sequence != sequence or
+                self.active_scene_sequence != sequence):
+            return False
+        self._held_scene_sequence = None
+        self.caption_until = self._held_caption_until
+        self._held_caption_until = None
+        # Exit from the currently displayed eyes, starting now. Preserve scene
+        # identity/visibility and let bounded rendering finish the transition.
+        self.started = time.ticks_ms()
+        self.enter_ms = self.hold_ms = 0
+        self.return_pose = self.pose
+        self.returning = True
+        self.last_frame = None
+        return True
 
     def show_move_prompt(self):
         self.play("neutral")

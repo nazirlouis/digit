@@ -18,10 +18,14 @@ const artifacts = path.join(__dirname, '../test-artifacts/drive');
       const url = new URL(route.request().url());
       if (url.pathname === '/') return route.fulfill({ contentType: 'text/html', body: html });
       if (url.pathname === '/stream') return route.abort();
+      if (url.pathname === '/api/gemini/settings') return route.fulfill({contentType:'application/json',body:JSON.stringify({configured:true,model:'gemini-3.8-live',dry_run:true,idle_timeout_sec:30,generation:1})});
       return route.fulfill({ contentType: 'application/json', body: JSON.stringify({
         generation: 1, active: false, action: 'Idle', phase: 'Stopped',
         voice_ready: true, drive_ready: true, connected: true, ready: true,
+        live_active:false,live_connected:true,live_connecting:false,live_connections:1,
+        local_stop_ready:true,local_stop_active:false,local_stop_detections:0,
         identify_ready: true, person_action_ready: true, object_action_ready: true,
+        circle_ready: true, battery_action_ready: true, battery_target_mm: 50, battery_spin_supported: true,
         follow_action_ready: true, chase_action_ready: true,
         fault: 'NONE', last_error: 'NONE', battery_mv: 7600, left: 0, right: 0,
         distance_mm:50, range_valid:true, range_age_ms:10,
@@ -39,6 +43,12 @@ const artifacts = path.join(__dirname, '../test-artifacts/drive');
     assert.equal(await page.locator('#volumeValue').textContent(), '100');
     assert.equal(await page.locator('html').evaluate(el => getComputedStyle(el).colorScheme), 'light');
     assert.equal(await page.locator('#driveAcceleration').inputValue(),'6000');
+    assert.equal(await page.locator('#geminiKey').getAttribute('type'),'password');
+    assert.equal(await page.locator('#geminiDryRun').isChecked(),true);
+    assert.equal(await page.locator('#geminiIdle').inputValue(),'30');
+    assert.equal(await page.locator('#geminiState').textContent(),'Ready · say Digit');
+    assert.equal(await page.locator('#geminiDetail').textContent(),'Connected · Microphone and camera upload off');
+    await page.locator('#voice .help').evaluate(el=>el.open=true);
     for (const width of [1280, 980, 390, 320]) {
       await page.setViewportSize({ width, height: 1000 });
       await page.evaluate(() => window.scrollTo(0, 0));
@@ -72,15 +82,22 @@ const artifacts = path.join(__dirname, '../test-artifacts/drive');
         await page.screenshot({ path: path.join(artifacts, `dashboard-${width}.png`) });
         const facePanel = page.locator('.zumo').filter({has:page.locator('#facePreviewTitle')});
         assert.equal(await facePanel.locator('[data-face]').count(),13);
-        assert.equal(await page.locator('#faceVoice').isChecked(),true);
+        assert.equal(await page.locator('#faceVoice').count(),0);
         await facePanel.screenshot({path:path.join(artifacts, `face-voice-${width}.png`)});
         const actions = page.locator('.zumo').filter({has:page.locator('#routineState')});
-        assert.equal(await actions.locator('[data-routine]').count(),3);
+        assert.equal(await actions.locator('[data-routine]').count(),0);
+        assert.equal(await page.locator('#zumoDrive #visionToggle').count(),1);
+        assert.equal(await page.locator('#zumoDrive #batteryToggle').count(),1);
+        assert.equal(await page.locator('#followToggle, #record, #tone, #replay').count(),0);
         await actions.screenshot({path:path.join(artifacts, `actions-${width}.png`)});
+        // Capture an isolated panel without the viewport's sticky header overlay.
+        await page.locator('.top').evaluate(el=>el.style.position='static');
+        await page.locator('#voice').screenshot({path:path.join(artifacts, `gemini-live-${width}.png`)});
+        await page.locator('.top').evaluate(el=>el.style.position='');
       }
     }
     assert.deepEqual(errors, [], 'Dashboard loads without script errors');
-    console.log('PASS: desktop and phone layouts at 1280, 980, 390, and 320px; 13 face/voice cards; acceleration position; no overflow');
+    console.log('PASS: desktop and phone layouts at 1280, 980, 390, and 320px; expanded Gemini setup, 13 silent expressions, acceleration position and no overflow');
   } finally {
     await browser.close();
   }

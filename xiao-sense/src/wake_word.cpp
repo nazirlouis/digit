@@ -261,9 +261,8 @@ void task(void*) {
 
 bool react() {
   personality_events::interaction();
-  const auto token = reaction_player::play("HAPPY", "NONE", AudioCue::Happy,
-                                          reaction_player::Source::Wake, 0, VoiceTiming::Wake);
-  Serial.printf("Wake reaction: synchronized face and voice token=%lu\n", (unsigned long)token);
+  const auto token = reaction_player::play("HAPPY", "NONE", reaction_player::Source::Wake);
+  Serial.printf("Wake reaction: silent face and lights token=%lu\n", (unsigned long)token);
   return token != 0;
 }
 }  // namespace
@@ -292,7 +291,7 @@ void begin() {
 void submit(const int32_t* stereo, size_t count) {
   if (!framesQueue || !count || count > kFrameSamples) return;
   Frame frame;
-  const bool suppress = speech_commands::snapshot().listening || audioEngine.cuePlaying();
+  const bool suppress = speech_commands::liveActive() || audioEngine.cuePlaying();
   portENTER_CRITICAL(&stateLock);
   if (audioSuppressed != suppress) { audioSuppressed = suppress; ++epoch; }
   const bool active = state.ready;
@@ -347,6 +346,7 @@ void cancel() {
   portEXIT_CRITICAL(&stateLock);
 }
 void poll() {
+  const bool liveActive = speech_commands::liveActive();
   portENTER_CRITICAL(&stateLock);
   const bool wasTurning = turning;
   const bool paused = !state.ready;
@@ -355,7 +355,7 @@ void poll() {
   uint32_t directionGeneration = bearingGeneration;
   const uint32_t manualGeneration = controlGeneration;
   const uint32_t routineGeneration = actionGeneration;
-  const bool pending = reactionPending && state.ready &&
+  const bool pending = reactionPending && state.ready && !liveActive &&
                        millis() - lastReaction < 500;
   reactionPending = false;
   portEXIT_CRITICAL(&stateLock);
@@ -377,7 +377,7 @@ void poll() {
     if (allowed && zumo.controlGeneration == manualGeneration && !strcmp(zumo.lookResult, "DONE") &&
         routineGeneration == robot_actions::generation()) {
       report("Turn completed");
-      react(); speech_commands::listen(routineGeneration);
+      speech_commands::listen(routineGeneration);
     }
     else {
       char reason[96]; snprintf(reason, sizeof(reason), "Turn ended: %s", zumo.lookResult);
@@ -390,7 +390,6 @@ void poll() {
       // A fresh wake is a takeover: never keep approaching while listening.
       robot_actions::stop("Listening for your next command");
       report("Skipped: active action stopped to listen");
-      react();
       speech_commands::listen(robot_actions::generation());
       return;
     }
@@ -436,8 +435,15 @@ void poll() {
   portEXIT_CRITICAL(&stateLock);
   char detail[96]; snprintf(detail, sizeof(detail), "Skipped: %s", reason);
   report(detail);
-  react();
   speech_commands::listen(routineGeneration);
+}
+bool conversationReadyReaction() {
+  const auto speech = speech_commands::activity();
+  if (!speech.liveActive || !speech.liveConnected || speech.liveProbe) return false;
+  portENTER_CRITICAL(&stateLock);
+  lastReaction = millis(); hasReaction = reactionActive = true;
+  portEXIT_CRITICAL(&stateLock);
+  return react();
 }
 bool testReaction() {
   const uint32_t now = millis();

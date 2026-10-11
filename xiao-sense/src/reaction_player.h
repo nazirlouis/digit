@@ -1,5 +1,5 @@
 #pragma once
-#include "emotion_voice.h"
+#include "reaction_catalog.h"
 #include <cstdint>
 
 // Calls are serialized by robot_actions::Guard (including dashboard requests).
@@ -15,9 +15,7 @@ struct Status {
   bool visible;
   const char* reason;
 };
-uint32_t play(const char* face, const char* label, AudioCue cue,
-              Source source = Source::Action, uint32_t cooldownMs = 0,
-              VoiceTiming timing = VoiceTiming::Expression);
+uint32_t play(const char* face, const char* label, Source source = Source::Preview);
 void poll();
 void cancel();
 bool active();

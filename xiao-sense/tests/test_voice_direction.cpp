@@ -33,6 +33,7 @@ int main(){
   assert(!strcmp(reason,"Zumo edge stop"));
   zumo_link::state.edge=false;speech(80);
   audioEngine.cuePlaying=true;assert(!voice_direction::target(angle,generation));audioEngine.cuePlaying=false;
+  speech_commands::state.liveSpeaking=true;assert(!voice_direction::target(angle,generation));speech_commands::state.liveSpeaking=false;
   zumo_link::state.rampedLookCapable=false;assert(!voice_direction::target(angle,generation));zumo_link::state.rampedLookCapable=true;
   zumo_link::state.manualDriving=true;assert(!voice_direction::target(angle,generation));zumo_link::state.manualDriving=false;
   nowMs+=301;assert(!voice_direction::target(angle,generation));speech(80);

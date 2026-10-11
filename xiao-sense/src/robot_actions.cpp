@@ -1,12 +1,10 @@
 #include "robot_actions.h"
-#include "action_mission.h"
 #include "reaction_player.h"
 #include "personality_events.h"
 #include "Arduino.h"
 #include "audio_engine.h"
-#include "person_follow.h"
-#include "photo_store.h"
 #include "speech_commands.h"
+#include "local_stop.h"
 #include "vision_service.h"
 #include "wake_word.h"
 #include "zumo_link.h"
@@ -22,12 +20,14 @@ std::atomic<uint32_t> controlEpoch{1};
 Command command = Command::None;
 const char* phase = "Idle";
 bool active = false;
+robot_actions::Result actionResult = robot_actions::Result::None;
 int selectedDriveSpeed = 4000;
 uint32_t safetyEvents = 0;
 constexpr unsigned kDebugHistory = 24;
 robot_actions::DebugEvent history[kDebugHistory] = {};
 uint32_t debugId = 0;
-char lastPhase[112] = {};
+int amount=0, travelled=0, turned=0, headingOrigin=0;
+uint32_t job=0, started=0, expressionUntil=0;
 const char* motionStopReason(const zumo_link::Status& z) {
   const char* reason = z.lastError;
   if (!strcmp(reason,"RANGE_STALE")) return "Distance sensor stopped updating for 250 ms";
@@ -74,7 +74,7 @@ void record(const char* kind, const char* reason) {
 namespace robot_actions {
 Guard::Guard() { if (gate) xSemaphoreTakeRecursive(gate, portMAX_DELAY); }
 Guard::~Guard() { if (gate) xSemaphoreGiveRecursive(gate); }
-void begin() { gate = xSemaphoreCreateRecursiveMutex(); configASSERT(gate); photo_store::begin(); }
+void begin() { gate = xSemaphoreCreateRecursiveMutex(); configASSERT(gate); }
 uint32_t generation() { return controlEpoch.load(); }
 bool setDriveSpeed(int speed) {
   Guard guard;
@@ -84,123 +84,100 @@ bool setDriveSpeed(int speed) {
 }
 int driveSpeed() { Guard guard; return selectedDriveSpeed; }
 const char* name(Command value) {
-  switch (value) {
-    case Command::None: return "Idle";
-    case Command::Stop: return "Stop";
-    case Command::ComeSayHello: return "Come say hello";
-    case Command::Identify: return "What's this?";
-    case Command::Escape: return "Find a way out";
-    case Command::CircleDance: return "Circle dance";
-    default: return "Unknown";
-  }
+  for (const auto& d : definitions) if (d.command == value) return d.toolName;
+  return "Idle";
 }
-Status snapshot() { Guard guard; return {command, phase, active, controlEpoch.load()}; }
+Status snapshot() { Guard guard; return {command, phase, active, controlEpoch.load(), actionResult, travelled, turned}; }
 uint32_t latestDebugId() { Guard guard; return debugId; }
 bool debugEvent(uint32_t id, DebugEvent* result) {
   Guard guard;
   if (!id || id > debugId || debugId-id >= kDebugHistory) return false;
-  *result = history[(id-1)%kDebugHistory];
-  return result->id == id;
+  *result = history[(id-1)%kDebugHistory]; return result->id == id;
 }
 void stop(const char* reason, bool smooth) {
-  Guard guard;
-  if (strcmp(reason,"Starting action")) record("stopped",reason);
-  ++controlEpoch;
-  personality_events::cancel();
-  reaction_player::cancel();
-  action_mission::cancel();
-  wake_word::cancel(); speech_commands::cancel(); photo_store::cancel();
-  const bool wasFollowing = person_follow::snapshot().enabled;
-  person_follow::setEnabled(false);
-  if (wasFollowing || vision_service::snapshot().batteryMode) vision_service::setEnabled(false);
-  audioEngine.cancelOutput();
-  zumo_link::stop(smooth);
-  active = false; command = Command::None; phase = reason;
+  Guard guard; record("stopped", reason); ++controlEpoch;
+  personality_events::cancel(); reaction_player::cancel(); wake_word::cancel();
+  speech_commands::cancel(); local_stop::cancel(); vision_service::setEnabled(false);
+  audioEngine.cancelOutput(); zumo_link::stop(smooth); zumo_link::cancelScene();
+  expressionUntil = 0; active = false; command = Command::None;
+  phase = reason; actionResult = Result::Cancelled;
 }
 void manualOverride() {
   Guard guard;
-  if (active || speech_commands::snapshot().listening || wake_word::snapshot().reacting) stop("Manual control");
+  if (active || speech_commands::liveActive() || wake_word::snapshot().reacting) stop("Manual control");
   else {
-    ++controlEpoch;
-    reaction_player::cancel(); audioEngine.cancelOutput();
-    wake_word::cancel(); speech_commands::cancel();
+    ++controlEpoch; reaction_player::cancel(); audioEngine.cancelOutput();
+    wake_word::cancel(); speech_commands::cancel(); zumo_link::cancelScene(); expressionUntil=0;
   }
   personality_events::interaction();
 }
 const char* unavailableReason(Command value) {
-  if (value == Command::Stop) return "";
-  if (!validCommand(static_cast<int>(value))) return "Action is retired";
+  if (!isMovement(value)) return "";
   const auto z = zumo_link::snapshot();
-  const auto v = vision_service::snapshot();
-  if (!z.connected) return "Connect the Zumo first";
-  if (z.calibrating) return "Waiting for surface calibration";
-  if (!z.sceneCapable) return "Update Zumo display support";
-  if (value == Command::Identify) return v.batteryReady ? "" : "Object detector unavailable";
-  if (z.edge) return "Edge stop: place Digit fully on the surface and recalibrate";
-  if (!z.ready || strcmp(z.fault, "NONE")) return "Calibrate the surface to enable movement";
-  if (!z.motionCapable) return "Update both controllers for autonomous motion jobs";
-  if (!z.encoderControl) return "Calibrated encoder feedback is required for autonomous movement";
-  if (value == Command::CircleDance) {
-    if (!z.circleCapable || !z.voiceCapable) return "Update Zumo for circle dance";
-    if (!z.rangeValid && !z.rangeNoReturn) return "Waiting for the front distance sensor";
-    if (z.rangeValid && z.distanceMm < 50) return "Front obstacle is closer than 5 cm";
-    return "";
-  }
-  if (!z.actionCapable || !z.autoRampCapable || !z.voiceCapable || !z.rampedLookCapable || !z.wiggleCapable)
-    return "Gyroscope or updated movement firmware unavailable";
-  // The Zumo checks the sensor's local age when accepting a job. Network and
-  // telemetry delays must not turn a healthy local reading into a fake fault.
-  if (!z.rangeValid) return "Waiting for a valid distance reading";
-  if (value == Command::ComeSayHello) {
-    if (!z.closeApproachCapable) return "Update Zumo for the 10 cm greeting approach";
-    return v.ready ? "" : "Person detector unavailable";
-  }
-  if (!z.closeApproachCapable) return "Update Zumo for the 10 cm battery approach";
-  if (!z.chaseCloseCapable) return "Update Zumo for 5 cm maze clearance";
-  return v.batteryReady ? "" : "Object detector unavailable";
+  if (!z.connected || z.replyAgeMs > 600) return "Connect the Zumo first";
+  if (z.calibrating || !z.ready || z.edge || strcmp(z.fault,"NONE")) return "Calibrate surface and clear the safety stop";
+  if (!z.motionCapable || !z.encoderControl || !z.voiceCapable) return "Calibrated encoder speed and gyro feedback required";
+  if ((value == Command::Forward || value == Command::Backward) && !z.distanceCalibrated)
+    return "Encoder-to-distance calibration required (saved for last)";
+  if (!z.rangeValid && !z.rangeNoReturn) return "Waiting for fresh front distance sensor";
+  if (value != Command::Backward && z.rangeValid && z.distanceMm < 50) return "Front obstacle closer than 5 cm";
+  return "";
 }
 bool start(Command value, uint32_t expected) {
   Guard guard;
-  if (expected != controlEpoch.load()) return false;
-  if (value == Command::Stop) { stop(); return true; }
-  // Invalid/stale requests never interrupt the action already in progress.
-  if (!validCommand(static_cast<int>(value))) return false;
-  const char* reason = unavailableReason(value);
-  if (reason[0]) { record("rejected",reason); if (!active) phase = reason; return false; }
-  stop("Starting action");
-  personality_events::interaction();
-  command = value; active = true;
-  safetyEvents = zumo_link::snapshot().safetyEvents;
-  phase = name(value);
-  if (!action_mission::start(value,selectedDriveSpeed)) {
-    stop(action_mission::phase()); return false;
-  }
-  record("started",name(value)); lastPhase[0]=0;
-  return true;
+  if (expected != generation() || value != Command::Stop) return false;
+  stop(); return true;
+}
+bool startFromLive(Command value, uint32_t expected) { ToolRequest r; r.command=value; return startFromLive(r,expected); }
+bool startFromLive(const ToolRequest& r, uint32_t expected) {
+  Guard guard;
+  const auto speech = speech_commands::activity();
+  if (expected != generation() || !speech.liveActive || speech.liveProbe || speech.dryRun || active || !isMovement(r.command)) return false;
+  const int limit = r.command == Command::Forward ? kForwardCm : r.command == Command::Backward ? kBackwardCm : kTurnDegrees;
+  if (r.amount < 1 || r.amount > limit || unavailableReason(r.command)[0]) return false;
+  reaction_player::cancel(); wake_word::cancel();
+  command=r.command; amount=r.amount; active=true; actionResult=Result::Running;
+  phase="Preparing movement"; job=0; started=millis(); travelled=turned=0;
+  const auto z=zumo_link::snapshot(); safetyEvents=z.safetyEvents; headingOrigin=z.motionHeadingDeciDeg;
+  record("started", name(command)); return true;
+}
+bool setExpression(const char* face, uint32_t durationMs) {
+  Guard guard;
+  if (durationMs < 500 || durationMs > 10000 || !zumo_link::isFaceName(face)) return false;
+  const auto z=zumo_link::snapshot();
+  if (!z.connected || z.edge || strcmp(z.fault,"NONE") || z.calibrating) return false;
+  if (!zumo_link::scene(face,"NONE",durationMs)) return false;
+  expressionUntil=millis()+durationMs; return true;
+}
+void cancelExpression() {
+  Guard guard; expressionUntil=0; zumo_link::cancelScene();
 }
 void poll() {
-  Guard guard;
-  reaction_player::poll();
+  Guard guard; reaction_player::poll();
+  if (expressionUntil && static_cast<int32_t>(millis()-expressionUntil)>=0) {
+    if (zumo_link::scene("NEUTRAL","NONE")) expressionUntil=0;
+  }
   if (!active) return;
-  const auto z = zumo_link::snapshot();
-  if (!z.connected || z.calibrating || z.safetyEvents != safetyEvents ||
-      (command != Command::Identify && (!z.ready || z.edge || strcmp(z.fault,"NONE")))) {
-    stop(!z.connected ? "Controller connection lost" : z.edge ? "Edge detected: place Digit fully on the surface and recalibrate" :
-         z.calibrating ? "Surface calibration started" : !strcmp(z.fault,"ENCODER") ? "Encoder feedback fault" :
-         !strcmp(z.fault,"SENSOR") ? "Distance or surface sensor fault" : !strcmp(z.fault,"TURN_FAULT") ? "Turn controller fault" :
-         !strcmp(z.lastError,"TIMEOUT") ? "Controller motion heartbeat timed out" :
-         !strcmp(z.lastError,"OBSTACLE") ? "Front obstacle closer than 5 cm" :
-         !strcmp(z.lastError,"RANGE_UNAVAILABLE") ? "Controller rejected missing or stale distance" :
-         motionStopReason(z));
-    personality_events::safetyStopped();
-    return;
+  const auto z=zumo_link::snapshot();
+  if (!z.connected || !z.ready || z.edge || z.calibrating || z.safetyEvents!=safetyEvents || strcmp(z.fault,"NONE")) {
+    stop(!z.connected ? "Controller disconnected" : motionStopReason(z)); personality_events::safetyStopped(); return;
   }
-  action_mission::poll();
-  phase = action_mission::phase();
-  if (strcmp(lastPhase,phase) || !action_mission::active()) {
-    record(action_mission::active() ? "phase" : "finished",phase);
-    snprintf(lastPhase,sizeof(lastPhase),"%s",phase);
+  zumo_link::superviseMotion();
+  if (!job) {
+    if (millis()-started>2500) { phase="Movement could not arm"; active=false; actionResult=Result::Failed; zumo_link::cancelMotion(false); return; }
+    if (!zumo_link::armMotion()) return;
+    headingOrigin=z.motionHeadingDeciDeg;
+    job=(command==Command::Forward || command==Command::Backward) ?
+      zumo_link::travelJob((command==Command::Forward ? amount : -amount)*10) :
+      zumo_link::turnJob(command==Command::TurnLeft ? amount : -amount,15000);
+    if (!job) { phase="Movement request rejected"; active=false; actionResult=Result::Failed; zumo_link::cancelMotion(false); }
+    else phase="Moving";
+  } else if (z.motionJob==job && !strcmp(z.motionState,"DONE")) {
+    travelled=z.motionTravelledMm; turned=z.motionHeadingDeciDeg-headingOrigin;
+    actionResult=Result::Completed; phase="Movement completed; observing"; active=false;
+    record("finished",phase); zumo_link::ackMotion(job); zumo_link::cancelMotion(false);
+  } else if (millis()-started>18000) {
+    phase="Movement time limit"; active=false; actionResult=Result::Failed; zumo_link::cancelMotion(false);
   }
-  if (!action_mission::active()) { active = false; command = Command::None; }
 }
 }

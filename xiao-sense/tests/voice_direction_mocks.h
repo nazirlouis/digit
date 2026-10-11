@@ -21,6 +21,12 @@ struct AudioMock {
   bool readXvfCommand(uint8_t,uint8_t,uint8_t*,size_t,uint8_t*){return false;}
 };
 inline AudioMock audioEngine;
+namespace speech_commands {
+struct Status { bool liveSpeaking = false; };
+inline Status state;
+inline Status snapshot() { return state; }
+inline bool liveSpeaking() { return state.liveSpeaking; }
+}
 namespace wake_word {
 struct Status {bool pausedForVision=false;};
 inline Status state;

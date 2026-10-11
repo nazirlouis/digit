@@ -1,9 +1,9 @@
 #include "vision_service.h"
 
 #include <cstring>
+#include <new>
 #include "Arduino.h"
 #include "camera_service.h"
-#include "esp_camera.h"
 #include "esp_heap_caps.h"
 #include "esp_jpeg_dec.h"
 #include "esp_partition.h"
@@ -11,7 +11,6 @@
 #include "battery_detector.h"
 #include "object_model_config.h"
 #include "wake_word.h"
-#include "speech_commands.h"
 
 namespace {
 constexpr size_t kJpegCapacity = 256 * 1024;
@@ -30,7 +29,57 @@ uint8_t* jpeg_copy = nullptr;
 uint8_t* rgb565 = nullptr;
 dl::detect::Detect* detector = nullptr;
 bool loaded_battery = false;
+TaskHandle_t worker = nullptr;
 char decode_error[80] = "JPEG decode failed";
+
+// The vision worker owns every buffer and detector. Controls only invalidate
+// its generation and wake it; they never free resources during a capture/run.
+class InferenceGuard {
+ public:
+  InferenceGuard() { wake_word::beginVisionInference(); }
+  ~InferenceGuard() { wake_word::endVisionInference(); }
+  InferenceGuard(const InferenceGuard&) = delete;
+  InferenceGuard& operator=(const InferenceGuard&) = delete;
+};
+
+void release_resources() {
+  if (detector) {
+    InferenceGuard inference;
+    delete detector;
+    detector = nullptr;
+  }
+  heap_caps_free(jpeg_copy);
+  heap_caps_free(rgb565);
+  jpeg_copy = rgb565 = nullptr;
+}
+
+bool allocate_buffers() {
+  if (jpeg_copy && rgb565) return true;
+  jpeg_copy = static_cast<uint8_t*>(heap_caps_malloc(kJpegCapacity, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  rgb565 = static_cast<uint8_t*>(heap_caps_aligned_alloc(
+      16, kWidth * kHeight * 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  if (jpeg_copy && rgb565) return true;
+  release_resources();
+  return false;
+}
+
+bool current_request(uint32_t expected_generation) {
+  portENTER_CRITICAL(&lock);
+  const bool current = state.enabled && generation == expected_generation;
+  portEXIT_CRITICAL(&lock);
+  return current;
+}
+
+void release_if_disabled() {
+  portENTER_CRITICAL(&lock);
+  const bool enabled = state.enabled;
+  portEXIT_CRITICAL(&lock);
+  if (!enabled) release_resources();
+}
+
+void wait_for_request(uint32_t timeout_ms) {
+  ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(timeout_ms));
+}
 
 bool decode_frame(size_t jpeg_length) {
   jpeg_dec_config_t config = {};
@@ -77,6 +126,13 @@ void fail(const char* reason) {
   portEXIT_CRITICAL(&lock);
   Serial.printf("Vision: %s\n", reason);
 }
+void fail_request(const char* reason, uint32_t expected_generation) {
+  portENTER_CRITICAL(&lock);
+  const bool accepted = state.enabled && generation == expected_generation;
+  if (accepted) snprintf(state.error, sizeof(state.error), "%s", reason);
+  portEXIT_CRITICAL(&lock);
+  if (accepted) Serial.printf("Vision: %s\n", reason);
+}
 bool model_present(const char* name) {
   const esp_partition_t* partition = esp_partition_find_first(ESP_PARTITION_TYPE_DATA,
                                                                static_cast<esp_partition_subtype_t>(0x40),
@@ -105,19 +161,34 @@ void task(void*) {
     const bool battery = state.batteryMode;
     const uint32_t current_generation = generation;
     portEXIT_CRITICAL(&lock);
-    if (!enabled || speech_commands::snapshot().listening) { vTaskDelay(pdMS_TO_TICKS(100)); continue; }
+    if (!enabled) {
+      release_resources();
+      wait_for_request(100);
+      continue;
+    }
+    // Recheck cancellation before allocating this worker's frame buffers.
+    if (!current_request(current_generation)) {
+      release_if_disabled();
+      wait_for_request(100);
+      continue;
+    }
+    if (!allocate_buffers()) {
+      fail_request("Not enough PSRAM for detection", current_generation);
+      wait_for_request(kPeriodMs);
+      continue;
+    }
+    if (!current_request(current_generation)) { release_if_disabled(); continue; }
     const uint32_t started = millis();
-    camera_fb_t* frame = esp_camera_fb_get();
-    const bool frame_ok = frame && frame->format == PIXFORMAT_JPEG && frame->width == 640 &&
-                          frame->height == 480 && frame->len > 0 && frame->len <= kJpegCapacity;
-    size_t jpeg_length = 0;
-    const uint32_t capture_ms = frame_ok ?
-        uint32_t(uint64_t(frame->timestamp.tv_sec) * 1000 + frame->timestamp.tv_usec / 1000) : 0;
-    if (frame_ok) { jpeg_length = frame->len; memcpy(jpeg_copy, frame->buf, jpeg_length); }
-    if (frame) esp_camera_fb_return(frame);
+    camera_service::Frame frame;
+    const bool frame_ok = camera_service::copyLatestJpeg(jpeg_copy, kJpegCapacity, &frame) &&
+                          frame.width == 640 && frame.height == 480;
+    const size_t jpeg_length = frame.size;
+    const uint32_t capture_ms = frame.timestampMs;
+    if (!current_request(current_generation)) { release_if_disabled(); continue; }
     if (!frame_ok || !decode_frame(jpeg_length)) {
-      fail(frame_ok ? decode_error : "Camera frame unavailable for detection");
-      vTaskDelay(pdMS_TO_TICKS(kPeriodMs));
+      fail_request(frame_ok ? decode_error : "Camera frame unavailable for detection", current_generation);
+      release_if_disabled();
+      wait_for_request(kPeriodMs);
       continue;
     }
     const uint32_t decode_ms = millis() - started;
@@ -126,31 +197,47 @@ void task(void*) {
     image.width = kWidth;
     image.height = kHeight;
     image.pix_type = dl::image::DL_IMAGE_PIX_TYPE_RGB565LE;
-    wake_word::beginVisionInference();
-    // Only the camera task owns these pointers. Mode changes invalidate the
-    // result generation immediately; model allocation happens outside the lock.
-    if (!detector || loaded_battery != battery) {
-      delete detector;
-      detector = battery ? static_cast<dl::detect::Detect*>(new BatteryDetector())
-                         : static_cast<dl::detect::Detect*>(new PedestrianDetect(PedestrianDetect::PICO_S8_V1, true));
-      detector->set_score_thr(battery ? kBatteryScoreThreshold : kScoreThreshold, 0);
-      loaded_battery = battery;
-    }
-    auto& results = detector->run(image);
-    wake_word::endVisionInference();
-    const uint32_t inference_ms = millis() - started - decode_ms;
     vision_service::Status::Box boxes[5] = {};
     uint8_t count = 0;
     int highest = 0;
     int battery_highest = 0;
-    for (const auto& result : results) {
-      if (result.box.size() < 4 || result.score < (battery ? kBatteryScoreThreshold : kScoreThreshold)) continue;
-      const int score = std::min(100, static_cast<int>(result.score * 100 + 0.5f));
-      highest = std::max(highest, score);
-      if (battery && result.category == 0) battery_highest = std::max(battery_highest, score);
-      if (count < 5) boxes[count++] = {result.box[0], result.box[1], result.box[2], result.box[3],
-                                       static_cast<uint8_t>(score), static_cast<uint8_t>(result.category)};
+    bool ran = false;
+    {
+      InferenceGuard inference;
+      // Waiting for wake/speech inference can outlast a STOP or mode switch.
+      // Recheck after acquiring its gate before loading or running any model.
+      if (current_request(current_generation)) {
+        if (!detector || loaded_battery != battery) {
+          delete detector;
+          detector = battery ? static_cast<dl::detect::Detect*>(new (std::nothrow) BatteryDetector())
+                             : static_cast<dl::detect::Detect*>(new (std::nothrow) PedestrianDetect(PedestrianDetect::PICO_S8_V1, true));
+          if (detector) {
+            detector->set_score_thr(battery ? kBatteryScoreThreshold : kScoreThreshold, 0);
+            loaded_battery = battery;
+          }
+        }
+        if (detector) {
+          auto& results = detector->run(image);
+          for (const auto& result : results) {
+            if (result.box.size() < 4 || result.score < (battery ? kBatteryScoreThreshold : kScoreThreshold)) continue;
+            const int score = std::min(100, static_cast<int>(result.score * 100 + 0.5f));
+            highest = std::max(highest, score);
+            if (battery && result.category == 0) battery_highest = std::max(battery_highest, score);
+            if (count < 5) boxes[count++] = {result.box[0], result.box[1], result.box[2], result.box[3],
+                                             static_cast<uint8_t>(score), static_cast<uint8_t>(result.category)};
+          }
+          ran = true;
+        } else {
+          fail_request("Not enough memory to load detection model", current_generation);
+        }
+      }
     }
+    if (!ran) {
+      release_if_disabled();
+      wait_for_request(kPeriodMs);
+      continue;
+    }
+    const uint32_t inference_ms = millis() - started - decode_ms;
     portENTER_CRITICAL(&lock);
     const bool accepted = state.enabled && generation == current_generation;
     if (accepted) {
@@ -179,23 +266,21 @@ void task(void*) {
                                 (unsigned long)decode_ms, (unsigned long)inference_ms,
                                 (unsigned long)(millis() - started),
                                 (unsigned long)accepted_interval_ms, count, highest);
+    release_if_disabled();
     const uint32_t elapsed = millis() - started;
-    vTaskDelay(pdMS_TO_TICKS(elapsed < kPeriodMs ? kPeriodMs - elapsed : 1));
+    wait_for_request(elapsed < kPeriodMs ? kPeriodMs - elapsed : 1);
   }
 }
 }  // namespace
 
 namespace vision_service {
 void begin() {
+  if (worker) return;
   if (!camera_service::ready()) { fail("Camera is unavailable for person detection"); return; }
   const bool person_ready = model_present("pedestrian_detect_pico_s8_v1.espdl");
   const bool battery_ready = model_present(object_model::kFileName);
   if (!person_ready && !battery_ready) { fail("Vision model bundle is missing; flash the complete project"); return; }
-  jpeg_copy = static_cast<uint8_t*>(heap_caps_malloc(kJpegCapacity, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-  rgb565 = static_cast<uint8_t*>(heap_caps_aligned_alloc(
-      16, kWidth * kHeight * 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-  if (!jpeg_copy || !rgb565) { fail("Not enough PSRAM for person detection"); return; }
-  if (xTaskCreatePinnedToCore(task, "pedestrian", 12288, nullptr, 1, nullptr, 0) != pdPASS) {
+  if (xTaskCreatePinnedToCore(task, "pedestrian", 12288, nullptr, 1, &worker, 0) != pdPASS) {
     fail("Could not start person detection task"); return;
   }
   portENTER_CRITICAL(&lock);
@@ -205,7 +290,7 @@ void begin() {
   state.imageHeight = kHeight;
   state.error[0] = '\0';
   portEXIT_CRITICAL(&lock);
-  Serial.printf("Vision: person=%s objects=%s; models load when started\n",
+  Serial.printf("Vision: person=%s objects=%s; buffers and models load when started\n",
                 person_ready ? "ready" : "missing", battery_ready ? "ready" : "missing");
 }
 bool setMode(bool enabled, bool battery) {
@@ -224,6 +309,7 @@ bool setMode(bool enabled, bool battery) {
   ++generation;
   wake_word::setVisionEnabled(enabled);
   portEXIT_CRITICAL(&lock);
+  if (worker) xTaskNotifyGive(worker);
   return true;
 }
 bool setEnabled(bool enabled) { return setMode(enabled, false); }

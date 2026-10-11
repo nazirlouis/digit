@@ -1,109 +1,44 @@
 #include "reaction_player.h"
 #include "Arduino.h"
-#include "audio_engine.h"
 #include "zumo_link.h"
-#include <cstdio>
 #include <cstring>
-
+#include <cstdio>
 namespace reaction_player {
 namespace {
-constexpr uint32_t kDispatchMs = 1500, kVisibleMs = 3500;
 Status current{0,State::Idle,0,0,false,"Idle"};
 uint32_t serial=0, requestedAt=0, dispatchedAt=0;
-bool dispatched=false;
-bool wake=false;
-char expression[12]={}, caption[16]={};
-AudioCue sound=AudioCue::None;
-VoiceTiming timing=VoiceTiming::Expression;
-uint32_t lastSound[13]={};
-bool sounded[13]={};
-int soundIndex(AudioCue cue) {
-  return cue>=AudioCue::Neutral && cue<=AudioCue::Love ?
-      static_cast<int>(cue)-static_cast<int>(AudioCue::Neutral) : -1;
+bool dispatched=false, wake=false;
+char expression[12]{}, caption[16]{};
+void skip(const char* reason) { zumo_link::cancelScene(); zumo_link::cancelWake(); current.state=State::Skipped; current.reason=reason; }
 }
-void skip(const char* reason) {
-  audioEngine.cancelOutput(); zumo_link::cancelScene(); zumo_link::cancelWake();
-  current.state=State::Skipped; current.reason=reason;
-}
-}
-
 bool active() { return current.state==State::Waiting || current.state==State::Playing; }
 Status snapshot() { return current; }
 bool finished(uint32_t token) { return !token || token!=current.token || !active(); }
-void cancel() {
-  if (active()) {
-    audioEngine.cancelOutput(); zumo_link::cancelScene(); zumo_link::cancelWake();
-    current.state=State::Cancelled; current.reason="Cancelled";
-  }
-}
-uint32_t play(const char* face, const char* label, AudioCue cue, Source source,
-              uint32_t cooldownMs, VoiceTiming selectedTiming) {
-  if (source==Source::Ambient && active()) return 0;
+void cancel() { if (active()) { skip("Cancelled"); current.state=State::Cancelled; } }
+uint32_t play(const char* face, const char* label, Source source) {
   cancel();
-  // Replacement owns the speaker even if the previous sound came from an
-  // older caller. A silent preview must not retain the previous voice.
-  audioEngine.cancelOutput(); zumo_link::cancelScene(); zumo_link::cancelWake();
+  if (!face || !label || strlen(face)>=sizeof(expression) || strlen(label)>=sizeof(caption)) return 0;
   if (!++serial) ++serial;
-  current={serial,State::Waiting,0,0,false,"Waiting for face"};
-  requestedAt=millis(); dispatchedAt=0; dispatched=false;
-  if (selectedTiming==VoiceTiming::Gesture ||
-      (selectedTiming==VoiceTiming::Wake && source!=Source::Wake)) {
-    skip("Unsupported reaction timing profile"); return current.token;
-  }
-  if (!face || !label || !*face || !*label || strlen(face)>=sizeof(expression) || strlen(label)>=sizeof(caption)) {
-    skip("Invalid reaction"); return current.token;
-  }
-  snprintf(expression,sizeof(expression),"%s",face);
-  snprintf(caption,sizeof(caption),"%s",label);
-  wake=source==Source::Wake;
-  timing=wake ? VoiceTiming::Wake : selectedTiming;
-  sound=wake ? AudioCue::Happy : cue;
-  const AudioCue faceCue=emotionCueForFace(face);
-  current.durationMs=emotionDurationMs(faceCue,timing);
-  const int index=soundIndex(cue);
-  if (source!=Source::Preview && cooldownMs && index>=0 && sounded[index] &&
-      millis()-lastSound[index]<cooldownMs) sound=AudioCue::None;
-  poll();
-  return current.token;
+  snprintf(expression,sizeof(expression),"%s",face); snprintf(caption,sizeof(caption),"%s",label);
+  wake=source==Source::Wake; dispatched=false; requestedAt=millis();
+  current={serial,State::Waiting,0,1500,false,"Waiting for face"}; poll(); return serial;
 }
 void poll() {
   if (!active()) return;
-  const auto now=millis();
+  const uint32_t now=millis();
   if (current.state==State::Waiting) {
-    // Dispatch and first-frame visibility share one wake preparation budget;
-    // optional decoration must not consume the command-listening window.
-    if (wake && now-requestedAt>=1500) {
-      skip("Wake preparation timeout; reaction skipped"); return;
-    }
+    if (now-requestedAt>=(wake?1500U:3500U)) { skip("Face visibility timeout"); return; }
     if (!dispatched) {
       const auto z=zumo_link::snapshot();
-      if (z.connected && z.reactionVersion!=reaction_catalog::version) {
-        skip("Update both controllers for matching reactions"); return;
-      }
-      if (wake ? zumo_link::wake() : zumo_link::scene(expression,caption)) { dispatched=true; dispatchedAt=now; }
-      else if (now-requestedAt>=kDispatchMs) skip("Face unavailable; reaction skipped");
+      if (z.connected && z.reactionVersion!=reaction_catalog::version) { skip("Update both controllers for matching faces"); return; }
+      if (wake?zumo_link::wake():zumo_link::scene(expression,caption)) { dispatched=true; dispatchedAt=now; }
       return;
     }
-    const auto z=zumo_link::snapshot();
-    const char* result=wake ? z.wakeResult : z.sceneResult;
-    if (!strcmp(result,"SENDING") || !strcmp(result,"RENDERING")) {
-      if (now-dispatchedAt>=(wake ? 1500U : kVisibleMs)) skip("Face visibility timeout; reaction skipped");
-      return;
-    }
-    if (strcmp(result,"APPLIED")) { skip("Face failed; reaction skipped"); return; }
-    current.visible=true; current.visibleAt=now;
-    if (sound!=AudioCue::None && !audioEngine.playCue(sound,timing)) {
-      skip("Voice unavailable; reaction skipped"); return;
-    }
-    const int index=soundIndex(sound);
-    if (index>=0) { sounded[index]=true; lastSound[index]=now; }
-    current.state=State::Playing; current.reason="Playing";
+    const auto z=zumo_link::snapshot(); const char* result=wake?z.wakeResult:z.sceneResult;
+    if (!strcmp(result,"SENDING") || !strcmp(result,"RENDERING")) return;
+    if (strcmp(result,"APPLIED")) { skip("Face unavailable"); return; }
+    current.visible=true; current.visibleAt=now; current.state=State::Playing; current.reason="Visible; silent";
   }
-  // The shared duration includes quiet facial settling. Do not infer face
-  // completion from whether the speaker is currently making a sound.
-  if (current.state==State::Playing && now-current.visibleAt>=current.durationMs) {
-    if (sound!=AudioCue::None) audioEngine.cancelOutput();
-    current.state=State::Complete; current.reason="Complete";
-  }
+  if (current.state==State::Playing && now-current.visibleAt>=current.durationMs) { current.state=State::Complete; current.reason="Complete"; }
 }
 }

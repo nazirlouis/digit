@@ -1,178 +1,21 @@
-// The runner compiles an unchanged copy of the production controller beside
-// mock hardware headers. Exercise cancellation at every point in each routine.
+#include <cstring>
 #include "robot_actions.cpp"
-#include <iostream>
-#include <thread>
-using robot_actions::Command;
-
-void resetDevice() {
-  robot_actions::stop();
-  zumo_link::state = {};
-  vision_service::state = {};
-  audioEngine.playing = false;
-  audioEngine.available = true;
-  photo_store::pending = false;
-  nowMs += 1000;
-}
-void tick() {
-  nowMs += 25;
-  if (zumo_link::state.lookActive) {
-    const auto elapsed=nowMs-zumo_link::turnAt;
-    if(elapsed>1400) {
-      zumo_link::state.lookActive=false;
-      std::strcpy(zumo_link::state.lookResult,"DONE");
-    } else if(elapsed>1000) std::strcpy(zumo_link::state.lookResult,"CENTERING");
-    else if(elapsed>450) std::strcpy(zumo_link::state.lookResult,"WIGGLING");
-  }
-  if (nowMs%100==0) ++vision_service::state.resultTimestampMs;
-  if(nowMs>=audioEngine.playUntil)audioEngine.playing=false;
-  photo_store::pending=false;
-  robot_actions::poll();
-}
-int main() {
-  robot_actions::begin();
-  resetDevice();
-  zumo_link::state.left=3100; zumo_link::state.distanceMm=168;
-  robot_actions::stop("Manual drive stopped: browser lost focus");
-  robot_actions::DebugEvent captured;
-  const auto capturedId=robot_actions::latestDebugId();
-  assert(robot_actions::debugEvent(capturedId,&captured));
-  assert(captured.left==3100 && captured.distanceMm==168);
-  assert(!strcmp(captured.reason,"Manual drive stopped: browser lost focus"));
-  assert(!strcmp(captured.kind,"stopped"));
-  assert(zumo_link::state.left==0);
-  for(int i=0;i<30;++i) robot_actions::stop("Ring history test");
-  assert(!robot_actions::debugEvent(capturedId,&captured));
-  assert(robot_actions::debugEvent(robot_actions::latestDebugId()-23,&captured));
-  std::cout << "PASS stop log preserves pre-stop sensor evidence and bounded history\n";
-  resetDevice();
-  vision_service::state.enabled=true;
-  vision_service::state.batteryMode=true;
-  robot_actions::stop("Dashboard Stop");
-  assert(!vision_service::state.enabled && !vision_service::state.batteryMode);
-  std::cout << "PASS battery test cancels on Stop\n";
-  resetDevice();
-  // A manual takeover cancels an actual wake reaction once. Every subsequent
-  // 100 ms hold refresh must preserve the motor target and its acceleration.
-  wake_word::reactionActive=true;
-  wake_word::hasReaction=true;
-  wake_word::lastReaction=nowMs;
-  assert(wake_word::snapshot().reacting);
-  const auto beforeTakeover=zumo_link::stops;
-  robot_actions::manualOverride();
-  assert(zumo_link::stops==beforeTakeover+1);
-  assert(!wake_word::snapshot().reacting);
-  assert(wake_word::hasReaction); // Detection cooldown remains in force.
-  zumo_link::state.left=zumo_link::state.right=4000;
-  zumo_link::state.manualDriving=true;
-  const auto afterTakeover=zumo_link::stops;
-  for(int i=0;i<30;++i) {
-    nowMs+=100;
-    robot_actions::manualOverride();
-    assert(!wake_word::snapshot().reacting);
-    assert(zumo_link::stops==afterTakeover);
-    assert(zumo_link::state.left==4000 && zumo_link::state.right==4000);
-  }
-  robot_actions::stop("Dashboard Stop");
-  assert(!zumo_link::state.left && !zumo_link::state.right);
-  std::cout << "PASS wake cancellation keeps cooldown without repeated motor Stops during held drive\n";
-
-  resetDevice();
-  assert(robot_actions::setDriveSpeed(5200));
-  assert(!robot_actions::setDriveSpeed(2999) && !robot_actions::setDriveSpeed(6001));
-  assert(robot_actions::start(Command::CircleDance,robot_actions::generation()));
-  robot_actions::poll(); robot_actions::poll();
-  assert(zumo_link::state.left>0 && zumo_link::state.left<zumo_link::state.right && zumo_link::state.right==5200);
-  assert(audioEngine.playing && audioEngine.lastCue==AudioCue::Dance);
-  assert(!vision_service::state.enabled);
-  robot_actions::setDriveSpeed(3000);robot_actions::poll();
-  assert(zumo_link::state.right==5200); // Capture dashboard speed once per dance.
-  audioEngine.playing=false;const auto musicPlays=audioEngine.plays;
-  robot_actions::poll();assert(audioEngine.plays==musicPlays+1);
-  strcpy(zumo_link::state.motionState,"DONE");strcpy(zumo_link::state.motionResult,"CIRCLE_DONE");
-  robot_actions::poll();assert(!robot_actions::snapshot().active && !audioEngine.playing);
-  resetDevice();assert(robot_actions::start(Command::CircleDance,robot_actions::generation()));
-  robot_actions::poll();robot_actions::poll();assert(audioEngine.playing);
-  robot_actions::stop();assert(!audioEngine.playing && !zumo_link::state.right);
-  resetDevice();zumo_link::state.circleCapable=false;
-  assert(!robot_actions::start(Command::CircleDance,robot_actions::generation()));
-  resetDevice();zumo_link::state.rangeValid=false;zumo_link::state.distanceMm=-1;
-  assert(!robot_actions::start(Command::CircleDance,robot_actions::generation()));
-  zumo_link::state.rangeNoReturn=true;
-  assert(robot_actions::start(Command::CircleDance,robot_actions::generation()));
-  robot_actions::stop();
-  resetDevice();zumo_link::state.distanceMm=49;
-  assert(!robot_actions::start(Command::CircleDance,robot_actions::generation()));
-  zumo_link::state.distanceMm=50;
-  assert(robot_actions::start(Command::CircleDance,robot_actions::generation()));
-  robot_actions::stop();
-  std::cout<<"PASS circle dashboard speed capture, music loop, three-lap completion, Stop and old-peer gate\n";
-  resetDevice();assert(robot_actions::start(Command::CircleDance,robot_actions::generation()));
-  robot_actions::poll();robot_actions::poll();
-  zumo_link::state.motionRangeStatus=1;zumo_link::state.motionRawDistanceMm=234;
-  zumo_link::state.motionDistanceMm=-1;zumo_link::state.motionRangeAgeMs=20;
-  strcpy(zumo_link::state.lastError,"RANGE_STATUS_1");++zumo_link::state.safetyEvents;
-  robot_actions::poll();
-  assert(robot_actions::debugEvent(robot_actions::latestDebugId(),&captured));
-  assert(captured.rangeStatus==1 && captured.rawDistanceMm==234 && !captured.rangeValid);
-  assert(captured.distanceMm==-1); // Later healthy telemetry cannot overwrite fault evidence.
-  assert(!audioEngine.playing && !robot_actions::snapshot().active);
-
-  for (int id : {8,9,14,16}) {
-    resetDevice();
-    assert(robot_actions::start(static_cast<Command>(id),robot_actions::generation()));
-    const auto epoch=robot_actions::generation(), motions=zumo_link::motions, stops=zumo_link::stops;
-    for(int retired : {0,1,2,3,4,5,6,10,11,12,13,15,17,255}) {
-      assert(!robot_actions::validCommand(retired));
-      assert(!robot_actions::start(static_cast<Command>(retired),epoch));
-      assert(robot_actions::generation()==epoch && robot_actions::snapshot().active);
-      assert(zumo_link::motions==motions && zumo_link::stops==stops);
-    }
-    robot_actions::stop("Dashboard Stop",true);
-    assert(zumo_link::lastStopSmooth && !robot_actions::snapshot().active);
-    assert(!robot_actions::start(static_cast<Command>(id),epoch));
-    robot_actions::stop();assert(!zumo_link::lastStopSmooth);
-  }
-  // Identification does not depend on the person model, floor, gyro or range.
-  resetDevice();zumo_link::state.ready=false;zumo_link::state.voiceCapable=false;
-  zumo_link::state.rangeValid=false;vision_service::state.ready=false;
-  assert(!robot_actions::unavailableReason(Command::Identify)[0]);
-  assert(robot_actions::start(Command::Identify,robot_actions::generation()));
-  for(int failure=0;failure<9;++failure) {
-    resetDevice();
-    if(failure==0)zumo_link::state.voiceCapable=false;
-    if(failure==1)zumo_link::state.rangeValid=false;
-    if(failure==2)zumo_link::state.motionCapable=false;
-    if(failure==3)zumo_link::state.ready=false;
-    if(failure==4)zumo_link::state.edge=true;
-    if(failure==5)zumo_link::state.connected=false;
-    if(failure==6)zumo_link::state.autoRampCapable=false;
-    if(failure==7)zumo_link::state.sceneCapable=false;
-    if(failure==8)zumo_link::state.encoderControl=false;
-    for(auto action : {Command::ComeSayHello,Command::Escape}) {
-      assert(robot_actions::unavailableReason(action)[0]);
-      assert(!robot_actions::start(action,robot_actions::generation()));
-    }
-  }
-  resetDevice();zumo_link::state.rangeAgeMs=350;
-  assert(!robot_actions::unavailableReason(Command::Escape)[0]);
-  // Receiving telemetry late is not evidence that Zumo's own sensor is stale.
-  assert(robot_actions::start(Command::Escape,robot_actions::generation()));
-  const auto beforeFault=robot_actions::generation();
-  ++zumo_link::state.safetyEvents;
-  std::strcpy(zumo_link::state.lastError,"CONTROL_STALE");
-  robot_actions::poll();
-  assert(!robot_actions::snapshot().active);
-  assert(std::strstr(robot_actions::snapshot().phase,"control loop was delayed"));
-  assert(!robot_actions::start(Command::Escape,beforeFault));
-  resetDevice();vision_service::state.ready=false;
-  assert(robot_actions::unavailableReason(Command::ComeSayHello)[0]);
-  assert(!robot_actions::unavailableReason(Command::Escape)[0]);
-  resetDevice();vision_service::state.batteryReady=false;
-  assert(!robot_actions::unavailableReason(Command::ComeSayHello)[0]);
-  assert(robot_actions::unavailableReason(Command::Identify)[0]);
-  assert(robot_actions::unavailableReason(Command::Escape)[0]);
-  zumo_link::state.connected=false;
-  assert(robot_actions::start(Command::Stop,robot_actions::generation()));
-  std::cout << "PASS exactly three action IDs, retired requests preserve active action, shared readiness and Stop without hardware\n";
-}
+using C=robot_actions::Command;
+void reset(){active=false;command=C::None;phase="Idle";controlEpoch=10;actionResult=robot_actions::Result::None;job=0;expressionUntil=0;nowMs=1000;
+ mock::z={};mock::z.connected=mock::z.ready=mock::z.motionCapable=mock::z.encoderControl=mock::z.voiceCapable=mock::z.rangeValid=mock::z.distanceCalibrated=true;
+ strcpy(mock::z.fault,"NONE");mock::z.distanceMm=500;mock::stops=mock::travels=mock::turns=mock::supervisions=0;mock::armReady=false;speech_commands::state={};wake_word::state={};}
+robot_actions::ToolRequest request(C c,int amount){robot_actions::ToolRequest r;r.command=c;r.amount=amount;return r;}
+int main(){robot_actions::begin();reset();
+ assert(!robot_actions::startFromLive(request(C::Forward,31),10));assert(!robot_actions::startFromLive(request(C::Backward,11),10));assert(!robot_actions::startFromLive(request(C::TurnLeft,91),10));assert(!robot_actions::startFromLive(request(C::TurnLeft,0),10));assert(!robot_actions::startFromLive(request(C::TurnLeft,90),9));
+ mock::z.distanceCalibrated=false;assert(!robot_actions::startFromLive(request(C::Forward,10),10));assert(robot_actions::startFromLive(request(C::TurnRight,90),10));assert(robot_actions::generation()==10);
+ robot_actions::poll();assert(!mock::turns);mock::armReady=true;robot_actions::poll();assert(mock::turn==-90);
+ assert(robot_actions::setExpression("HAPPY",3000));assert(active && speech_commands::liveActive());
+ mock::z.motionJob=1;strcpy(mock::z.motionState,"DONE");mock::z.motionHeadingDeciDeg=-897;robot_actions::poll();auto s=robot_actions::snapshot();assert(!s.active && s.result==robot_actions::Result::Completed && s.turnedDeciDeg==-897);
+ reset();assert(robot_actions::startFromLive(request(C::Backward,10),10));mock::armReady=true;robot_actions::poll();assert(mock::travel==-100);
+ mock::z.motionJob=1;strcpy(mock::z.motionState,"DONE");mock::z.motionTravelledMm=-99;robot_actions::poll();assert(robot_actions::snapshot().travelledMm==-99);
+ reset();assert(robot_actions::startFromLive(request(C::Forward,30),10));robot_actions::stop("Local Stop");assert(!active && !speech_commands::liveActive() && robot_actions::generation()==11);mock::armReady=true;robot_actions::poll();assert(!mock::travels);
+ reset();assert(robot_actions::startFromLive(request(C::Forward,30),10));mock::z.safetyEvents++;robot_actions::poll();assert(!active && mock::stops==1);
+ reset();speech_commands::state.liveActive=false;robot_actions::manualOverride();robot_actions::manualOverride();assert(mock::stops==0 && robot_actions::generation()==12); // Manual heartbeat must not brake/reset every 100 ms.
+ reset();assert(robot_actions::setExpression("HAPPY",500));nowMs+=501;robot_actions::poll();assert(!strcmp(mock::expression,"NEUTRAL"));
+ reset();speech_commands::state.dryRun=true;assert(!robot_actions::startFromLive(request(C::Forward,30),10));
+ puts("PASS: local movement bounds/readiness/calibration, ARM acknowledgement, signed travel/gyro results, silent independent expressions, safety/Stop generation and manual lease continuity");}

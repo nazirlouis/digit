@@ -377,6 +377,49 @@ class FaceTests(unittest.TestCase):
         self.assertEqual(face.expression, "neutral")
         self.assertEqual(face.caption, "FOUND")
 
+    def test_visible_scene_hold_preserves_applied_frame_and_release_starts_exit(self):
+        face, display = self.cooperative_face()
+        face.show_scene("happy", "FOUND")
+        self.assertFalse(face.hold_scene(face.scene_sequence))
+        self.drain_face(face)
+        sequence, started = face.scene_sequence, face.started
+        shown, pixels, frame = display.shows, display.queued, display.frame_id
+        self.assertTrue(face.hold_scene(sequence))
+        self.assertTrue(face.hold_scene(sequence))
+        self.assertEqual((face.scene_sequence, face.visible_scene_sequence, face.started),
+                         (sequence, sequence, started))
+        self.assertEqual((display.shows, display.queued, display.frame_id), (shown, pixels, frame))
+        self.now = started + 9000
+        face.update(); self.drain_face(face)
+        self.assertEqual(face.expression, "happy")
+        self.assertEqual(face.caption, "FOUND")
+        before = face.pose
+        self.assertTrue(face.release_scene(sequence))
+        self.assertEqual(face.pose, before)
+        self.assertEqual(face.return_pose, before)
+        self.assertFalse(face.release_scene(sequence))
+        self.now += TIMINGS["happy"][2] + 30
+        face.update(); self.drain_face(face)
+        self.assertEqual(face.expression, "neutral")
+        self.assertEqual(face.caption, "")
+
+    def test_old_hold_release_cannot_overwrite_a_replacement_scene_or_face(self):
+        face, _ = self.cooperative_face()
+        for replacement in ("scene", "face"):
+            face.show_scene("happy", "FOUND"); self.drain_face(face)
+            old = face.scene_sequence
+            self.assertTrue(face.hold_scene(old))
+            if replacement == "scene":
+                face.show_scene("sad", "NEW"); self.drain_face(face)
+            else:
+                face.play("curious"); face.update(); self.drain_face(face)
+            before = (face.expression, face.caption, face.active_scene_sequence,
+                      face.started, face.hold_ms, face.pose)
+            self.assertFalse(face.release_scene(old))
+            self.assertFalse(face.hold_scene(old))
+            self.assertEqual((face.expression, face.caption, face.active_scene_sequence,
+                              face.started, face.hold_ms, face.pose), before)
+
     def test_interruption_discards_unfinished_drawing_and_pending_scene_visibility(self):
         face, display = self.cooperative_face()
         face.show_scene("confused", "OLD")

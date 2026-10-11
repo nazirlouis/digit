@@ -57,6 +57,7 @@ bool calibrationPending = false;
 int facePending = 0;
 int scenePending = 0;
 char sceneLabel[16] = {};
+uint32_t sceneDurationMs=0;
 uint16_t sceneId = 0;
 uint32_t sceneSentAt = 0;
 uint32_t presentationGeneration = 1;
@@ -173,6 +174,9 @@ bool handleMotionLine(const char* line, uint32_t now) {
   const char* rangeDiagnostic = strstr(body, " RS=");
   if (rangeDiagnostic) sscanf(rangeDiagnostic," RS=%d RAW=%d",&status.motionRangeStatus,&status.motionRawDistanceMm);
   status.motionHeadingDeciDeg = heading;
+  status.motionTravelledMm = 0;
+  const char* travel = strstr(body, " TRAVEL=");
+  if (travel) sscanf(travel, " TRAVEL=%d", &status.motionTravelledMm);
   status.motionRangeAgeMs = age;
   status.motionSample = job;
   snprintf(status.motionState, sizeof(status.motionState), "%s", state);
@@ -285,6 +289,10 @@ void handleLine(const char* line, uint32_t now) {
     const char* enc = strstr(line, " ENC=");
     if (enc) sscanf(enc, " ENC=%d VL=%d VR=%d", &encoder, &status.encoderLeftCps, &status.encoderRightCps);
     status.encoderControl = encoder == 1;
+    status.expressionCapable = strstr(line," EXPR=1") != nullptr;
+    status.encoderLeftCount=status.encoderRightCount=0;
+    const char* counts=strstr(line," CL=");
+    if (counts) sscanf(counts," CL=%d CR=%d",&status.encoderLeftCount,&status.encoderRightCount);
     const char* loop = strstr(line, " GAP=");
     if (loop) {
       unsigned long gap=0, overruns=0, slice=0;
@@ -312,6 +320,7 @@ void handleLine(const char* line, uint32_t now) {
     if (boot != status.motionBoot) nextMotionSession=0;
     nextMotionSession=std::max(nextMotionSession,static_cast<uint32_t>(sessionFloor));
     status.motionCapable = capableMotion && boot && sessionField;
+    status.distanceCalibrated = strstr(line," TRAVEL=1") != nullptr && strstr(line," DCAL=1") != nullptr;
     status.motionBoot = boot;
     status.distanceMm = distance;
     status.rangeValid = valid == 1;
@@ -327,6 +336,9 @@ void handleLine(const char* line, uint32_t now) {
     if (reactionField) sscanf(reactionField, " REACT=%x", &reactionVersion);
     status.reactionVersion = reactionVersion;
     status.circleCapable = strstr(line, " CIRCLE=2") != nullptr;
+    const char* spinField = strstr(line, " SPIN=");
+    status.spinCapable = spinField && spinField[6] == '1' &&
+        (spinField[7] == ' ' || spinField[7] == '\0');
     status.autoRampCapable = strstr(line, " SAFE2=1") != nullptr;
     status.chaseCloseCapable = strstr(line, " CLOSE=2") != nullptr;
     status.closeApproachCapable = status.chaseCloseCapable || strstr(line, " CLOSE=1") != nullptr;
@@ -557,6 +569,12 @@ uint32_t driveJob(int left, int right, int stopMm, uint32_t maxMs) {
   return submitJob("DRIVE",args);
 }
 
+uint32_t travelJob(int distanceMm, uint32_t maxMs) {
+  if (!distanceMm || distanceMm < -100 || distanceMm > 300 || maxMs < 100 || maxMs > 15000 || !snapshot().distanceCalibrated) return 0;
+  char args[48]; snprintf(args,sizeof(args),"%d 3000 %d %lu",distanceMm,acceleration(),static_cast<unsigned long>(maxMs));
+  return submitJob("TRAVEL",args);
+}
+
 uint32_t turnJob(int degrees, uint32_t maxMs) {
   if (!degrees || degrees < -180 || degrees > 180 || maxMs < 100 || maxMs > 30000) return 0;
   char args[48];
@@ -572,6 +590,13 @@ uint32_t circleJob(int speed) {
 }
 
 uint32_t measureJob() { return submitJob("MEASURE","2500"); }
+
+uint32_t spinJob(uint32_t maxMs) {
+  if (maxMs < 1000 || maxMs > 30000 || !snapshot().spinCapable) return 0;
+  char args[16];
+  snprintf(args,sizeof(args),"%lu",static_cast<unsigned long>(maxMs));
+  return submitJob("SPIN",args);
+}
 
 bool updateDriveJob(uint32_t job, int left, int right) {
   if (left < 3000 || left > 3200 || right < 3000 || right > 3200) return false;
@@ -763,17 +788,18 @@ bool wiggle(uint32_t expectedControlGeneration, bool excited) {
   return accepted;
 }
 
-bool scene(const char* expression, const char* label) {
+bool scene(const char* expression, const char* label, uint32_t durationMs) {
+  if (durationMs && (durationMs<500 || durationMs>10000)) return false;
   const int face = faceIndex(expression);
   if (!face || !label || !label[0] || strlen(label) >= sizeof(sceneLabel)) return false;
   for (const char* p = label; *p; ++p) if ((*p < 'A' || *p > 'Z') && *p != '_') return false;
   portENTER_CRITICAL(&stateLock);
   const uint32_t now = millis();
-  const bool allowed = lastReply && now - lastReply < 500 && status.sceneCapable &&
-      !status.left && !status.right && !status.lookActive && !driveWanted && !stopPending &&
+  const bool allowed = lastReply && now - lastReply < 500 && status.sceneCapable && (!durationMs || status.expressionCapable) &&
+      !driveWanted && !stopPending && !status.edge && !strcmp(status.fault,"NONE") &&
       !status.calibrating && !scenePending && !sceneId && !facePending && !wakePending && !wakeCommandId;
   if (allowed) {
-    scenePending = face;
+    scenePending = face; sceneDurationMs=durationMs;
     snprintf(sceneLabel, sizeof(sceneLabel), "%s", label);
     snprintf(status.sceneResult, sizeof(status.sceneResult), "SENDING");
   }
@@ -870,6 +896,7 @@ void poll() {
   bool sendWiggle = false;
   bool sendExcited = false;
   int sendScene = 0;
+  uint32_t sendSceneDuration=0;
   char label[16] = {};
   uint16_t keepId = 0;
   int angle = 0;
@@ -965,7 +992,7 @@ void poll() {
     sendFace = facePending;
     facePending = 0;
   } else if (scenePending && connected) {
-    sendScene = scenePending;
+    sendScene = scenePending; sendSceneDuration=sceneDurationMs;
     scenePending = 0;
     snprintf(label, sizeof(label), "%s", sceneLabel);
   } else if (ledPending && connected) {
@@ -1047,7 +1074,8 @@ void poll() {
   } else if (sendFace) {
     zumoUart.printf("FACE %s\n", kFaceNames[sendFace - 1]);
   } else if (sendScene) {
-    zumoUart.printf("SCENE %s %s\n", kFaceNames[sendScene - 1], label);
+    if (sendSceneDuration) zumoUart.printf("SCENE %s %s %lu\n",kFaceNames[sendScene-1],label,static_cast<unsigned long>(sendSceneDuration));
+    else zumoUart.printf("SCENE %s %s\n", kFaceNames[sendScene - 1], label);
   } else if (sendLed) {
     if (target == -1) zumoUart.printf("LED ALL %u %u %u %u\n", red, green, blue, brightness);
     else zumoUart.printf("LED %d %u %u %u %u\n", target, red, green, blue, brightness);

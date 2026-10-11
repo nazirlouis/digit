@@ -7,6 +7,9 @@ MAX_TURN_SPEED = 3200
 WIGGLE_SPEED = 6000
 WIGGLE_ACCELERATION = 30000  # 200 ms from zero to full target, through the shared ramp.
 WIGGLE_DECELERATION = 30000
+SPIN_SPEED = 6000
+SPIN_ACCELERATION = 30000
+SPIN_DECELERATION = 30000
 
 
 def movement_target(speed):
@@ -38,6 +41,7 @@ class VoiceTurn:
         self.progress_angle = 0.0
         self.command = (0, 0)
         self.wiggle = False
+        self.spin = False
         # Slow dashboard ramps need time to reach breakaway torque. Still bounded.
         self.timeout_ms = 6000 + 2 * ((MIN_TURN_SPEED * 1000 + acceleration - 1) // acceleration)
         self.result = None
@@ -51,6 +55,14 @@ class VoiceTurn:
         self.wiggle_leg = 0
         self.center_braking = False
         self.timeout_ms = 4500
+
+    def start_spin(self, now, timeout_ms=12000):
+        # One unwrapped reference for a complete revolution. The regular
+        # relative-turn limit and its +/-180-degree commands stay unchanged.
+        self.start(360, now, SPIN_ACCELERATION)
+        self.spin = True
+        self.spin_braking = False
+        self.timeout_ms = timeout_ms
 
     def cancel(self):
         self.active = False
@@ -87,6 +99,8 @@ class VoiceTurn:
             if len(self.samples) >= 80 and diff(now, self.started) >= 400:
                 # Average the reference without rejecting normal sensor noise
                 # or table vibration as movement. Tracks stay off while sampling.
+                if self.spin and max(self.samples) - min(self.samples) > 15:
+                    return self.finish("GYRO_UNSTABLE")
                 self.bias = sum(self.samples) / len(self.samples)
                 self.samples = None
                 self.progress_at = now
@@ -97,6 +111,8 @@ class VoiceTurn:
         self.angle += rate * dt / 1000.0
         if self.wiggle:
             return self._update_wiggle(now, rate, motor_effort)
+        if self.spin:
+            return self._update_spin(now, rate, motor_effort)
         if self.angle * (1 if self.target >= 0 else -1) < -5:
             return self.finish("LOOK_DIRECTION")
         error = self.target - self.angle
@@ -127,6 +143,42 @@ class VoiceTurn:
         elif abs(command) < MIN_TURN_SPEED:
             command = MIN_TURN_SPEED if error > 0 else -MIN_TURN_SPEED
         command = int(command) * self.motor_sign
+        self.command = (-command, command)
+        return self.command
+
+    def _update_spin(self, now, rate, motor_effort):
+        diff = self.clock.ticks_diff
+        if self.angle < -5:
+            return self.finish("SPIN_DIRECTION")
+        if self.angle > 390:
+            return self.finish("SPIN_OVERSHOOT")
+        if self.spin_braking:
+            self.command = (0, 0)
+            if motor_effort == 0 and abs(rate) < 10:
+                if self.settled is None:
+                    self.settled = now
+                elif diff(now, self.settled) >= 150:
+                    return self.finish("DONE")
+            else:
+                self.settled = None
+            return self.command
+        if self.angle >= 360:
+            # Never normalize 360 to zero or brake before the complete
+            # revolution: braking short would need a second motion segment.
+            self.spin_braking = True
+            self.command = (0, 0)
+            return self.command
+        if self.angle >= self.progress_angle + 2 or motor_effort < MIN_TURN_SPEED:
+            self.progress_angle = self.angle
+            self.progress_at = now
+        elif diff(now, self.progress_at) >= 700:
+            return self.finish("SPIN_STALLED")
+        # Reduce speed while still rotating, using measured yaw and actual
+        # effort to account for the shared output ramp. Only the final brake
+        # reaches zero; no reversal, recalibration or intermediate rest.
+        stopping_yaw = max(0, rate) * (motor_effort / (2.0 * SPIN_DECELERATION) + .015)
+        speed = MIN_TURN_SPEED if 360 - self.angle <= stopping_yaw + 30 else SPIN_SPEED
+        command = speed * self.motor_sign
         self.command = (-command, command)
         return self.command
 

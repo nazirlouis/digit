@@ -1,20 +1,20 @@
 {
   "version": 1,
-  "description": "User-supervised raised-track calibration 2026-10-07; counts per second",
+  "description": "User-supervised raised-track measurement 2026-10-10; counts per second",
   "low_cps": [
-    1540.23,
-    1294.03
+    1547.08,
+    1336.09
   ],
   "reverse_low_cps": [
-    1578.92,
-    1418.47
+    1659.58,
+    1467.64
   ],
   "high_cps": [
-    3929.71,
-    3674.99
+    3954.8,
+    3637.45
   ],
   "reverse_high_cps": [
-    4106.05,
-    3694.26
+    4102.77,
+    3744.45
   ]
 }

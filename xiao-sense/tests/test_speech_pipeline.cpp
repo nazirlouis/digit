@@ -1,5 +1,4 @@
 #include "speech_pipeline.h"
-#include "speech_phrases.h"
 #include <cassert>
 #include <cstdio>
 #include <vector>
@@ -12,7 +11,7 @@ int main() {
   frame.stream = 1; frame.session = 2; frame.count = 160;
   std::vector<Tag> tags;
   unsigned absolute = 0, chunks = 0;
-  // 10-ms I2S reads cross every possible 32-ms model boundary without loss.
+  // 10-ms I2S reads cross chunk boundaries without loss.
   for (unsigned f = 0; f < 100; ++f) {
     frame.capturedAt = f * 10;
     for (unsigned i = 0; i < frame.count; ++i) frame.samples[i] = static_cast<int16_t>(absolute++);
@@ -27,7 +26,7 @@ int main() {
   }
   assert(chunks == 31);
 
-  // A Stop/new wake halfway through a model chunk cannot relabel old audio.
+  // A Stop/new wake halfway through a chunk cannot relabel old audio.
   frame.session = 3;
   frame.capturedAt = 1000;
   bool mixed = false;
@@ -64,31 +63,5 @@ int main() {
   assert(mono(INT32_MIN) == INT16_MIN);
   assert(mono(0x10000000) == 4096); // No artificial x4 gain/clipping.
   assert(mono(-0x10000000) == -4096);
-  assert(accepts(1, " STOP", 7)); // Actual ESP-SR 2.4.6 live result.
-  assert(accepts(1, " WHAT WHAT IS THIS", 9));
-  assert(accepts(1, " CO COME SAY HELLO", 8));
-  assert(accepts(1, " FIND FIND A WAY OUT", 14));
-  assert(!accepts(1, " \t\r\n", 7));
-  assert(!accepts(0, " STOP", 7));
-  assert(!accepts(1, "", 7));
-  assert(!accepts(1, nullptr, 7));
-  assert(!speech_phrases::find(15,"bump me"));
-  assert(!speech_phrases::find(16,"follow me"));
-  assert(speech_phrases::find(16,"circle dance"));
-  assert(sizeof(speech_phrases::phrases)/sizeof(speech_phrases::phrases[0])==7);
-  for (const auto& phrase : speech_phrases::phrases) {
-    assert(accepts(1,phrase.text,phrase.command));
-    char padded[128];
-    snprintf(padded,sizeof(padded)," %s ",phrase.text);
-    assert(accepts(1,padded,phrase.command));
-  }
-  for (int id=-1;id<=99;++id)
-    assert(accepts(1,"decoder candidate",id) == (id==7 || id==8 || id==9 || id==14 || id==16));
-  assert(speech_phrases::find(7, "STOP MOVING"));
-  assert(speech_phrases::find(7, "STOP"));
-  assert(speech_phrases::find(8, "Come Say Hello"));
-  assert(!speech_phrases::find(1, "STOP"));
-  assert(!speech_phrases::find(7, "stop please"));
-  assert(!speech_phrases::find(7, nullptr));
-  puts("Speech pipeline: frame continuity, wake/Stop boundaries, gaps, stale audio, format and acceptance passed");
+  puts("Speech pipeline: frame continuity, wake/Stop boundaries, gaps, stale audio and PCM format passed");
 }

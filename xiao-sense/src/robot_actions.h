@@ -2,11 +2,35 @@
 #include <cstdint>
 
 namespace robot_actions {
-// Preserve existing wire IDs; circle dance uses its own new action ID.
+// Preserve existing wire IDs; battery finding is a separate action.
 enum class Command : uint8_t { None = 0, Stop = 7,
-  ComeSayHello = 8, Identify = 9, Escape = 14, CircleDance = 16 };
-inline bool validCommand(int id) { return id == 7 || id == 8 || id == 9 || id == 14 || id == 16; }
-struct Status { Command command; const char* phase; bool active; uint32_t generation; };
+  StartTask = 20, Observe = 21, TurnLeft = 22, TurnRight = 23,
+  Forward = 24, Backward = 25, Expression = 26, FinishTask = 27 };
+struct Definition { Command command; const char* toolName; };
+inline constexpr Definition definitions[] = {
+  {Command::Stop, "stop"}, {Command::StartTask, "start_task"},
+  {Command::Observe, "observe"}, {Command::TurnLeft, "turn_left"},
+  {Command::TurnRight, "turn_right"}, {Command::Forward, "move_forward"},
+  {Command::Backward, "move_backward"}, {Command::Expression, "set_expression"},
+  {Command::FinishTask, "finish_task"},
+};
+inline constexpr int kForwardCm = 30, kBackwardCm = 10, kTurnDegrees = 90;
+struct ToolRequest {
+  Command command = Command::None;
+  int amount = 0, durationMs = 3000;
+  char expression[12]{}, goal[128]{}, outcome[12]{}, reason[128]{};
+};
+inline bool isMovement(Command c) {
+  return c == Command::TurnLeft || c == Command::TurnRight || c == Command::Forward || c == Command::Backward;
+}
+inline bool validCommand(int id) {
+  for (const auto& definition : definitions)
+    if (id == static_cast<int>(definition.command)) return true;
+  return false;
+}
+enum class Result : uint8_t { None, Running, Completed, Failed, Cancelled };
+struct Status { Command command; const char* phase; bool active; uint32_t generation; Result result = Result::None;
+  int travelledMm = 0, turnedDeciDeg = 0; };
 struct DebugEvent {
   uint32_t id, timestampMs, generation, rangeAgeMs, replyAgeMs;
   Command command;
@@ -31,6 +55,12 @@ class Guard {
 void begin();
 uint32_t generation();
 bool start(Command command, uint32_t expectedGeneration);
+// Main-loop Live dispatcher only. Preserves the owning conversation through
+// an accepted action; all external Stop/manual/fault paths still cancel it.
+bool startFromLive(Command command, uint32_t expectedGeneration);
+bool startFromLive(const ToolRequest& request, uint32_t expectedGeneration);
+bool setExpression(const char* expression, uint32_t durationMs);
+void cancelExpression();
 bool setDriveSpeed(int speed);
 int driveSpeed();
 void stop(const char* reason = "Stopped", bool smooth = false);

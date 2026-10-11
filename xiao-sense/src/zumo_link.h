@@ -45,7 +45,12 @@ struct Status {
   int encoderLeftCps;
   int encoderRightCps;
   bool motionCapable;
+  bool distanceCalibrated;
+  bool expressionCapable;
+  int encoderLeftCount, encoderRightCount;
+  int motionTravelledMm;
   bool circleCapable;
+  bool spinCapable;
   bool motionArmed;
   bool motionActive;
   uint32_t motionBoot;
@@ -75,8 +80,11 @@ Status snapshot();
 void superviseMotion();
 bool armMotion();
 uint32_t driveJob(int left, int right, int stopDistanceMm, uint32_t maxMs = 30000);
+uint32_t travelJob(int distanceMm, uint32_t maxMs = 15000);
 uint32_t turnJob(int degrees, uint32_t maxMs = 20000);
 uint32_t circleJob(int speed);
+// A single local gyro-controlled 360-degree turn, with encoder-confirmed rest.
+uint32_t spinJob(uint32_t maxMs = 12000);
 uint32_t measureJob();
 bool updateDriveJob(uint32_t job, int left, int right);
 bool ackMotion(uint32_t job);
@@ -91,7 +99,7 @@ bool face(const char* name);
 bool wake();
 bool look(int degrees, uint32_t expectedControlGeneration);
 bool wiggle(uint32_t expectedControlGeneration, bool excited = false);
-bool scene(const char* expression, const char* label);
+bool scene(const char* expression, const char* label, uint32_t durationMs = 0);
 // Discard queued presentations and their reply identities without touching motors.
 void cancelScene();
 void cancelWake();

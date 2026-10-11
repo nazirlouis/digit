@@ -1,6 +1,7 @@
 #include "voice_direction.h"
 #include "audio_engine.h"
 #include "wake_word.h"
+#include "speech_commands.h"
 #include "zumo_link.h"
 #include "voice_settings.h"
 #include <nvs.h>
@@ -91,7 +92,7 @@ void task(void*) {
   for (;;) {
     const auto audio = audioEngine.snapshot();
     const auto zumo = zumo_link::snapshot();
-    const bool quiet = audio.available && audio.state != AudioState::Playing && !audio.wakeChimePlaying && !audio.cuePlaying &&
+    const bool quiet = audio.available && !speech_commands::liveSpeaking() && audio.state != AudioState::Playing && !audio.wakeChimePlaying && !audio.cuePlaying &&
                        !zumo.left && !zumo.right && !zumo.manualDriving && !zumo.lookActive &&
                        !wake_word::snapshot().pausedForVision;
     float degrees = 0;
@@ -202,7 +203,7 @@ bool target(int& degrees, uint32_t& generation, const char** reason, bool* retry
   if (!s.enabled) return reject("Voice turning disabled");
   if (!s.calibrated) return reject("Voice direction setup incomplete");
   if (!audio.available) return reject("Microphone unavailable");
-  if (audio.state == AudioState::Playing || audio.wakeChimePlaying || audio.cuePlaying)
+  if (speech_commands::liveSpeaking() || audio.state == AudioState::Playing || audio.wakeChimePlaying || audio.cuePlaying)
     return reject("Audio playback in progress");
   if (!zumo.connected) return reject("Zumo disconnected");
   if (zumo.edge) return reject("Zumo edge stop");

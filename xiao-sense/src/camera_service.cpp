@@ -2,11 +2,33 @@
 
 #include <Arduino.h>
 #include <esp_camera.h>
+#include <freertos/semphr.h>
+#include <cstring>
 
 namespace {
 
 bool cameraReady = false;
 char cameraError[96] = "Camera has not been initialized";
+SemaphoreHandle_t frameMutex = nullptr;
+uint8_t* latestJpeg = nullptr;
+camera_service::Frame latestFrame;
+
+void captureTask(void*) {
+  for (;;) {
+    camera_fb_t* frame = esp_camera_fb_get();
+    if (frame && frame->format == PIXFORMAT_JPEG && frame->len &&
+        frame->len <= camera_service::kMaxJpegBytes &&
+        xSemaphoreTake(frameMutex, pdMS_TO_TICKS(20)) == pdTRUE) {
+      memcpy(latestJpeg, frame->buf, frame->len);
+      latestFrame = {frame->len,
+        uint32_t(uint64_t(frame->timestamp.tv_sec) * 1000 + frame->timestamp.tv_usec / 1000),
+        static_cast<uint16_t>(frame->width), static_cast<uint16_t>(frame->height)};
+      xSemaphoreGive(frameMutex);
+    }
+    if (frame) esp_camera_fb_return(frame);
+    vTaskDelay(pdMS_TO_TICKS(100));
+  }
+}
 
 // XIAO ESP32S3 Sense camera connector pins. These are shared by the OV2640,
 // OV3660, and OV5640 camera modules supported by the Sense expansion board.
@@ -38,6 +60,7 @@ void fail(const char* message) {
 namespace camera_service {
 
 bool begin() {
+  if (cameraReady) return true;
   if (heap_caps_get_total_size(MALLOC_CAP_SPIRAM) == 0) {
     fail("PSRAM was not detected");
     return false;
@@ -88,7 +111,7 @@ bool begin() {
       sensor->set_saturation(sensor, -2);
     }
     // Turn the current camera orientation upside down for both the live
-    // stream and still photos. The OV3660 correction above is included in
+    // stream and vision frames. The OV3660 correction above is included in
     // the current orientation before applying this 180-degree turn.
     const int vertical = sensor->status.vflip ? 0 : 1;
     const int horizontal = sensor->status.hmirror ? 0 : 1;
@@ -100,6 +123,17 @@ bool begin() {
     }
   }
 
+  frameMutex = xSemaphoreCreateMutex();
+  latestJpeg = static_cast<uint8_t*>(heap_caps_malloc(kMaxJpegBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  if (!frameMutex || !latestJpeg ||
+      xTaskCreatePinnedToCore(captureTask, "camera-frames", 4096, nullptr, 1, nullptr, 1) != pdPASS) {
+    if (frameMutex) vSemaphoreDelete(frameMutex);
+    frameMutex = nullptr;
+    heap_caps_free(latestJpeg); latestJpeg = nullptr;
+    esp_camera_deinit();
+    fail("Could not allocate shared camera frames");
+    return false;
+  }
   cameraError[0] = '\0';
   cameraReady = true;
   Serial.println("Camera: ready at 640x480 JPEG");
@@ -109,5 +143,19 @@ bool begin() {
 bool ready() { return cameraReady; }
 
 const char* lastError() { return cameraError; }
+
+bool copyLatestJpeg(uint8_t* destination, size_t capacity, Frame* frame) {
+  if (frame) *frame = {};
+  if (!cameraReady || !destination || !frame || !frameMutex ||
+      xSemaphoreTake(frameMutex, pdMS_TO_TICKS(10)) != pdTRUE) return false;
+  const bool valid = latestFrame.size && latestFrame.size <= capacity &&
+                     millis() - latestFrame.timestampMs <= 500;
+  if (valid) {
+    memcpy(destination, latestJpeg, latestFrame.size);
+    *frame = latestFrame;
+  }
+  xSemaphoreGive(frameMutex);
+  return valid;
+}
 
 }  // namespace camera_service

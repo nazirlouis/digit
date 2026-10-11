@@ -30,5 +30,7 @@ void endInference();
 void cancel();
 void poll();
 bool testReaction();
+// Main-loop only: acknowledge a real wake after Gemini setup is ready.
+bool conversationReadyReaction();
 Status snapshot();
 }  // namespace wake_word

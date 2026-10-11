@@ -313,12 +313,12 @@ class UARTController:
         age = self.clock.ticks_diff(self.clock.ticks_ms(), self.range_at) if self.range_at is not None else 65535
         velocity = self.speed_control.velocity if self.speed_control else (0, 0)
         target = self.speed_control.targets if self.speed_control else (0, 0)
-        self._send("{} OK READY={} FAULT={} L={} R={} BAT={} EDGE={} VOICE={} DIST={} RANGE={} AUTO=1 BRAKE=1 LOOKRAMP=1 WIGGLE=2 SCENE=1 SAFE2=1 CLOSE=2 RA={} RS={} RAW={} ENC={} VL={} VR={} MOTION=1 BOOT={} SESSION={} GAP={} OVERRUN={} DSUS={} TL={} TR={} CIRCLE=2 REACT={:08x} NR={}".format(
+        self._send("{} OK READY={} FAULT={} L={} R={} BAT={} EDGE={} VOICE={} DIST={} RANGE={} AUTO=1 BRAKE=1 LOOKRAMP=1 WIGGLE=2 SCENE=1 SAFE2=1 CLOSE=2 RA={} RS={} RAW={} ENC={} VL={} VR={} MOTION=1 BOOT={} SESSION={} GAP={} OVERRUN={} DSUS={} TL={} TR={} CIRCLE=2 SPIN=1 REACT={:08x} NR={} TRAVEL=1 DCAL={} EXPR=1 CL={} CR={}".format(
             command_id, int(self.ready), self.fault, self.left, self.right,
             millivolts, int(self.edge), int(self.voice_turn is not None),
             self.distance_mm, int(valid), min(65535, age), self.range_status,
             self.raw_distance_mm, int(self.speed_control is not None), int(velocity[0]), int(velocity[1]), self.motion.boot, self.motion.session,
-            self.max_loop_gap_ms, self.loop_overruns, getattr(self.face, "max_slice_us", 0), int(target[0]), int(target[1]), CATALOG_VERSION, int(self._range_no_return(self.clock.ticks_ms()))))
+            self.max_loop_gap_ms, self.loop_overruns, getattr(self.face, "max_slice_us", 0), int(target[0]), int(target[1]), CATALOG_VERSION, int(self._range_no_return(self.clock.ticks_ms())), int(self.motion.distance_scale is not None), *(getattr(self.speed_control,"counts",(0,0)) if self.speed_control else (0,0))))
         if self.motion.session:
             self.motion.snapshot(command_id)
 
@@ -547,8 +547,12 @@ class UARTController:
                     if getattr(self.face, "cooperative", False):
                         self.wake_wire = command_id
                         self.wake_sequence = self.wake.scene_sequence
-        elif command == "SCENE" and len(args) == 2:
-            expression, caption = args
+        elif command == "SCENE" and len(args) in (2,3):
+            expression, caption = args[:2]
+            duration = int(args[2]) if len(args)==3 and args[2].isdigit() else None
+            if len(args)==3 and (duration is None or not 500 <= duration <= 10000):
+                self._send(command_id + " ERR ARGUMENT")
+                return
             if expression != expression.upper() or expression.lower() not in EXPRESSIONS or caption not in SCENE_LABELS:
                 self._send(command_id + " ERR ARGUMENT")
             elif (self._moving() or self.look_id is not None or self.calibration is not None) and not getattr(self.face, "cooperative", False):
@@ -558,6 +562,8 @@ class UARTController:
                 try:
                     self._cancel_wake()
                     self.face.show_scene(expression.lower(), caption)
+                    if duration is not None:
+                        self.face.hold_ms=max(0,duration-getattr(self.face,"enter_ms",0)-getattr(self.face,"exit_ms",0))
                     self._send(command_id + " OK SCENE")
                     if getattr(self.face, "cooperative", False):
                         self.scene_wire = command_id

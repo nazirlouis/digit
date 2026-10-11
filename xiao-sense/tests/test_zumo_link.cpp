@@ -387,6 +387,50 @@ int main() {
   assert(zumoUart.outgoing.find(" 60000 *")!=std::string::npos);
   zumo_link::stop();zumo_link::poll();
   std::cout<<"PASS negotiated circle job, selected speed, three laps and bounded deadline\n";
+  handleLine(jobs.c_str(),nowMs);
+  assert(!zumo_link::snapshot().spinCapable && !zumo_link::spinJob());
+  handleLine((jobs+" SPIN=0").c_str(),nowMs);
+  assert(!zumo_link::snapshot().spinCapable);
+  handleLine((jobs+" SPIN=10").c_str(),nowMs);
+  assert(!zumo_link::snapshot().spinCapable);
+  handleLine((jobs+" SPIN=1").c_str(),nowMs);
+  assert(zumo_link::snapshot().spinCapable);
+  zumo_link::superviseMotion();zumo_link::armMotion();zumo_link::poll();
+  session=motionSession;handleLine(m2Reply(0x1234abcd,session,0,"ARMED","NONE").c_str(),nowMs);
+  assert(!zumo_link::spinJob(999) && !zumo_link::spinJob(30001));
+  job=zumo_link::spinJob();assert(job);
+  zumoUart.outgoing.clear();zumo_link::poll();
+  assert(zumoUart.outgoing.find(" SPIN 12000 *")!=std::string::npos);
+  const auto spinBody=std::string("M2 1234abcd ")+std::to_string(session)+" "+std::to_string(job)+" SPIN 12000 *";
+  nowMs+=181;zumo_link::superviseMotion();zumo_link::poll();
+  assert(zumoUart.outgoing.find(spinBody)!=std::string::npos); // Retry keeps this job identity.
+  handleLine(m2Reply(0x1234abcd,session,job,"RUNNING","ACCEPTED",52,100).c_str(),nowMs);
+  handleLine(m2Reply(0x1234abcd,session,job,"DONE","SPIN_DONE",52,3700).c_str(),nowMs);
+  handleLine(m2Reply(0x1234abcd,session,job,"RUNNING","ACCEPTED",52,100).c_str(),nowMs);
+  assert(!zumo_link::snapshot().motionActive && !strcmp(zumo_link::snapshot().motionResult,"SPIN_DONE"));
+  assert(zumo_link::snapshot().motionHeadingDeciDeg==3700 && zumo_link::ackMotion(job));
+  zumo_link::stop();zumo_link::poll();
+  assert(!zumo_link::spinJob()); // Stop cannot be followed by a queued retry.
+  handleLine(jobs.c_str(),nowMs);assert(!zumo_link::snapshot().spinCapable);
+  std::cout<<"PASS negotiated single spin, strict capability/deadline, same-job retry, completion latch and Stop\n";
   std::cout<<"PASS reaction catalog negotiation, independent presentation cancellation, stale acknowledgments and wake visibility\n";
+  // New measured travel is gated by a distinct capability/calibration, not the old ToF DRIVE.
+  zumo_link::stop();zumo_link::poll();
+  handleLine((jobs+" TRAVEL=1 DCAL=0 EXPR=1 CL=123 CR=125").c_str(),nowMs);
+  assert(!zumo_link::snapshot().distanceCalibrated && !zumo_link::travelJob(100));
+  handleLine((jobs+" TRAVEL=1 DCAL=1 EXPR=1 CL=123 CR=125").c_str(),nowMs);
+  assert(zumo_link::snapshot().distanceCalibrated && zumo_link::snapshot().encoderLeftCount==123 && zumo_link::snapshot().expressionCapable);
+  assert(!zumo_link::travelJob(301) && !zumo_link::travelJob(-101));
+  zumo_link::superviseMotion();zumo_link::armMotion();zumo_link::poll();
+  session=motionSession;handleLine(m2Reply(0x1234abcd,session,0,"ARMED","NONE").c_str(),nowMs);
+  job=zumo_link::travelJob(-100);assert(job);zumoUart.outgoing.clear();zumo_link::poll();
+  assert(zumoUart.outgoing.find(" TRAVEL -100 3000 ")!=std::string::npos);
+  std::string body="M2 1234abcd "+std::to_string(session)+" "+std::to_string(job)+" DONE TRAVEL_DONE 500 0 10 TRAVEL=-99";
+  char packet[256];snprintf(packet,sizeof(packet),"0 %s *%04X",body.c_str(),motionCrc(body.c_str(),body.size()));
+  handleLine(packet,nowMs);assert(zumo_link::snapshot().motionTravelledMm==-99);
+  zumo_link::stop();zumo_link::poll();handleLine((jobs+" EXPR=1").c_str(),nowMs);
+  assert(zumo_link::scene("HAPPY","NONE",2000));zumoUart.outgoing.clear();zumo_link::poll();
+  assert(zumoUart.outgoing.find(" SCENE HAPPY NONE 2000\n")!=std::string::npos);
+  std::cout<<"PASS measured travel negotiation/limits/signed result, raw calibration counts and bounded expression duration\n";
   std::cout<<"PASS persistent M2 jobs, CRC, retry, monotonic sessions, completion latching, heading-specific measurement, independent heartbeat, supervisor timeout and restart cancellation\n";
 }

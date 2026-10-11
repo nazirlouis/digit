@@ -65,6 +65,14 @@ backups/
 !.env.example
 !.env.*.example
 wifi_credentials.h
+gemini_credentials.*
+gemini_api_key*
+secrets/
+# Explicit local NVS/flash credential dumps; deployable model binaries stay tracked.
+digit-nvs*.bin
+gemini-nvs*.bin
+xiao-nvs*.bin
+xiao-flash-dump*.bin
 **/.vscode/c_cpp_properties.json
 **/.vscode/ipch/
 .DS_Store
@@ -74,3 +82,7 @@ Desktop.ini
 # Do not blanket-ignore model/firmware formats (.espdl, .tflite, .bin,
 # .pt, .onnx) or their metadata. Deployable models belong in xiao-sense/models/;
 # model-training/.gitignore excludes intermediate training runs and exports.
+
+# Measured wheel travel belongs to the physical Zumo, not shared defaults.
+/zumo-controller/distance_calibration.json
+/zumo-controller/distance_calibration_run.json

@@ -1,11 +1,17 @@
 # Digit Zumo controller — Waveshare LCD
 
-The voice-command upgrade uses the updated `main.py` and `uart_control.py` in
-this folder. It adds front-distance reporting and guarded `SAFE` drive commands
-for the XIAO's routines. See [voice actions and installation](../xiao-sense/VOICE_ACTIONS.md).
+The active Gemini controller uses `main.py`, `uart_control.py`, `motion_jobs.py`,
+`encoder_speed.py` and `distance_calibration.py`. The XIAO sends bounded gyro turns
+and measured encoder travel; Zumo owns feedback, braking and safety. Silent
+bounded expressions can run alongside motion. See
+[the current tools and final distance-calibration step](../docs/GEMINI_ROBOT_CONTROL.md).
+Missing actual distance calibration disables travel; turns do not use that scale.
+
+The later routine/sound sections document historical behavior and wire compatibility.
+Fixed XIAO routines, Turn with person and emotion sounds are now retired.
 `STOP` cancels the active turn/wake effect and resets the face to neutral.
 The standalone `autonomous_drive.py` remains a separate program; dashboard
-**Explore** now runs through the UART controller with edge-stop locking.
+manual controls run through the UART controller with edge-stop locking.
 
 The optional LCD is the [Waveshare 1.69-inch LCD module](https://www.waveshare.com/product/displays/lcd-oled/lcd-oled-3/1.69inch-lcd-module.htm)
 ([purchased screen](https://www.amazon.com/dp/B0C238JCLH)): ST7789V2, 240×280, SPI.
@@ -564,6 +570,31 @@ encoder-confirmed rest and range within the target arrival band; a conservative
 short stop can continue the same bounded job. It does not claim physically
 calibrated millimetres/second or guarantee exactly 50 mm clearance. Current
 encoder calibration remains the prior raised-track calibration.
+
+## Find the battery celebration spin, 2026-10-10
+
+The separate **Find the battery** action uses the XIAO object detector to
+search in place and center a battery. After the first confirmed alignment, the
+XIAO stops camera detection and commits to a straight local 50 mm approach job.
+Later camera crops or loss do not restart tracking or produce `LOST`. After
+encoder-confirmed rest, a settled 50–60 mm distance measurement is required
+before one `SPIN` job with a happy face and brief sound. ToF measures the nearest
+front obstacle and does not identify the battery, so the approach path must be
+clear. The revised camera commitment is an XIAO-only change; it does not change
+the Zumo motion protocol or local distance safeguards.
+
+`STATUS` advertises `SPIN=1`. The local spin uses opposite signed track
+targets, one unwrapped gyro revolution, and final gyro/encoder settling.
+Retries retain the same job and cannot repeat the spin. Stop, Button C,
+surface edges, sensor failures, heartbeat loss, and the local deadline
+cancel it; excessive rotation faults instead of reporting success.
+
+Install the changed `motion_jobs.py`, `voice_turn.py`, `uart_control.py`,
+and `digit_face_engine.py` together and restart, alongside the existing
+display and encoder modules. Pair them with the full matching XIAO
+firmware and MultiNet model bundle. These source changes are not installed
+by an XIAO upload. Desktop tests and a successful build do not establish
+physical 5 cm stopping or rotation accuracy.
 
 See [the current protocol](../docs/TWO_BRAIN_PROTOCOL.md) for commands and limits,
 and [acceptance stages](../docs/TWO_BRAIN_ACCEPTANCE.md) before physical use.

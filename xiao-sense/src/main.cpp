@@ -10,7 +10,6 @@
 #include "esp_wifi.h"
 #include "nvs_flash.h"
 #include "vision_service.h"
-#include "person_follow.h"
 #include "web_server.h"
 #include "wifi_credentials.h"
 #include "zumo_link.h"
@@ -18,6 +17,7 @@
 #include "voice_direction.h"
 #include "robot_actions.h"
 #include "speech_commands.h"
+#include "local_stop.h"
 #include "personality_events.h"
 
 namespace {
@@ -35,9 +35,11 @@ void wifi_event(void*, esp_event_base_t base, int32_t id, void*) {
   if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START) {
     esp_wifi_connect();
   } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
-    // Autonomous missions do not depend on a browser or access point. Manual
-    // controls still use the existing short hold-to-drive lease.
-    if (zumo_link::snapshot().manualDriving) robot_actions::stop("Wi-Fi disconnected during manual drive");
+    // Local dashboard-started missions retain their local supervision. A Live
+    // conversation owns cloud requests and ends with its connection.
+    if (speech_commands::liveActive()) robot_actions::stop("Wi-Fi disconnected during conversation");
+    else if (zumo_link::snapshot().manualDriving) robot_actions::stop("Wi-Fi disconnected during manual drive");
+    speech_commands::networkDisconnected();
     ESP_LOGW(kTag, "Wi-Fi disconnected; reconnecting");
     esp_wifi_connect();
   } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
@@ -83,6 +85,7 @@ extern "C" void app_main() {
   wake_word::begin();
   speech_commands::begin();
   robot_actions::begin();
+  local_stop::begin();
   // Bring up the independent motor link before optional peripheral startup.
   // Audio initialization must never prevent Stop/status service from running.
   zumo_link::begin();
@@ -99,7 +102,7 @@ extern "C" void app_main() {
   for (;;) {
     {
       robot_actions::Guard control;
-      person_follow::poll();
+      local_stop::poll();
       speech_commands::poll();
       robot_actions::poll();
       wake_word::poll();

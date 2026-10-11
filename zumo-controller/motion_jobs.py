@@ -6,6 +6,8 @@ deadline. Encoder counts are deliberately not presented as millimetres.
 """
 import math
 import os
+from distance_calibration import load as load_distance_calibration
+from voice_turn import SPIN_ACCELERATION, SPIN_DECELERATION
 
 
 HEARTBEAT_MS = 750
@@ -78,6 +80,14 @@ class MotionJobs:
         self.circle_progress_at = 0
         self.circle_restarts = 0
         self.circle_range_at = None
+        self.spin_range_at = None
+        self.distance_scale = load_distance_calibration()
+        self.travel_counts = None
+        self.travel_tracks = [0.0, 0.0]
+        self.travelled_mm = 0.0
+        self.travel_target = 0
+        self.travel_restarts = 0
+        self.spin_scene = None
         self.failure_range = None
 
     @property
@@ -98,6 +108,7 @@ class MotionJobs:
             self.boot, self.session, self.seq, self.state, self.reason, distance,
             int(self.heading * 10), age, c.max_loop_gap_ms, c.loop_overruns,
             getattr(c.face, "max_slice_us", 0), int(target[0]), int(target[1]), range_status, raw_distance)
+        body += " TRAVEL={}".format(int(self.travelled_mm))
         c._send(frame(wire, body))
         self.reported = now
 
@@ -115,6 +126,7 @@ class MotionJobs:
         self.reason = reason
         self.acked = False
         self.c._stop(smooth=smooth)
+        self._release_spin_scene()
         if guarded_brake:
             # The session is closed immediately but local ToF protection stays
             # active until the normal output ramp reaches zero.
@@ -126,6 +138,7 @@ class MotionJobs:
 
     def _finish(self, reason):
         self.c._stop()
+        self._release_spin_scene()
         self.state = "DONE"
         self.reason = reason
         self.kind = None
@@ -241,6 +254,20 @@ class MotionJobs:
                 return self._error(wire, "RANGE_UNAVAILABLE")
             if self.c.distance_mm < FRONT_STOP_MM:
                 return self._error(wire, "OBSTACLE")
+        elif verb == "TRAVEL":
+            if (len(args) != 4 or not -100 <= args[0] <= 300 or not args[0] or
+                    args[1] != 3000 or not 500 <= args[2] <= 6000 or not 100 <= args[3] <= 15000):
+                return self._error(wire, "ARGUMENT")
+            if self.distance_scale is None or not hasattr(self.c.speed_control, "encoders"):
+                return self._error(wire, "DISTANCE_CALIBRATION")
+            if not (self.c._range_valid(now) or self.c._range_no_return(now)):
+                return self._error(wire, "RANGE_UNAVAILABLE")
+            if args[0] > 0 and self.c._range_valid(now) and self.c.distance_mm < FRONT_STOP_MM:
+                return self._error(wire, "OBSTACLE")
+            try:
+                origin = self.c.speed_control.encoders.get_counts()
+            except Exception:
+                return self._error(wire, "ENCODER_IO")
         elif verb == "TURN":
             if (len(args) != 3 or not -180 <= args[0] <= 180 or not 500 <= args[1] <= 6000 or
                     not 100 <= args[2] <= 30000):
@@ -248,6 +275,13 @@ class MotionJobs:
         elif verb == "CIRCLE":
             if (len(args) != 4 or not 3000 <= args[0] <= 6000 or args[1] != 3 or
                     not 500 <= args[2] <= 6000 or not 1000 <= args[3] <= 60000):
+                return self._error(wire, "ARGUMENT")
+            if not (self.c._range_valid(now) or self.c._range_no_return(now)):
+                return self._error(wire, "RANGE_UNAVAILABLE")
+            if self.c._range_valid(now) and self.c.distance_mm < FRONT_STOP_MM:
+                return self._error(wire, "OBSTACLE")
+        elif verb == "SPIN":
+            if len(args) != 1 or not 1000 <= args[0] <= 30000:
                 return self._error(wire, "ARGUMENT")
             if not (self.c._range_valid(now) or self.c._range_no_return(now)):
                 return self._error(wire, "RANGE_UNAVAILABLE")
@@ -273,7 +307,19 @@ class MotionJobs:
         self.closing_rates = [0.0, 0.0, 0.0]
         self.closing_index = 0
         self.approach_restarts = 0
-        if verb == "DRIVE":
+        self.travelled_mm = 0.0
+        if verb == "TRAVEL":
+            self.travel_target = args[0]
+            self.travel_counts = origin
+            self.travel_tracks = [0.0, 0.0]
+            self.travel_restarts = 0
+            self.left = self.right = args[1] if args[0] > 0 else -args[1]
+            self.acceleration = args[2]
+            self.target_heading = self.heading
+            self.gyro_at = now
+            self.state = "CALIBRATING"
+            self.bias_count, self.bias_total = 0, 0.0
+        elif verb == "DRIVE":
             self.left, self.right, self.acceleration, self.stop_mm = args[:4]
             self.target_heading = self.heading
             self.gyro_at = now
@@ -298,6 +344,18 @@ class MotionJobs:
             self.acceleration = args[1]
             self.c.voice_turn.start(args[0], now, args[1])
             self.c.voice_turn.timeout_ms = args[2]
+        elif verb == "SPIN":
+            self.turn_origin = self.heading
+            self.spin_range_at = self.c.range_at
+            face = self.c.face
+            sequence = getattr(face, "active_scene_sequence", None)
+            if (getattr(face, "expression", None) == "happy" and
+                    getattr(face, "caption", None) == "FOUND" and
+                    hasattr(face, "hold_scene") and hasattr(face, "release_scene") and
+                    face.hold_scene(sequence)):
+                self.spin_scene = sequence
+            self.c.voice_turn.start_spin(now, args[0])
+            self.state = "CALIBRATING"
         else:
             self.state = "SETTLING"
             self.measure_samples = []
@@ -409,7 +467,11 @@ class MotionJobs:
         if self.clock.ticks_diff(now, self.started) >= self.limit:
             self.cancel("JOB_TIMEOUT", True)
             return
-        if self.kind == "CIRCLE":
+        if self.kind == "TRAVEL":
+            self._travel(now)
+        elif self.kind == "SPIN":
+            self._spin(now)
+        elif self.kind == "CIRCLE":
             self._circle(now)
         elif self.kind == "DRIVE":
             if not self._range_motion(now):
@@ -441,6 +503,12 @@ class MotionJobs:
             if self.state == "RUNNING" and rate is not None:
                 self._drive(now, rate)
         elif self.kind == "TURN":
+            if not (c._range_valid(now) or c._range_no_return(now)):
+                self.cancel("RANGE_UNAVAILABLE", True)
+                return
+            if c._range_valid(now) and c.distance_mm < FRONT_STOP_MM:
+                self.cancel("OBSTACLE", True)
+                return
             if self.state == "SETTLING":
                 try:
                     self._gyro(now)
@@ -475,6 +543,73 @@ class MotionJobs:
                     self.measured = sorted(self.measure_samples)[1]
                     self.measured_at = now
                     self._finish("MEASURED")
+
+    def _spin(self, now):
+        c = self.c
+        usable = c._range_valid(now) or c._range_no_return(now)
+        if usable:
+            self.spin_range_at = c.range_at
+        elif c.range_failed or c.tof is None:
+            self.cancel("RANGE_IO", True)
+            return
+        elif c.range_at is None or self.clock.ticks_diff(now, c.range_at) >= 250:
+            self.cancel("RANGE_STALE", True)
+            return
+        elif (c.range_status in (3, 5, 255) or self.spin_range_at is None or
+              self.clock.ticks_diff(now, self.spin_range_at) >= 250):
+            self.cancel("RANGE_STATUS_{}".format(c.range_status), True)
+            return
+        if c._range_valid(now) and c.distance_mm < FRONT_STOP_MM:
+            self.cancel("OBSTACLE", True)
+            return
+        turn = c.voice_turn
+        if self.state == "SETTLING":
+            try:
+                rate = self._gyro(now)
+            except Exception as error:
+                reason = str(error)
+                self.cancel(reason if reason in ("GYRO_STALE", "GYRO_RANGE") else "GYRO_IO", True)
+                return
+            if self.heading - self.turn_origin > 390:
+                self.cancel("SPIN_OVERSHOOT", True)
+                return
+            if rate is None:
+                return
+            if abs(rate) >= 10:
+                self.settled = None
+                return
+            if self._settled(now):
+                if self.heading - self.turn_origin >= 360:
+                    self._finish("SPIN_DONE")
+                else:
+                    self.cancel("SPIN_INCOMPLETE", True)
+            return
+        if turn.bias is None and not self._stopped(now):
+            self.cancel("CALIBRATION_MOVING", True)
+            return
+        left, right = turn.update(now, max(abs(c.left), abs(c.right)))
+        self.heading = self.turn_origin + turn.angle
+        if turn.result:
+            if turn.result != "DONE":
+                self.cancel(turn.result, True)
+            else:
+                self.bias, self.bias_at = turn.bias, now
+                self.gyro_at = now
+                c._stop()
+                self.state, self.reason, self.settled = "SETTLING", "SPIN_SETTLING", None
+        else:
+            self.state = "RUNNING" if turn.bias is not None else "CALIBRATING"
+            c._target_motion(left, right, now, SPIN_ACCELERATION, SPIN_DECELERATION)
+
+    def _release_spin_scene(self):
+        sequence, self.spin_scene = self.spin_scene, None
+        if sequence is not None:
+            try:
+                self.c.face.release_scene(sequence)
+            except Exception as error:
+                # Motor Stop already happened before display cleanup. A failed
+                # optional face update must not interrupt the safety loop.
+                print("SPIN FACE:", error)
 
     def _circle(self, now):
         c = self.c
@@ -540,3 +675,66 @@ class MotionJobs:
         else:
             c._target_motion(self.circle_speed, self.circle_speed, now, self.acceleration,
                              rate_ratios=(1.0, 1.0 / 3.0))
+
+    def _travel(self, now):
+        c = self.c
+        forward = self.travel_target > 0
+        if not (c._range_valid(now) or c._range_no_return(now)):
+            self.cancel("RANGE_UNAVAILABLE", True)
+            return
+        if forward and c._range_valid(now) and c.distance_mm < FRONT_STOP_MM:
+            self.cancel("OBSTACLE", True)
+            return
+        try:
+            rate = self._gyro(now)
+            counts = c.speed_control.encoders.get_counts()
+            for i in range(2):
+                delta = ((counts[i] - self.travel_counts[i] + 0x80000000) & 0xffffffff) - 0x80000000
+                if abs(delta) > 10000:
+                    raise RuntimeError("ENCODER_RANGE")
+                self.travel_tracks[i] += delta / self.distance_scale[i]
+            self.travel_counts = counts
+            self.travelled_mm = sum(self.travel_tracks) / 2.0
+        except Exception as error:
+            self.cancel(str(error) if str(error).startswith(("GYRO_", "ENCODER_", "CALIBRATION_")) else "FEEDBACK_IO", True)
+            return
+        direction = 1 if forward else -1
+        progress = self.travelled_mm * direction
+        goal = abs(self.travel_target)
+        if progress < -5:
+            self.cancel("ENCODER_DIRECTION", True)
+            return
+        if abs(self.travel_tracks[0]-self.travel_tracks[1]) > max(10, progress*.25):
+            self.cancel("TRACK_MISMATCH", True)
+            return
+        if abs(self.heading-self.target_heading) > 15:
+            self.cancel("HEADING_ERROR", True)
+            return
+        if progress > goal + max(10, goal*.1):
+            self.cancel("TRAVEL_OVERSHOOT", True)
+            return
+        if self.state == "BRAKING":
+            if self._settled(now):
+                if progress >= goal-3:
+                    self._finish("TRAVEL_DONE")
+                elif self.travel_restarts >= 3:
+                    self.cancel("TRAVEL_INCOMPLETE", True)
+                else:
+                    self.travel_restarts += 1
+                    self.state, self.reason = "RUNNING", "TRAVELLING"
+                    self.settled = None
+            return
+        if self.state != "RUNNING" or rate is None:
+            return
+        velocity = max(0, sum(c.speed_control.velocity[i] * direction / self.distance_scale[i] for i in range(2))/2)
+        lead = velocity * (max(abs(c.left),abs(c.right))/24000.0 + .060)
+        if progress + lead >= goal-1:
+            c._stop(smooth=True)
+            self.state, self.reason, self.settled = "BRAKING", "TRAVEL_BRAKING", None
+            self.snapshot(now=now)
+            return
+        error = self.target_heading-self.heading
+        correction = max(-200,min(200,(error*35-rate*5)*c.voice_turn.motor_sign))
+        left = direction*max(3000,min(3200,3000-direction*correction))
+        right = direction*max(3000,min(3200,3000+direction*correction))
+        c._target_motion(int(left),int(right),now,self.acceleration)
