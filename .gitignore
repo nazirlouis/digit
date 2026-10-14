@@ -51,6 +51,7 @@ __pycache__/
 htmlcov/
 coverage/
 *.log
+/recovery-test-output.txt
 *.tmp
 *.temp
 *.bak

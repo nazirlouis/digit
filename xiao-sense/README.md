@@ -1,126 +1,120 @@
-> Current robot sessions use [Gemini Robotics ER 2](../docs/GEMINI_ROBOTICS_ER2.md), spoken and typed commands and continuous 1 FPS camera input. Hey Digit and spoken Stop remain local. Gemini speaks through emotes; its speech output is not built.
+# Digit XIAO firmware
 
-# Digit Sense XIAO firmware
+This is the active XIAO ESP32-S3 Sense application. Open this directory in VS Code
+and select **`xiao_esp32s3_sense_idf`**. The project uses ESP-IDF 5.5 through
+PlatformIO, pinned to `espressif32 @ 6.12.0`.
 
-This is Digit's active XIAO ESP32-S3 Sense project, built with ESP-IDF 5.5 through
-PlatformIO. Open this folder and select **xiao_esp32s3_sense_idf** before uploading.
-The previous Arduino application is preserved in `../xiao-sense-arduino-legacy`.
+For the complete hardware list, wiring, first installation, calibration, and
+troubleshooting, start with the [project README](../README.md).
 
-Digit keeps one Gemini Live connection ready over Wi-Fi, without a PC relay.
-The local **Hey Digit** wake word opens microphone upload after the visual wake
-acknowledgement and any enabled turn toward the speaker. Local **Stop** and the
-dashboard **STOP ALL** cancel speech, motion, camera requests and pending tools.
-Inactivity ends the conversation while retaining the ready connection.
+## Current behavior
 
-The embedded wake model is `wake_word_hey_digit/hey_digit.tflite`, imported with
-its manifest from the downloaded `hey_digit.zip`. It uses a 0.5 probability
-cutoff, five-frame averaging and 10 ms feature steps. The older `wake_word_digit/`
-model remains available for rollback and is not included in the active build.
+The XIAO connects directly over Wi-Fi to
+`gemini-robotics-er-2-streaming-preview` using a certificate-verified persistent
+WebSocket. Gemini accepts spoken requests, typed messages, and camera images.
+Replies are brief dashboard text and robot emotes; speech decoding/playback and
+TTS are excluded. Local **Hey Digit** and independent **Stop** remain on-device.
 
-Fresh spoken prompts and sent dashboard messages automatically open a bounded
-task. Gemini can request an observation, turn by angle, travel by distance,
-choose expressions and finish the task. Follow-up prompts steer the active task
-without resetting its limits. A greeting can be answered and finished without
-camera or movement. Navigation requires an initial `observe`; subsequent moves
-return fresh images and native tool results on the same connection. Model reply
-boundaries do not end the task; Gemini calls `finish_task` when done.
+An active session sends the newest JPEG at **1 FPS**, including during reasoning,
+pending tools, and movement. The shared 1000 ms upload interval also covers
+`observe`, post-motion images, and reconnects. Congestion skips uploads instead
+of queuing old frames. Uploaded images alone do not initiate a model turn;
+idle-only observation prompts supply sensor context without granting motion.
+Standby, End, Stop, and connection-only probes send no camera/microphone input.
 
-Starting limits are 90 degrees per turn, 30 cm forward, 10 cm backward, 50 moves
-and 90 seconds per task. Zumo owns motor feedback and local safety; Gemini cannot
-send raw motor power or alter safeguards. The dedicated `push_object` tool
-accepts 1–30 cm forward at a fixed maximum target/high acceleration; only its
-close-obstacle threshold is exempt for that bounded job. Zumo recovers locally,
-then supplies outcomes and fresh images for Gemini to replan. Forward/backward tools require a
-separate measured encoder-to-distance calibration. That powered floor measurement
-is the final setup step, and no scale is guessed when it is absent.
+A fresh user prompt opens a bounded task; later prompts steer it without
+resetting limits. Before moving, Gemini must receive a matched `observe` result.
+Movement results follow confirmed rest and a newly captured image. Tool results,
+model replies, and background prompts cannot open tasks. `finish_task` ends the
+task while the observation session remains active; End/Stop closes the session.
+There is no silence timeout. The saved timeout limits model response waiting.
 
-The dashboard retains manual arrows, vision buttons beside them, silent face
-controls, a speaker volume slider, task status, debug history and Gemini settings.
-Fixed routines, **Turn with person**, emotion sounds and audio recording/replay/
-speaker tests have been removed. The local wake acknowledgement is visual.
+Starting limits are 90° per turn, 30 cm forward, 10 cm backward, 50 moves, and
+90 seconds per task. Zumo owns sensor feedback, braking, watchdogs, and recovery.
+The dedicated 1–30 cm forward push exempts only its close-obstacle threshold.
+Measured encoder distance calibration is required for travel. Reconnects never
+replay interrupted motor commands or renew task limits.
 
-See [robot tools, task continuation and final calibration](../docs/GEMINI_ROBOT_CONTROL.md),
-[voice and local Stop](VOICE_ACTIONS.md), [Gemini setup](GEMINI_LIVE.md) and
-[the motion wire protocol](../docs/TWO_BRAIN_PROTOCOL.md).
+The dashboard includes manual drive, vision overlays, face previews, speaker
+volume, typed chat, task status, Action Console, and the exact last-uploaded JPEG.
+**STOP ALL** globally cancels motion, sounds, uploads, previews, and stale pending
+work, then opens a fresh idle Gemini connection without conversation resumption.
 
-## Gemini setup
+## Build and upload
 
-Enter the API key through the dashboard's **Gemini Live setup**. It is saved in
-XIAO NVS, survives normal app uploads and is never returned to the page. Local
-credential files and named NVS dumps are ignored by Git. Configure it on a trusted
-local network because the dashboard uses HTTP.
+1. Copy `src/wifi_credentials.example.h` to ignored `src/wifi_credentials.h` and
+   enter your local Wi-Fi credentials.
+2. Build the `xiao_esp32s3_sense_idf` environment. PlatformIO/IDF obtain dependencies
+   and automatically pack the pedestrian and three-class object models.
+3. Run `check_bundle` to inspect the complete upload command without touching hardware.
+4. Connect the XIAO USB port, select your actual upload/monitor port, and upload
+   through this environment. COM7 is the checked-in example, not a universal port.
+5. Read the dashboard address from the 115200-baud serial log.
+6. Install Zumo Python separately; XIAO uploads never update Zumo files.
 
-The **System instructions** area has three separate editors: **Personality &
-behavior** for reactions and conduct, **Base information** for Digit's body,
-camera, functions, sensors and operating rules, and **Voice instructions** for
-tone, pace, pronunciation and speaking style. Each has its own restore
-button, which changes only that editor until **Save settings** is pressed. All
-sections are saved together on the XIAO and reconnect Gemini with uploads off.
-The shared limit is 4096 UTF-8 bytes, including the section headings. Instructions
-survive restarts; local Stop and motor limits remain enforced by firmware.
+From the repository root:
 
-**Test connection** is microphone-free, camera-free and action-free.
-**Test-only stream** enables microphone and speaker communication plus requested
-observations, while disabling motor and face dispatch. **Begin conversation** and
-wake use the saved preview setting. Stop or End returns to standby, with uploads
-and output disabled. Reconnection never resumes cancelled tasks.
+```sh
+pio run -d xiao-sense -e xiao_esp32s3_sense_idf
+pio run -d xiao-sense -e xiao_esp32s3_sense_idf -t check_bundle
+pio run -d xiao-sense -e xiao_esp32s3_sense_idf -t upload --upload-port COM7
+```
 
-## Camera and local vision
+Use PlatformIO's VS Code terminal if `pio` is not on PATH. The board has 8 MB flash
+and 8 MB PSRAM. `partitions.csv` reserves `0x36b000` bytes for the application,
+`0xe5000` at `0x37b000` for the vision bundle, and `gemini_data` at `0x460000` for
+two alternating instruction slots. Normal uploads preserve NVS/instructions;
+whole-flash erasure removes them. Hey Digit and Stop models are embedded;
+MultiNet is not built.
 
-The shared camera captures 640 x 480 JPEG with the existing 180-degree rotation.
-The dashboard live view remains available independently of cloud observations.
-Still-photo storage/downloads are retired. Person and known-object detection are
-optional local overlay tools, off at startup; neither enables a movement routine.
+## Camera, audio, and UART
 
-The pedestrian detector uses Espressif's `pico_s8_v1` model, accepts boxes at 55%
-confidence and targets two 320 x 240 detections per second. Use the dashboard's
-measured update rate; actual performance varies with camera and Wi-Fi load.
-The object detector recognizes Battery, Marker and Screwdriver. The models are
-retained in `models/`; camera capture and resized detector input are separate.
+Camera capture is 640 × 480 JPEG with the existing 180° rotation. Dashboard video
+is independent of Gemini's 1 FPS upload. Person/object overlays are optional,
+off at boot, and do not start movement. The current object classes are Battery,
+Marker, and Screwdriver. JPEG capture, streaming, copies, uploads, and preview
+share a 64 KiB limit in `src/camera_frame_limits.h`. ESP-DL needs both RGB565→RGB888
+and RGB888→RGB888 conversions for the current detector paths.
 
-JPEG capture, dashboard streaming, detector copies, Gemini uploads and the exact
-sent-image preview share a 64 KiB frame limit in `src/camera_frame_limits.h`.
-The camera driver uses this limit explicitly for each of its two framebuffers.
-ESP-DL enables only RGB565-to-RGB888 and RGB888-to-RGB888 conversion; the latter
-is also required for object-model letterbox padding. Revisit both the frame limit
-and conversion settings if camera resolution or detector preprocessing changes.
+reSpeaker uses geometry-matched 16 kHz I2S firmware. The processed left channel
+feeds Gemini; local Stop receives every captured frame, including during emotion
+sounds. Local cues and their acoustic tails are excluded from cloud input.
+Read-only routing diagnostics are at `/api/audio/processing`.
 
-## Build and install
+Zumo UART is **XIAO D2/GPIO3 TX → Zumo GP29 RX** and
+**Zumo GP28 TX → XIAO D3/GPIO4 RX**, with common ground, 115200 baud, 8N1.
 
-1. Copy `src/wifi_credentials.example.h` to ignored `src/wifi_credentials.h`
-   and set local Wi-Fi details.
-2. Build `xiao_esp32s3_sense_idf` with PlatformIO. Both vision models are packed
-   automatically. `check_bundle` prints the exact combined upload command.
-3. Use the matching environment's Upload to install bootloader, partition table,
-   application and vision bundle. Update `upload_port` if COM7 changes.
-4. Install changed Zumo Python files separately, after backing up and verifying
-   device contents. XIAO flashing does not update Zumo files.
-5. Configure Gemini, run the connection-only test and Test-only conversation,
-   then perform supervised powered acceptance and distance calibration last.
+## Gemini configuration
 
-The board has 8 MB flash and 8 MB PSRAM. The app partition is `0x36b000` bytes;
-vision occupies `0xe5000` at `0x37b000`. The former speech partition at `0x460000`
-now holds `gemini_data`: two alternating instruction-document slots with verified
-writes and a committed NVS selector. Local Hey Digit/Stop models are embedded;
-MultiNet is no longer built or uploaded. Partition offsets and existing NVS
-settings are preserved; existing instruction text migrates on the next save.
+Enter a key in **Session setup** on a trusted local network. It is stored in NVS
+and never returned by status/settings routes. A blank key field retains the key.
+The three editors are **Personality & behavior**, **Base information**, and
+**Expression & emotions**. Their document has no fixed 4 KiB editor cap; device
+storage, available memory, and model context still bound its practical size.
+Save verifies persistence/read-back. Restore buttons affect drafts until Save.
 
-## Checks
+Use **Test connection** first: no media or physical output. **Test-only stream**
+allows audio/images and model decisions while physical dispatch remains disabled.
+**Start session** and waking Digit use the saved preview setting; typed chat
+started from idle leaves the microphone off. Enable robot actions only after
+supervised hardware acceptance and distance calibration.
 
-Run the suites relevant to the change: `tests/run_actions.ps1` for action/UART
-control, `run_robot_session.ps1` for session lifecycle, `run_gemini_live.ps1`
-for transport/tools, `run_gemini.ps1` and `run_gemini_config.ps1` for settings,
-and `run_local_stop.ps1` for independent Stop. Dashboard checks are
-`test_dashboard.cjs`, `test_gemini_chat.cjs` and `test_gemini_instructions.cjs`;
-the chat suite also checks desktop/phone layouts. Run the Zumo Python unittest
-suite after controller changes. Keep tests focused on meaningful behavior and
-safety failures; cosmetic edits usually need a preview rather than another
-narrow test. Shared motion checks run once during discovery.
-ReSpeaker processing/routing diagnostics remain read-only at
-`/api/audio/processing`. Startup should report PSRAM, camera/models,
-Wi-Fi and Zumo UART on GPIO4/GPIO3.
+## Development checks
 
-Keep desktop tests, build checks, XIAO flashing, Zumo installation, idle telemetry,
-cloud connection/audio checks and physical acceptance separate. Stationary checks
-cannot prove travel accuracy, braking distance, audible playback, visible faces
-or spoken wake/Stop accuracy. Test those on the actual robot with supervision.
+Focused scripts under `tests/` cover transport/tools (`run_gemini_live.ps1`),
+sessions (`run_robot_session.ps1`), action/UART control (`run_actions.ps1`),
+settings (`run_gemini.ps1`, `run_gemini_config.ps1`), and local Stop
+(`run_local_stop.ps1`). They require Visual Studio C++ build tools and the
+PlatformIO ESP-IDF packages. Camera/memory/gesture suites remain available.
+Browser checks are `test_dashboard.cjs`, `test_gemini_chat.cjs`, and
+`test_gemini_instructions.cjs`; they require Playwright and Edge.
+`node tools/preview_dashboard.cjs` generates a device-free dashboard preview.
+
+Keep host tests, build, flash, Zumo installation, idle telemetry, cloud checks,
+and physical acceptance separate. Desktop/build evidence cannot establish
+acoustic wake/Stop accuracy, visible faces, audible cues, or motor behavior.
+
+Further details: [current ER 2 contract](../docs/GEMINI_ROBOTICS_ER2.md),
+[Gemini setup](GEMINI_LIVE.md), [voice and Stop](VOICE_ACTIONS.md),
+[wire protocol](../docs/TWO_BRAIN_PROTOCOL.md), and
+[physical acceptance](../docs/TWO_BRAIN_ACCEPTANCE.md).

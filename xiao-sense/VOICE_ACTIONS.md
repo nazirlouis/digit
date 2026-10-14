@@ -1,67 +1,60 @@
-> Current implementation: [Gemini Robotics ER 2](../docs/GEMINI_ROBOTICS_ER2.md). Gemini spoken output is retired; wake and user speech remain; the sections below document the previous implementation.
+# Digit voice, emotes, and Stop
 
-# Digit voice and robot control
+The active build uses local **Hey Digit** and an independent **Stop** detector,
+with direct audio input to Gemini Robotics ER 2. MultiNet and Gemini spoken
+output/TTS are not built. See [project setup](../README.md),
+[Gemini setup](GEMINI_LIVE.md), and [current behavior](../docs/GEMINI_ROBOTICS_ER2.md).
 
-The local **Hey Digit** wake word and independent **Stop** detector stay on the XIAO.
-Gemini Live replaces MultiNet. One connection is prepared at boot when Wi-Fi and
-a saved key are available; standby sends no microphone audio or camera frames.
+## Spoken and typed input
 
-Say **Digit**, wait for the visual wake acknowledgement, then speak. An enabled
-turn toward the saved voice bearing runs before listening under the same local
-readiness/surface gates. An unclear bearing falls back to a stationary reply.
-A missing key or failed connection cannot present a false ready acknowledgement.
+Say **Hey Digit**, wait for the wake acknowledgment, then speak. An enabled turn
+toward the speaker is gated by local readiness and floor safety; an uncertain
+bearing does not force a turn. A missing key or failed cloud connection cannot
+produce a false ready acknowledgment.
 
-Each fresh spoken or typed prompt automatically opens a bounded task when none
-is active. Follow-up prompts steer the active task and keep its existing limits.
-A greeting can receive a spoken reply and expression, then `finish_task`, without
-moving or requesting a camera frame. For **Find the battery**, Gemini first calls
-`observe`, then chooses individual turns and distance moves and continues through
-native tool results. No `start_task` or fresh prompt is required between steps.
-The task remains active across model turn boundaries until explicit completion,
-failure, cancellation or its limit. See the complete
-[robot-control contract](../docs/GEMINI_ROBOT_CONTROL.md).
+The XIAO sends 16 kHz mono PCM from the reSpeaker's processed left channel.
+Every captured frame still reaches local Stop while sounds/actions are active.
+Local acknowledgment/emotion sounds and their acoustic tails are excluded from
+cloud microphone input. Digit responds with short dashboard text, expressions,
+electronic sounds, and safe gestures, rather than spoken replies.
 
-Camera upload occurs on an explicit observation (required before first movement)
-and after a confirmed movement. Each image must have been captured after the
-request/rest; stale or unavailable imagery fails an active task. ToF telemetry
-includes validity, age and a **>1 metre** beyond-range label, and measures only
-the narrow front area.
-The optional local person/object overlays remain manual vision tools.
+Typing into **Chat with Digit** starts a microphone-free session from idle;
+typing during an active voice session retains its existing mode. Fresh spoken
+or typed input opens a bounded task; later input steers it without resetting
+limits. Model turns, tool replies, and camera/heartbeat context do not open tasks.
 
-The dashboard retains hold-to-drive arrows, vision buttons, silent facial
-expressions, speaker volume and task status. Fixed routines, Turn with person,
-audio tests and emotion sounds are retired. Gemini cannot change safety settings
-or motor power. Starting limits are 1-90 degrees, 1-30 cm forward and 1-10 cm
-backward. The dedicated `push_object(distance_cm)` accepts 1–30 cm forward
-only at the fixed maximum target/high acceleration, with its close-obstacle
-exception scoped to that job. Zumo handles bounded recovery; Gemini receives
-the final outcome and a fresh image. Actual distance calibration is required for travel and is saved for
-the final powered setup step.
+During active sessions camera uploads run at **1 FPS**, including during movement
+and reasoning. An initial matched `observe` result is still required before
+movement. Post-motion results wait for confirmed rest and a newly captured image.
+The optional person/object overlays are independent manual vision tools.
 
-One ReSpeaker capture task feeds the local wake/Stop detectors and the active
-Live session. The right ASR channel supplies 16 kHz mono audio; the ReSpeaker
-retains its hardware echo reference. Returned 24 kHz Live audio is resampled to
-16 kHz for the existing speaker path. Local Stop receives audio during speech.
-Silent face expressions can run alongside speech or a movement.
+## Actions and cancellation
 
-Dashboard **STOP ALL**, **End conversation**, spoken **Stop** and Zumo **Button C**
-cancel their active work. Manual takeover, settings changes, safety events, robot
-link loss invalidate the task. Generation/session identities prevent delayed
-traffic from restarting cancelled work. Stop and inactivity keep the connection
-ready with uploads and cloud output disabled. A transient cloud/Wi-Fi outage
-stops motion and can preserve a healthy task under its original limits; after
-reconnecting it requires confirmed rest and a fresh observation before planning.
-Interrupted motor commands are never replayed. Invalid authority or expired
-recovery leaves Digit stopped.
+Tools include observations, 1–90° turns, 1–30 cm forward travel, 1–10 cm backward
+travel, expressions, dance, and a dedicated 1–30 cm forward push. Distance travel
+requires measured calibration. Push exempts only its close-obstacle threshold;
+local edge, feedback, communication, deadlines, and Stop remain authoritative.
+Each tool returns an actual result before Gemini plans another step.
 
-The API key is saved on the XIAO in NVS and never returned to the dashboard.
-See [Gemini setup and sanitized API](GEMINI_LIVE.md). Connection tests have no
-microphone/camera/output/actions; Test-only conversations disable physical tool
-execution. Local safety, feedback and timeouts remain authoritative on Zumo.
+The thirteen expressions are NEUTRAL, HAPPY, SAD, MAD, SERIOUS, CURIOUS,
+SURPRISED, SLEEPING, CONFUSED, SLEEPY, EXCITED, CRYING, and LOVE. Non-neutral
+emotions have procedural electronic sounds; eligible idle expressions add a
+bounded body gesture. During driving only the face animates. EDGE permits
+display-only expressions while ordinary motion remains blocked. Other faults
+and Stop retain priority.
 
-Open **xiao-sense** and use **xiao_esp32s3_sense_idf** for builds/uploads. Zumo
-Python installation is separate. `GET /api/actions` exposes sanitized conversation,
-transcript, task/result and local Stop state. `GET /api/zumo/status` reports sensor
-and calibration readiness. Desktop/build/install/idle checks do not establish
-physical accuracy, wake detection quality or Stop latency; those need supervised
-robot acceptance.
+Spoken **Stop**, dashboard **STOP ALL / End session**, and Zumo **button C** cancel
+active work. Manual takeover, settings changes, hard faults, and link loss also
+invalidate or suspend work under local rules. Session/generation identities
+reject stale callbacks. STOP ALL replaces the cloud connection; it returns idle
+with microphone/camera uploads and actions off. No cancelled action resumes.
+
+`finish_task` ends navigation authority but leaves observation open. The session
+has no silence timeout; End/Stop closes it. Model response waiting and motion
+budgets have separate limits.
+
+Use Test connection first (no media/output/actions), then Test-only stream
+(physical dispatch disabled). Acoustic wake/Stop accuracy and latency, gestures,
+sounds, and movement need supervised real-device checks. Builds/mock tests do
+not establish physical acceptance. The sanitized `/api/actions` and
+`/api/zumo/status` routes expose readiness and actual task/controller outcomes.

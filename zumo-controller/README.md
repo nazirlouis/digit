@@ -1,10 +1,11 @@
-# Digit Zumo controller â€” Waveshare LCD
+# Digit Zumo controller - Waveshare LCD
 
 The active Gemini controller uses `main.py`, `uart_control.py`, `motion_jobs.py`,
 `encoder_speed.py` and `distance_calibration.py`. The XIAO sends bounded gyro turns
 and measured encoder travel; Zumo owns feedback, braking and safety. Silent
 bounded expressions can run alongside motion. See
-[the current tools and final distance-calibration step](../docs/GEMINI_ROBOT_CONTROL.md).
+[current ER 2 behavior](../docs/GEMINI_ROBOTICS_ER2.md) and
+[the final distance-calibration step](../docs/GEMINI_ROBOT_CONTROL.md#distance-calibration-the-final-powered-step).
 Missing actual distance calibration disables travel; turns do not use that scale.
 
 ### Expression body gestures
@@ -96,6 +97,49 @@ driver selects CS only during transfers and detaches GP2 between transfers,
 following the original Pololu driver's clock-sharing approach. Do not drive the
 display and LEDs simultaneously from interrupts or another core.
 
+## Required device files
+
+For a new installation, copy this complete runtime set to the Zumo root using
+Thonny with the program stopped and motor power off:
+
+```text
+main.py                  main_menu.py             uart_control.py
+digit_config.py          digit_display.py         digit_display_lcd.py
+digit_face.py            digit_face_lcd.py        digit_face_engine.py
+boot_health.py           encoder_speed.py         distance_calibration.py
+motion_jobs.py           voice_turn.py            local_recovery.py
+edge_retreat.py          edge_reverse.py          expression_motion.py
+wake_reaction.py         circle_show.py           dance_motion.py
+reaction_catalog.py
+```
+
+Retain the firmware's existing `zumo_2040_robot` package. Install the replacement
+`display.py`, silent `buzzer.py`, and `vl53l4cd.py` from
+`device-library/zumo_2040_robot/` into that package. The supplied `motors.py` is
+for Digit's modified left-motor wiring; use it only with that wiring. Factory
+wiring needs its matching driver. The supplied `encoders.py` preserves factory
+count signs. Verify positive forward motion/counts with tracks lifted before
+floor tests; see [device-library instructions](device-library/README.md).
+
+`encoder_calibration.json` contains this robot's velocity measurements, not a
+universal scale. Measure your robot's forward/reverse steady encoder rates at
+motor targets 3000 and 6000. Store positive left/right counts-per-second pairs in
+`low_cps`, `high_cps`, `reverse_low_cps`, and `reverse_high_cps`, with `version: 1`.
+Distance travel additionally requires your measured `distance_calibration.json`;
+missing measurements leave distance-based travel unavailable. See the
+[project calibration steps](../README.md#7-calibrate-and-accept-powered-movement).
+Do not overwrite existing measured calibration when updating runtime modules.
+
+Restart after installation and compare device files against the local copies.
+The XIAO and Zumo are programmed separately. Optional root diagnostics/demos can
+be installed as needed; tests, previews, tools, and `factory-backup/` stay on the PC.
+The factory backup is a restoration/reference snapshot, not the active controller.
+
+The current cloud contract is [Gemini Robotics ER 2](../docs/GEMINI_ROBOTICS_ER2.md):
+spoken input, dashboard text/emotes, and 1 FPS camera uploads. The dated sections
+below retain hardware/protocol history; use the root guide and current ER 2 guide
+for first setup and cloud behavior.
+
 ## Install on the Zumo
 
 In Thonny, stop the running program, then save these files to the MicroPython
@@ -105,7 +149,6 @@ device root, keeping their names:
 - `digit_display.py` and `digit_face.py` route all active programs to the LCD.
 - `digit_face_engine.py` â€” shared expression shapes and animation timing; required for both screens.
 - `digit_display_lcd.py` and `digit_face_lcd.py` â€” LCD driver and face.
-- `digit_face_oled.py` is retained only as historical source; active programs do not import it.
 - `main_menu.py` â€” original six-second splash/program menu, adapted to the LCD.
 - `main.py` and `uart_control.py` â€” default face and UART manual control;
   A for sad, B for happy, C for local motor stop.
@@ -271,7 +314,7 @@ all colors. If an error remains, copy the complete Thonny traceback (filenames
 and line numbers included) to identify the failing allocation.
 
 For this update, save `digit_face_engine.py`, `digit_face_lcd.py`,
-`digit_face_oled.py`, `digit_display_lcd.py`, `uart_control.py`, `face_test.py`, `spin.py`, and
+`digit_display_lcd.py`, `uart_control.py`, `face_test.py`, `spin.py`, and
 `move_forward.py` to the device root in Thonny. Keep the existing
 `digit_face.py`, `digit_display.py`, `digit_config.py`,
 and robot library. Restart so the updated modules are loaded.
