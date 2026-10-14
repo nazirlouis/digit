@@ -173,7 +173,7 @@ class Detect {
   virtual ~Detect() { assert(mock::gateDepth == 1); ++mock::modelDestroyed; }
   virtual Detect& set_score_thr(float, int) { return *this; }
   virtual std::vector<Result>& run(const image::img_t& image) {
-    assert(mock::gateDepth == 1 && image.data && mock::allocatedBytes() == 415744);
+    assert(mock::gateDepth == 1 && image.data && mock::allocatedBytes() == 219136);
     ++mock::modelRuns;
     if (mock::runHook) mock::runHook();
     return results;

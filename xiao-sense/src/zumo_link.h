@@ -8,6 +8,8 @@ struct Status {
   bool connected;
   bool ready;
   bool calibrating;
+  uint32_t calibrationGeneration;
+  char calibrationResult[24];
   bool edge;
   int left;
   int right;
@@ -46,9 +48,23 @@ struct Status {
   int encoderRightCps;
   bool motionCapable;
   bool distanceCalibrated;
+  bool edgeRetreatCapable;
+  bool edgeRetreat100Capable;
+  bool edgeDirectReverseCapable;
+  bool automaticEdgeRecovery;
+  bool edgeReverseCapable;
+  bool edgeReverseAllowed;
+  bool localRecoveryCapable;
+  bool pushCapable;
+  int motionEdgeMask, motionRetreatMm;
+  char edgeRetreatReject[24], edgeRetreatDetail[256];
   bool expressionCapable;
+  bool danceCapable;
   int encoderLeftCount, encoderRightCount;
   int motionTravelledMm;
+  uint32_t motionRecoveryCount;
+  char motionRecoveryReason[24];
+  bool motionPositionKnown = true;
   bool circleCapable;
   bool spinCapable;
   bool motionArmed;
@@ -75,16 +91,24 @@ struct Status {
 void begin();
 void poll();
 Status snapshot();
+// Compact audio notification: moving emotions wait for actual gesture START;
+// explicitly requested still emotions wait for their complete visible frame.
+// Automatic neutral resets and Stop never generate a cue.
+void gestureAudio(uint32_t& generation, uint8_t& expression);
 // Only the mission supervisor refreshes this lease. The UART task cannot
 // keep a stalled mission alive just by continuing to send heartbeats.
 void superviseMotion();
-bool armMotion();
+bool armMotion(bool reverseOnly = false);
+uint32_t edgeBackJob(int distanceMm);
 uint32_t driveJob(int left, int right, int stopDistanceMm, uint32_t maxMs = 30000);
-uint32_t travelJob(int distanceMm, uint32_t maxMs = 15000);
+uint32_t travelJob(int distanceMm, uint32_t maxMs = 15000, bool edgeRetreat = false);
+// Firmware owns maximum output, acceleration, deadline and the one-job ToF exception.
+uint32_t pushJob(int distanceMm);
 uint32_t turnJob(int degrees, uint32_t maxMs = 20000);
 uint32_t circleJob(int speed);
 // A single local gyro-controlled 360-degree turn, with encoder-confirmed rest.
 uint32_t spinJob(uint32_t maxMs = 12000);
+uint32_t danceJob(); // One fixed local dance; no caller-selected power or duration.
 uint32_t measureJob();
 bool updateDriveJob(uint32_t job, int left, int right);
 bool ackMotion(uint32_t job);
@@ -94,6 +118,9 @@ bool turn(int speed);
 bool safeDrive(int left, int right, int stopDistanceMm = 150);
 void stop(bool smooth = false);
 bool calibrate();
+// Explicit Live request: fresh encoder-confirmed rest; NONE/EDGE/CAL_FAILED only.
+// Completion is reported only after acknowledged sampling and a fresh status.
+bool calibrateSurface();
 bool isFaceName(const char* name);
 bool face(const char* name);
 bool wake();

@@ -1,4 +1,4 @@
-# Digit Zumo controller — Waveshare LCD
+# Digit Zumo controller â€” Waveshare LCD
 
 The active Gemini controller uses `main.py`, `uart_control.py`, `motion_jobs.py`,
 `encoder_speed.py` and `distance_calibration.py`. The XIAO sends bounded gyro turns
@@ -7,6 +7,56 @@ bounded expressions can run alongside motion. See
 [the current tools and final distance-calibration step](../docs/GEMINI_ROBOT_CONTROL.md).
 Missing actual distance calibration disables travel; turns do not use that scale.
 
+### Expression body gestures
+
+`expression_motion.py` adds one finite gesture to idle `SCENE`/`FACE` requests
+and the A/B face buttons. Happy wiggles once; sad nudges backward; mad shakes
+twice; curious turns and returns after a pause; surprised flinches backward;
+confused looks left and right; sleepy pauses mid-turn; excited wiggles twice;
+crying shudders three times; love sways with longer pauses. Neutral, serious and
+sleeping keep the tracks still.
+
+Every active track output is exactly +3000 or -3000; pauses and Stop use zero.
+Gestures use 25â€“130 ms pulses separated by zero-output pauses, bypassing the
+ordinary acceleration ramp and encoder power correction while still sampling
+encoder feedback for errors. They have no forward translation. Symmetric turn
+timings aim to restore heading but do not measure it; surface/load differences
+can leave heading error. These are initial timings requiring supervised tuning.
+
+The first complete expression frame must be visible before tracks start. Body
+gestures require floor calibration, fresh front range (or a fresh **>1 metre**
+reading), no safety fault, cooperative display rendering and no drive owner.
+They are skipped during manual driving, autonomous sessions and calibration;
+skipped gestures never start later. A front obstacle under 50 mm suppresses
+turning gestures; backward flinches still require fresh range and floor safety.
+The front sensor does not measure rear clearance.
+
+STOP/BRAKE, Button C, replacement/expired expressions, new driving commands,
+sensor errors and a control-loop gap over 50 ms cancel the gesture. UART-driven
+gestures additionally stop after 500 ms without host PING/STATUS/scene traffic.
+No gesture lasts more than 2 seconds after visibility; an unseen frame is
+discarded after 1.5 seconds. Normal motor/edge safety and the hardware watchdog
+remain active. Standalone display galleries do not gain motor behavior.
+
+For XIAO-requested expressions, `<wire-id> EVENT GESTURE START <EXPRESSION>` is
+sent only after the first nonzero motor write passes all safety checks. The
+matching `END` follows completion or cancellation after motor power is removed.
+The XIAO plays one quiet 90â€“360 ms chirp/coo per start, yielding to speech;
+unseen and blocked expressions stay silent. Explicit bounded requests for
+neutral, serious and sleeping instead play a calm chirp, low double tone or
+descending hum after their complete frame is visible, without motor activity.
+Automatic neutral resets after expiry, navigation or Stop stay silent.
+Local A/B buttons remain
+standalone gestures without speaker cues. No sound command can drive motors.
+Stop, scene replacement, manual takeover, safety faults and link loss cancel
+the cue. Independent local voice Stop keeps receiving microphone frames while
+chirps play; Gemini and wake detection suppress chirp echo and its short tail.
+
+Install `expression_motion.py` together with the updated `uart_control.py` and
+`motion_jobs.py`. The XIAO dashboard text and navigation takeover change require
+its matching firmware build. Desktop tests/builds do not establish physical
+travel, heading return or on-device timing.
+
 The later routine/sound sections document historical behavior and wire compatibility.
 Fixed XIAO routines, Turn with person and emotion sounds are now retired.
 `STOP` cancels the active turn/wake effect and resets the face to neutral.
@@ -14,8 +64,8 @@ The standalone `autonomous_drive.py` remains a separate program; dashboard
 manual controls run through the UART controller with edge-stop locking.
 
 The optional LCD is the [Waveshare 1.69-inch LCD module](https://www.waveshare.com/product/displays/lcd-oled/lcd-oled-3/1.69inch-lcd-module.htm)
-([purchased screen](https://www.amazon.com/dp/B0C238JCLH)): ST7789V2, 240×280, SPI.
-The driver displays it in landscape (280×240).
+([purchased screen](https://www.amazon.com/dp/B0C238JCLH)): ST7789V2, 240Ã—280, SPI.
+The driver displays it in landscape (280Ã—240).
 
 ## Wiring
 
@@ -53,18 +103,19 @@ device root, keeping their names:
 
 - `digit_config.py` records the LCD hardware configuration.
 - `digit_display.py` and `digit_face.py` route all active programs to the LCD.
-- `digit_face_engine.py` — shared expression shapes and animation timing; required for both screens.
-- `digit_display_lcd.py` and `digit_face_lcd.py` — LCD driver and face.
+- `digit_face_engine.py` â€” shared expression shapes and animation timing; required for both screens.
+- `digit_display_lcd.py` and `digit_face_lcd.py` â€” LCD driver and face.
 - `digit_face_oled.py` is retained only as historical source; active programs do not import it.
-- `main_menu.py` — original six-second splash/program menu, adapted to the LCD.
-- `main.py` and `uart_control.py` — default face and UART manual control;
+- `main_menu.py` â€” original six-second splash/program menu, adapted to the LCD.
+- `main.py` and `uart_control.py` â€” default face and UART manual control;
   A for sad, B for happy, C for local motor stop.
-- `wake_reaction.py` — timed wake LED effect and happy face, required by `uart_control.py`.
-- `move_forward.py` and `spin.py` — use the new display through `DigitFace`.
-- `autonomous_drive.py` — roaming and calibration/status screens.
-- `tof_distance.py` — standalone distance display.
-- `display_test.py` — manual screen test, without motor commands.
-- `face_test.py` — all-expression gallery; stops the motors before starting.
+- `expression_motion.py` â€” bounded idle body gestures, required by `uart_control.py`.
+- `wake_reaction.py` â€” timed wake LED effect and happy face, required by `uart_control.py`.
+- `move_forward.py` and `spin.py` â€” use the new display through `DigitFace`.
+- `autonomous_drive.py` â€” roaming and calibration/status screens.
+- `tof_distance.py` â€” standalone distance display.
+- `display_test.py` â€” manual screen test, without motor commands.
+- `face_test.py` â€” all-expression gallery; stops the motors before starting.
 
 For the button, encoder, IMU, motor, and full self-tests, also upload
 `button_test.py`, `encoder_test.py`, `imu_test.py`, `motor_test.py`, and
@@ -116,16 +167,16 @@ and contains no physical SPI screen driver.
 Active programs always use the LCD; changing `DISPLAY_TYPE` does not enable
 the archived OLED path. `factory-backup/` remains the original restoration copy.
 
-Normal factory screens retain their centered 128×64 canvas for compatibility.
-Digit's face uses a higher-resolution 136×112 canvas that expands to 272×224,
+Normal factory screens retain their centered 128Ã—64 canvas for compatibility.
+Digit's face uses a higher-resolution 136Ã—112 canvas that expands to 272Ã—224,
 leaving only a four-pixel side margin and eight-pixel top/bottom margin. Each
-logical pixel becomes a 2×2 square. Idle eyes are orange (`0xFCE0`) on black;
+logical pixel becomes a 2Ã—2 square. Idle eyes are orange (`0xFCE0`) on black;
 expressions use the colors below. Other screens still default to white on
 black. `set_colors(foreground, background)` changes the logical monochrome
 palette. A palette change resends the canvas even if its eye shapes are unchanged.
 
 The driver stores a logical framebuffer and a previous frame (1,024 bytes each
-for 128×64, or 1,904 bytes each for the 136×112 face), a reusable transfer buffer
+for 128Ã—64, or 1,904 bytes each for the 136Ã—112 face), a reusable transfer buffer
 (1,024 or 1,088 bytes), and 256 bytes of pixel lookup data plus object overhead.
 The lookup uses 16 mutable entries, each expanding four monochrome pixels.
 Changing colors updates those same entries in place; it does not create a
@@ -133,7 +184,7 @@ second lookup table or a 256-entry tuple. This removes the color-change memory
 spike in the original driver, which could exhaust the Zumo's MicroPython heap.
 It sends only the byte-aligned rectangle containing changed pixels and combines
 each pair of scaled rows into one SPI write instead of allocating a 134 KB
-full-color framebuffer. A full 136×112 face transfer contains 121,856 pixel-data
+full-color framebuffer. A full 136Ã—112 face transfer contains 121,856 pixel-data
 bytes, while normal eye motion transfers only its changed bounding rectangle.
 Real frame time must still be measured on the robot.
 
@@ -312,9 +363,9 @@ completion or cancellation releases the held face to neutral. The XIAO uses
 these events instead of estimated delays, and does not replay sound afterward.
 
 `voice_turn.py` samples the stationary gyro bias for at least 400 ms (80
-samples), then uses gyro Z feedback with nonzero targets of 3000–3200.
+samples), then uses gyro Z feedback with nonzero targets of 3000â€“3200.
 All track output passes through the same acceleration ramp and fixed braking
-as manual driving; the optional LOOK acceleration is 500–6000, default 6000.
+as manual driving; the optional LOOK acceleration is 500â€“6000, default 6000.
 The XIAO sends the dashboard setting. Lower output values occur only as ramp
 transients or while braking; 3000 is the minimum nonzero movement target based on the
 reported dead zone, pending physical tuning. It stops within 3 degrees for
@@ -360,7 +411,16 @@ sampled for about 600 ms, with motors stopped and driving locked until success.
 Calibration runs once per Zumo startup, even if the XIAO has not started yet.
 An unsuitable baseline, sensor fault, Button C, or Stop leaves driving locked;
 reposition Digit and use the dashboard's **Calibrate surface** button to retry.
-Later safety faults still require manual recalibration. Opening Thonny can interrupt the running
+An ordinary EDGE stop retains the last successful calibration. After placing
+Digit back down, all five sensors must remain at least 60 counts below their
+original edge thresholds for one second of fresh readings before readiness
+returns. Motors stay off and interrupted tasks remain cancelled; a new command
+is required. A successful startup calibration is retained for the run, including
+through faults; ordinary pickup/replacement never needs another calibration.
+Only unsuccessful startup calibration needs a manual calibration retry for
+normal use. Other hardware faults remain stopped for their own cause to be
+addressed (or a restart); normal floor readings do not bypass them.
+Opening Thonny can interrupt the running
 program and leave the REPL prompt; use a power cycle with Thonny disconnected
 when checking automatic startup.
 
@@ -423,7 +483,7 @@ optionally selects 500-6000 motor speed units per second (protocol fallback
 3000). The dashboard Acceleration slider starts at 6000; lower values give a
 gentler start. Repeated hold commands renew the watchdog without restarting
 the ramp. DRIVE, SAFE, and TURN use the ramp; gyro LOOK turns accept a
-500–6000 acceleration argument (default 6000), with a matching bounded timeout.
+500â€“6000 acceleration argument (default 6000), with a matching bounded timeout.
 WIGGLE uses its own fast ramp profile through the same motor ramp implementation.
 
 Normal dashboard release, Stop, and STOP ALL cancel pending actions and send
@@ -446,7 +506,10 @@ Floor-calibrated edge thresholds now have an extra 60 counts of margin.
 Marginal readings must stay above threshold on the same sensor for 20 ms
 before latching EDGE. A reading at least 950 (or the calibrated threshold,
 if higher) still stops immediately. Short marginal front-end lifts can clear
-without latching; persistent indications still stop and require recalibration.
+without latching; persistent indications still stop immediately. An ordinary
+edge lock clears after one second of confirmed normal floor readings using the
+unchanged calibration, without restarting movement. Near-threshold readings,
+missing samples or sensor errors cannot clear it.
 
 Copy the updated `uart_control.py` to the Zumo device root and reset it. Use
 the updated active XIAO `xiao-sense` firmware, refresh the dashboard, and
@@ -577,7 +640,7 @@ The separate **Find the battery** action uses the XIAO object detector to
 search in place and center a battery. After the first confirmed alignment, the
 XIAO stops camera detection and commits to a straight local 50 mm approach job.
 Later camera crops or loss do not restart tracking or produce `LOST`. After
-encoder-confirmed rest, a settled 50–60 mm distance measurement is required
+encoder-confirmed rest, a settled 50â€“60 mm distance measurement is required
 before one `SPIN` job with a happy face and brief sound. ToF measures the nearest
 front obstacle and does not identify the battery, so the approach path must be
 clear. The revised camera commitment is an XIAO-only change; it does not change
@@ -598,3 +661,31 @@ physical 5 cm stopping or rotation accuracy.
 
 See [the current protocol](../docs/TWO_BRAIN_PROTOCOL.md) for commands and limits,
 and [acceptance stages](../docs/TWO_BRAIN_ACCEPTANCE.md) before physical use.
+
+## Direct local 10 cm edge reverse
+
+A detected edge commits immediately to a local straight 100 mm reverse at
+motor target -3000 on both tracks. It does not wait for IMU stability, clear
+floor or a new Gemini command. Gyro, accelerometer, front ToF and further
+edge readings do not interrupt that committed reverse. Explicit Stop, Button C,
+encoder feedback, host supervision and the original job deadline still apply.
+The separate obstruction backoff retains its existing 20 mm policy.
+
+Output is cut at the encoder distance target. Completion requires stopped
+encoders for 200 ms; measured coast is reported within a 98-110 mm completion
+envelope. This measures track travel and does not confirm ground displacement.
+The original floor thresholds are preserved. Each sensor rearms when its edge
+reading first clears, so the same continuous edge episode cannot relock the
+completed reverse before Gemini receives the outcome.
+
+`ERET=1 E100=1 EDIRECT=1` advertises this behavior. The interrupted movement
+never resumes. Gemini receives the measured reverse distance, a fresh image and
+an instruction to turn away and continue the original task. Repeated edges
+retain the task's original time, move and progress limits. Legacy dashboard
+movement also commits to this reverse; held movement commands cannot replay
+after recovery. Requested Back uses the same direct reverse controller.
+
+Install `edge_retreat.py`, `edge_reverse.py`, `motion_jobs.py` and
+`uart_control.py` together, plus the matching XIAO firmware. Preserve encoder
+and distance calibration files. Desktop tests, builds and stationary installation
+checks do not establish actual reverse movement or physical 10 cm accuracy.

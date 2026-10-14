@@ -1,6 +1,6 @@
 #include "local_stop_gate.h"
 #include "local_stop.h"
-#include "speech_commands.h"
+#include "robot_session.h"
 #include <cassert>
 #include <cstdio>
 #include <cstring>
@@ -18,7 +18,7 @@ unsigned criticalDepth = 0, controlDepth = 0;
 #define portEXIT_CRITICAL(x) (assert(criticalDepth > 0), --criticalDepth)
 uint32_t millis() { return nowMs; }
 
-namespace speech_commands {
+namespace robot_session {
 Status testSpeech{};
 Status snapshot() { return testSpeech; }
 Activity activity() {
@@ -48,14 +48,14 @@ void stop(const char* reason) {
   assert(controlDepth > 0 && criticalDepth == 0);
   assert(!strcmp(reason, "Local voice Stop"));
   ++stops; ++testActions.generation; testActions.active = false;
-  speech_commands::cancel(); local_stop::cancel();
+  robot_session::cancel(); local_stop::cancel();
 }
 // The action dispatcher uses the same generation contract as robot_actions::start.
 void dispatchPending(uint32_t expectedGeneration) {
-  if (speech_commands::testSpeech.pendingAction && expectedGeneration == testActions.generation) {
+  if (robot_session::testSpeech.pendingAction && expectedGeneration == testActions.generation) {
     ++starts; testActions.active = true;
   }
-  speech_commands::testSpeech.pendingAction = false;
+  robot_session::testSpeech.pendingAction = false;
 }
 }
 namespace local_stop {
@@ -100,7 +100,7 @@ void gateTests() {
 
 void handoffTests() {
   state.ready = true;
-  speech_commands::testSpeech.listening = true;
+  robot_session::testSpeech.listening = true;
   local_stop::poll();
   assert(state.active && robot_actions::stops == 0);
   const auto heardDuringListening = gate.tag(nowMs);
@@ -108,8 +108,8 @@ void handoffTests() {
   const uint32_t commandGeneration = robot_actions::testActions.generation;
   // Speech has finished listening and queued movement. All other activity is
   // idle: local Stop runs first in the actual main-loop order.
-  speech_commands::testSpeech.listening = false;
-  speech_commands::testSpeech.pendingAction = true;
+  robot_session::testSpeech.listening = false;
+  robot_session::testSpeech.pendingAction = true;
   ++nowMs;
   local_stop::poll();
   robot_actions::dispatchPending(commandGeneration);
@@ -119,7 +119,7 @@ void handoffTests() {
 
   // The cancelled command's already-running model result cannot stop a newer
   // command or restore the old queued movement.
-  speech_commands::testSpeech.pendingAction = true;
+  robot_session::testSpeech.pendingAction = true;
   pendingTag = heardDuringListening; pending = true;
   local_stop::poll();
   assert(robot_actions::stops == 1 && state.active && !pending);
@@ -135,17 +135,17 @@ void handoffTests() {
   assert(!state.active && !gate.active() && !pending);
   assert(robot_actions::stops == 1 && state.detections == 1);
   assert(!gate.accepts(heardDuringAction, nowMs));
-  // Connecting and replying retain a live session even when mic listening
+  // Connecting and waiting for a reply retain a live session even when mic listening
   // and movement are both idle. Local Stop must cover both phases.
-  speech_commands::testSpeech.liveActive = true;
+  robot_session::testSpeech.liveActive = true;
   local_stop::poll(); assert(state.active);
-  speech_commands::testSpeech.liveConnected = false;
+  robot_session::testSpeech.liveConnected = false;
   pendingTag = gate.tag(nowMs); pending = true; local_stop::poll();
-  assert(robot_actions::stops == 2 && !speech_commands::testSpeech.liveActive);
-  speech_commands::testSpeech.liveActive = speech_commands::testSpeech.liveSpeaking = true;
+  assert(robot_actions::stops == 2 && !robot_session::testSpeech.liveActive);
+  robot_session::testSpeech.liveActive = robot_session::testSpeech.waitingForReply = true;
   local_stop::poll(); assert(state.active);
   pendingTag = gate.tag(nowMs); pending = true; local_stop::poll();
-  assert(robot_actions::stops == 3 && !speech_commands::testSpeech.liveActive);
+  assert(robot_actions::stops == 3 && !robot_session::testSpeech.liveActive);
   assert(criticalDepth == 0 && controlDepth == 0);
 }
 

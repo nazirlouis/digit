@@ -8,10 +8,12 @@
 #include <cstring>
 
 #include "app_config.h"
+#include "robot_session.h"
 #include "wake_word.h"
-#include "speech_commands.h"
 #include "local_stop.h"
 #include "xvf_read.h"
+#include "gesture_chirp.h"
+#include "zumo_link.h"
 
 namespace {
 
@@ -45,7 +47,7 @@ constexpr uint8_t kCodecMaximumAttenuation = 0x7F;
 
 constexpr size_t kAudioFrameBytes =
     app_config::kAudioChannels * (app_config::kAudioBitsPerSample / 8);
-constexpr size_t kStreamFrames = wake_word::kFrameSamples;
+constexpr size_t kStreamFrames = 160;
 int32_t gInput[kStreamFrames * 2] = {};
 int32_t gOutput[kStreamFrames * 2] = {};
 int16_t gLiveOutput[kStreamFrames] = {};
@@ -148,7 +150,7 @@ bool AudioEngine::begin() {
     return false;
   }
 
-  Serial.println("Audio: ready; continuous microphone and Gemini speaker");
+  Serial.println("Audio: ready; local wake/Stop, microphone input and R2-D2 emotion sounds");
   return true;
 }
 
@@ -241,13 +243,22 @@ void AudioEngine::taskEntry(void* context) {
   static_cast<AudioEngine*>(context)->taskLoop();
 }
 
-bool AudioEngine::cuePlaying() { return false; }
+bool AudioEngine::cuePlaying() {
+  if (!mutex_) return false;
+  xSemaphoreTake(mutex_,portMAX_DELAY);
+  const bool playing = cuePlaying_;
+  xSemaphoreGive(mutex_);
+  return playing;
+}
 void AudioEngine::cancelOutput() {
   if (!mutex_) return;
   xSemaphoreTake(mutex_,portMAX_DELAY); ++outputGeneration_; xSemaphoreGive(mutex_);
 }
 void AudioEngine::taskLoop() {
+  gesture_chirp::Player chirp;
+  uint32_t lastChirpAt=0;
   uint32_t emptyReads=0;
+  bool chirpTail=false, wakeTail=false;
   for (;;) {
     xSemaphoreTake(mutex_,portMAX_DELAY); const uint32_t epoch=outputGeneration_; xSemaphoreGive(mutex_);
     const size_t received=i2s_.readBytes(reinterpret_cast<uint8_t*>(gInput),sizeof(gInput));
@@ -258,12 +269,30 @@ void AudioEngine::taskLoop() {
     emptyReads=0;
     if (received%kAudioFrameBytes) { endI2s(); setError("Incomplete stereo microphone frame"); vTaskDelete(nullptr); return; }
     const size_t frames=received/kAudioFrameBytes;
-    wake_word::submit(gInput,frames); speech_commands::submit(gInput,frames); local_stop::submit(gInput,frames);
-    const size_t live=speech_commands::renderAudio(gLiveOutput,frames);
-    for (size_t i=0;i<frames;++i) gOutput[2*i]=gOutput[2*i+1]=i<live ? int32_t(gLiveOutput[i])*65536 : 0;
+    local_stop::submit(gInput,frames);
+    wake_word::submit(gInput,frames);
+    gesture_chirp::Event event;
+    zumo_link::gestureAudio(event.generation,event.expression);
+    const auto activity=robot_session::activity();
+    const size_t cue=chirp.render(event,activity.liveProbe || (activity.liveActive && activity.dryRun),
+                                 epoch,gLiveOutput,frames);
+    const size_t rendered=cue;
+    for (size_t i=0;i<frames;++i) gOutput[2*i]=gOutput[2*i+1]=i<rendered ? int32_t(gLiveOutput[i])*65536 : 0;
+    // Recheck cancellation after rendering, before handing samples to I2S.
+    gesture_chirp::Event current;
+    zumo_link::gestureAudio(current.generation,current.expression);
+    bool cueWritten=cue && current.generation==event.generation && current.expression;
     xSemaphoreTake(mutex_,portMAX_DELAY);
-    if (epoch!=outputGeneration_) memset(gOutput,0,received);
+    if (epoch!=outputGeneration_ || (cue && !cueWritten)) {
+      memset(gOutput,0,received); cueWritten=false;
+    }
+    const uint32_t now=millis();
+    if (cueWritten) { lastChirpAt=now; chirpTail=true; wakeTail=event.expression==gesture_chirp::kWakeExpression; }
+    if (chirpTail && now-lastChirpAt>=180) { chirpTail=false; wakeTail=false; }
+    cuePlaying_=chirpTail;
+    wakeChimePlaying_=chirpTail && wakeTail;
     xSemaphoreGive(mutex_);
+    if (!chirpTail) robot_session::submit(gInput,frames);
     if (i2s_.write(reinterpret_cast<const uint8_t*>(gOutput),received)!=received) {
       endI2s(); setError("The ReSpeaker stopped accepting speaker samples"); vTaskDelete(nullptr); return;
     }
@@ -336,9 +365,8 @@ bool AudioEngine::beginI2s() {
   config.is_master = xiaoI2sMaster_;
   config.auto_clear = true;
   i2sRunning_ = i2s_.begin(config);
-  i2s_.setWaitTimeReadMs(100);
   i2s_.setWaitTimeWriteMs(100);
-  Serial.printf("Audio: full duplex 16 kHz RX=%d TX=%d, XIAO master=%s, ready=%s\n",
+  Serial.printf("Audio: microphone and emotion output 16 kHz RX=%d TX=%d, XIAO master=%s, ready=%s\n",
                 config.pin_data_rx, config.pin_data, config.is_master ? "yes" : "no",
                 i2sRunning_ ? "yes" : "no");
   return i2sRunning_;
@@ -633,8 +661,8 @@ void AudioEngine::setError(const char* message) {
   if (mutex_ != nullptr) {
     xSemaphoreGive(mutex_);
   }
-  wake_word::audioFault();
-  speech_commands::audioFault();
-  local_stop::audioFault();
   Serial.printf("Audio error: %s\n", message);
+  wake_word::audioFault();
+  local_stop::audioFault();
+  robot_session::audioFault();
 }

@@ -7,6 +7,7 @@
 #include <cstring>
 #include <string>
 #include <unordered_map>
+#include "camera_frame_limits.h"
 
 using esp_err_t = int;
 using TickType_t = uint32_t;
@@ -32,7 +33,7 @@ inline void vTaskDelay(uint32_t) { assert(!mock::frameHeld && mock::allocations.
 inline struct { void println(const char*) {} } Serial;
 namespace app_config { constexpr unsigned kTargetCameraFps = 10; }
 namespace camera_service {
-inline constexpr size_t kMaxJpegBytes = 256 * 1024;
+inline constexpr size_t kMaxJpegBytes = camera_frame_limits::kMaxJpegBytes;
 struct Frame { size_t size = 0; uint32_t timestampMs = 0; uint16_t width = 0, height = 0; };
 inline bool ready() { return mock::ready; }
 inline const char* lastError() { return "Camera unavailable"; }
@@ -80,7 +81,7 @@ inline int httpd_resp_send_chunk(httpd_req_t*, const char* data, size_t length) 
   if (mock::allocations.count(const_cast<char*>(data))) {
     ++mock::bodySends;
     assert(length == mock::frameLength);
-    for (size_t i = 0; i < length; ++i) assert(static_cast<uint8_t>(data[i]) == i + 1);
+    for (size_t i = 0; i < length; ++i) assert(static_cast<uint8_t>(data[i]) == static_cast<uint8_t>(i + 1));
   }
   return mock::sendCalls == mock::failSendAt ? -9 : ESP_OK;
 }

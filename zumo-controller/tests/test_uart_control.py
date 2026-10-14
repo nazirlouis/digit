@@ -204,6 +204,25 @@ class UARTControlTests(unittest.TestCase):
         self.control.tick()
         self.assertEqual(self.uart.outgoing.count("3 OK SCENE_VISIBLE"), 1)
 
+    def test_expressions_render_with_edge_latched_without_unlocking_motors(self):
+        self.calibrate()
+        self.sensors.values = [980, 100, 100, 100, 100]
+        self.advance(20)
+        self.assertEqual(self.control.fault, "EDGE")
+        self.defer_display()
+        for expression in EXPRESSIONS:
+            with self.subTest(expression=expression):
+                self.assertEqual(self.command("2 SCENE " + expression.upper() + " NONE 2000"), "2 OK SCENE")
+                self.face.reveal()
+                self.control.tick()
+                self.assertEqual(self.uart.outgoing[-1], "2 OK SCENE_VISIBLE")
+                self.assertIn((expression, "NONE"), self.face.actions)
+                self.assertTrue(self.control.edge)
+                self.assertFalse(self.control.ready)
+                self.assertEqual(self.control.fault, "EDGE")
+                self.assertEqual(self.motors.speeds, (0, 0))
+                self.assertEqual(self.command("3 DRIVE 3000 3000"), "3 ERR NOT_READY")
+
     def test_face_or_stop_cannot_acknowledge_an_interrupted_scene_later(self):
         for replacement in ("FACE SLEEPING", "STOP", "WAKE"):
             with self.subTest(replacement=replacement):
@@ -588,7 +607,7 @@ class UARTControlTests(unittest.TestCase):
         self.control.tick()
         self.assertEqual(self.face.actions, ["neutral", "happy"])
 
-    def test_edge_latches_until_recalibrated(self):
+    def test_edge_recalibration_rejects_an_unsafe_replacement_baseline(self):
         self.calibrate()
         self.command("2 DRIVE 1000 1000")
         self.sensors.values = [980, 100, 100, 100, 100]
@@ -598,7 +617,7 @@ class UARTControlTests(unittest.TestCase):
         self.assertEqual(self.control.fault, "EDGE")
         self.assertEqual(self.command("3 DRIVE -500 -500"), "3 ERR NOT_READY")
         self.assertIn("EDGE=1", self.command("4 STATUS"))
-        self.sensors.values = [650, 100, 100, 100, 100]
+        self.sensors.values = [900, 100, 100, 100, 100]
         self.command("5 CALIBRATE")
         for _ in range(60):
             self.clock.now += 10

@@ -4,9 +4,10 @@ $output = Join-Path $project 'test-artifacts\stream-memory'
 New-Item -ItemType Directory -Force $output | Out-Null
 $source = Get-Content -LiteralPath (Join-Path $project 'src\web_server.cpp') -Raw
 $start = $source.IndexOf('esp_err_t streamHandler(httpd_req_t* request) {')
-$end = $source.IndexOf('bool registerUri(', $start)
+$end = $source.IndexOf('esp_err_t geminiImageHandler(', $start)
 if ($start -lt 0 -or $end -le $start) { throw 'Stream handler source boundaries were not found' }
 Set-Content -LiteralPath (Join-Path $output 'stream_handler.cpp') -Value $source.Substring($start, $end - $start)
+Copy-Item (Join-Path $project 'src\camera_frame_limits.h') $output
 foreach ($file in 'stream_memory_mocks.h','test_stream_memory.cpp') {
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot $file) -Destination (Join-Path $output $file)
 }

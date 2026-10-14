@@ -197,7 +197,9 @@ class MotionTests(unittest.TestCase):
         self.gyro.fail = True
         self.step(5)
         self.assertEqual(self.job.reason, "GYRO_IO")
-        self.assertIn(" FAULT GYRO_IO ", self.uart.outgoing[-1])
+        self.assertIn(" RECOVERING GYRO_IO ", self.uart.outgoing[-1])
+        self.step(2050)
+        self.assertEqual(self.job.reason, "RECOVERY_FAILED")
         self.assertEqual(self.motors.speeds, (0, 0))
 
     def test_sensor_edge_button_encoder_and_loop_gap_fail_closed(self):
@@ -218,10 +220,19 @@ class MotionTests(unittest.TestCase):
                     self.clock.now += 151
                 else:
                     self.tof.distance_mm = 30
-                self.step(270 if failure == "stale" else 30)
-                self.assertFalse(self.job.armed)
+                self.step(270 if failure in ("stale", "invalid") else 30)
+                if failure == "edge" and hasattr(self.feedback, "encoders") and self.job.distance_scale is not None:
+                    self.assertTrue(self.job.armed)
+                    self.assertEqual(self.job.reason, "EDGE_BACK")
+                    self.assertLessEqual(self.motors.speeds[0], -3000)
+                    continue
                 self.assertEqual(self.motors.speeds, (0, 0))
-                self.assertEqual(self.job.state, "FAULT")
+                if failure in ("edge", "button", "encoder"):
+                    self.assertFalse(self.job.armed)
+                    self.assertEqual(self.job.state, "FAULT")
+                else:
+                    self.assertTrue(self.job.armed)
+                    self.assertEqual(self.job.state, "RECOVERING")
 
     def test_heading_correction_and_update_preserve_deadline(self):
         self.drive()

@@ -5,7 +5,7 @@
 #include "zumo_link.h"
 #include "voice_direction.h"
 #include "robot_actions.h"
-#include "speech_commands.h"
+#include "robot_session.h"
 #include "reaction_player.h"
 #include "personality_events.h"
 #include <cstring>
@@ -171,7 +171,7 @@ void processFeature(const int8_t features[kFeatureCount], uint32_t frameEpoch) {
   if (++strideStep < featureStride) return;
   strideStep = 0;
   const uint32_t started = micros();
-  if (interpreter->Invoke() != kTfLiteOk) { fail("Digit model inference failed"); return; }
+  if (interpreter->Invoke() != kTfLiteOk) { fail("Hey Digit model inference failed"); return; }
   const uint32_t elapsed = micros() - started;
   recentProbabilities[probabilityIndex] = interpreter->output(0)->data.uint8[0];
   probabilityIndex = (probabilityIndex + 1) % kProbabilityWindow;
@@ -213,7 +213,7 @@ void processFeature(const int8_t features[kFeatureCount], uint32_t frameEpoch) {
   if (accept) {
     detectionLatched = true;
     memset(recentProbabilities, 0, sizeof(recentProbabilities));
-    Serial.printf("DIGIT HEARD (score=%.2f, inference=%lu ms)\n", score, (unsigned long)(elapsed / 1000));
+    Serial.printf("HEY DIGIT HEARD (score=%.2f, inference=%lu ms)\n", score, (unsigned long)(elapsed / 1000));
   }
 }
 
@@ -229,7 +229,7 @@ void task(void*) {
     if (allowed && millis() - frame.capturedAt <= 1000) {
       if (processedEpoch != frame.epoch) {
         FrontendReset(&frontendState);
-        if (interpreter->Reset() != kTfLiteOk) fail("Could not reset Digit model");
+        if (interpreter->Reset() != kTfLiteOk) fail("Could not reset Hey Digit model");
         memset(recentProbabilities, 0, sizeof(recentProbabilities));
         strideStep = probabilityIndex = 0;
         warmupFeatures = 100;
@@ -241,10 +241,10 @@ void task(void*) {
         size_t consumed = 0;
         const auto output = FrontendProcessSamples(&frontendState, frame.samples + offset,
                                                    frame.count - offset, &consumed);
-        if (!consumed) { fail("Digit audio frontend stalled"); break; }
+        if (!consumed) { fail("Hey Digit audio frontend stalled"); break; }
         offset += consumed;
         if (!output.size) continue;
-        if (output.size != kFeatureCount) { fail("Unexpected Digit feature count"); break; }
+        if (output.size != kFeatureCount) { fail("Unexpected Hey Digit feature count"); break; }
         int8_t features[kFeatureCount];
         for (size_t i = 0; i < kFeatureCount; ++i) {
           const int32_t value = (output.values[i] * 256 + 333) / 666 - 128;
@@ -262,7 +262,7 @@ void task(void*) {
 bool react() {
   personality_events::interaction();
   const auto token = reaction_player::play("HAPPY", "NONE", reaction_player::Source::Wake);
-  Serial.printf("Wake reaction: silent face and lights token=%lu\n", (unsigned long)token);
+  Serial.printf("Wake reaction: face, lights and acknowledgment cue token=%lu\n", (unsigned long)token);
   return token != 0;
 }
 }  // namespace
@@ -274,7 +274,7 @@ void begin() {
   auto* storage = static_cast<uint8_t*>(heap_caps_malloc(100 * sizeof(Frame), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
   if (storage) framesQueue = xQueueCreateStatic(100, sizeof(Frame), storage, &queueControl);
   if (!modelGate || !framesQueue) { fail("Could not allocate wake synchronization"); return; }
-  if (!beginModel() || !beginFrontend()) { fail("Could not initialize Digit model/frontend"); return; }
+  if (!beginModel() || !beginFrontend()) { fail("Could not initialize Hey Digit model/frontend"); return; }
   portENTER_CRITICAL(&stateLock);
   state.ready = true;
   portEXIT_CRITICAL(&stateLock);
@@ -283,15 +283,15 @@ void begin() {
   // Keep the full stack size while reserving internal RAM for DMA/networking.
   if (xTaskCreatePinnedToCoreWithCaps(task, "digit-wake", 8192, nullptr, 2, nullptr, 0,
                                     MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
-    fail("Could not start Digit listener"); return;
+    fail("Could not start Hey Digit listener"); return;
   }
-  Serial.println("Wake: listening for Digit; inference serialized with vision and commands");
+  Serial.println("Wake: listening for Hey Digit; inference serialized with vision and commands");
 }
 
 void submit(const int32_t* stereo, size_t count) {
   if (!framesQueue || !count || count > kFrameSamples) return;
   Frame frame;
-  const bool suppress = speech_commands::liveActive() || audioEngine.cuePlaying();
+  const bool suppress = (robot_session::liveActive() && !robot_session::textSession()) || audioEngine.cuePlaying();
   portENTER_CRITICAL(&stateLock);
   if (audioSuppressed != suppress) { audioSuppressed = suppress; ++epoch; }
   const bool active = state.ready;
@@ -346,7 +346,7 @@ void cancel() {
   portEXIT_CRITICAL(&stateLock);
 }
 void poll() {
-  const bool liveActive = speech_commands::liveActive();
+  const bool liveActive = robot_session::liveActive() && !robot_session::textSession();
   portENTER_CRITICAL(&stateLock);
   const bool wasTurning = turning;
   const bool paused = !state.ready;
@@ -377,7 +377,7 @@ void poll() {
     if (allowed && zumo.controlGeneration == manualGeneration && !strcmp(zumo.lookResult, "DONE") &&
         routineGeneration == robot_actions::generation()) {
       report("Turn completed");
-      speech_commands::listen(routineGeneration);
+      robot_session::listen(routineGeneration);
     }
     else {
       char reason[96]; snprintf(reason, sizeof(reason), "Turn ended: %s", zumo.lookResult);
@@ -390,7 +390,7 @@ void poll() {
       // A fresh wake is a takeover: never keep approaching while listening.
       robot_actions::stop("Listening for your next command");
       report("Skipped: active action stopped to listen");
-      speech_commands::listen(robot_actions::generation());
+      robot_session::listen(robot_actions::generation());
       return;
     }
     portENTER_CRITICAL(&stateLock);
@@ -435,10 +435,10 @@ void poll() {
   portEXIT_CRITICAL(&stateLock);
   char detail[96]; snprintf(detail, sizeof(detail), "Skipped: %s", reason);
   report(detail);
-  speech_commands::listen(routineGeneration);
+  robot_session::listen(routineGeneration);
 }
 bool conversationReadyReaction() {
-  const auto speech = speech_commands::activity();
+  const auto speech = robot_session::activity();
   if (!speech.liveActive || !speech.liveConnected || speech.liveProbe) return false;
   portENTER_CRITICAL(&stateLock);
   lastReaction = millis(); hasReaction = reactionActive = true;

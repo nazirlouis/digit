@@ -80,6 +80,18 @@ class EncoderTests(unittest.TestCase):
                 self.encoder.counts = (0, n*100)
                 self.loop.update(50+n*50, (4000, 4000), (2000, 4000), rate_ratios=(1/3, 1))
 
+    def test_two_slow_reverse_tracks_use_measured_targets_and_stop(self):
+        # Different counts/mm still request the same 25 mm/s on both tracks.
+        scales = (10, 11)
+        ratios = tuple(25*s/abs(self.loop.rate_target(-3000)) for s in scales)
+        outputs = self.loop.update(0, (-3000, -3000), (0, 0), rate_ratios=ratios)
+        self.assertEqual(self.loop.targets, [-250, -275])
+        self.assertTrue(all(v < 0 for v in outputs))
+        self.encoder.counts = (-25, -27)
+        outputs = self.loop.update(100, (-3000, -3000), (-2000, -2000), rate_ratios=ratios)
+        self.assertTrue(all(-3000 < v < 0 for v in outputs))
+        self.assertEqual(self.loop.update(150, (0, 0), outputs), (0, 0))
+
     def test_zero_and_reversal_reset_integrator(self):
         self.loop.update(0, (4000,4000), (4000,4000))
         self.loop.integral = [500,500]

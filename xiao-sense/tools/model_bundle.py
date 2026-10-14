@@ -27,7 +27,7 @@ def pack(source, target, env):
     firmware = build / "firmware.bin"
     if firmware.exists():
         assert firmware.stat().st_size <= partitions["factory"][1], "Application exceeds flash partition"
-    print("Digit bundle: vision=%d bytes; wake and Stop embedded; no MultiNet image" % vision_bin.stat().st_size)
+    print("Digit bundle: vision=%d bytes; local wake and Stop embedded; ER 2 has no spoken output" % vision_bin.stat().st_size)
 
 env.AddPostAction("buildprog", pack)
 env.AddPreAction("upload", pack)

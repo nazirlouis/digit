@@ -85,7 +85,7 @@ class BrakingAndEdgeTests(unittest.TestCase):
         self.f.sensors.values[0] = 600  # Above the previous 562 threshold.
         self.f.advance(100, "2 DRIVE 4000 4000 6000")
         self.assertTrue(self.f.control.ready)
-        self.f.sensors.values[0] = 700
+        self.f.sensors.values[0] = 900
         self.f.advance(20)
         self.assertTrue(self.f.control.ready)
         self.f.sensors.values[0] = 100
@@ -95,7 +95,7 @@ class BrakingAndEdgeTests(unittest.TestCase):
 
     def test_sustained_marginal_edge_hard_stops_and_latches(self):
         self.moving()
-        self.f.sensors.values[0] = 700
+        self.f.sensors.values[0] = 900
         self.f.advance(20)
         self.assertTrue(self.f.control.ready)
         self.f.advance(20)
@@ -106,12 +106,12 @@ class BrakingAndEdgeTests(unittest.TestCase):
 
     def test_edge_confirmation_does_not_accumulate_across_sensors_or_same_tick(self):
         self.moving()
-        self.f.sensors.values[0] = 700
+        self.f.sensors.values[0] = 900
         self.f.advance(20)
         for _ in range(4):
             self.f.command("2 DRIVE 4000 4000 6000")
         self.assertTrue(self.f.control.ready)
-        self.f.sensors.values = [100, 700, 100, 100, 100]
+        self.f.sensors.values = [100, 900, 100, 100, 100]
         self.f.advance(20)
         self.assertTrue(self.f.control.ready)
         self.f.sensors.values = [100] * 5

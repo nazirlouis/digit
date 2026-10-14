@@ -1,5 +1,5 @@
 import unittest
-from test_motion_jobs import MotionTests
+import test_motion_jobs as jobs
 from distance_calibration import validate
 
 
@@ -10,9 +10,12 @@ class Encoders:
         return tuple(self.counts)
 
 
-class TravelTests(MotionTests):
+class TravelTests(unittest.TestCase):
+    send = jobs.MotionTests.send
+    step = jobs.MotionTests.step
+
     def setUp(self):
-        super().setUp()
+        jobs.MotionTests.setUp(self)
         self.feedback.encoders = Encoders()
         self.job.distance_scale = (10, 10)  # Test measurement only, never installed.
 
@@ -63,9 +66,51 @@ class TravelTests(MotionTests):
         self.travel(); self.tof.distance_mm=49; self.step(25)
         self.assertEqual(self.job.reason,"OBSTACLE"); self.assertEqual(self.motors.speeds,(0,0))
         self.setUp(); self.travel(); self.tof.data_ready=False; self.step(280)
-        self.assertEqual(self.job.reason,"RANGE_UNAVAILABLE")
+        self.assertEqual(self.job.reason,"RANGE_STALE")
         self.setUp(); self.travel(); self.send(0,"CANCEL"); self.step(20)
         self.assertEqual(self.motors.speeds,(0,0)); self.assertFalse(self.job.armed)
+
+    def test_new_session_can_reverse_after_mismatch_with_front_obstacle(self):
+        self.travel()
+        self.feedback.encoders.counts = [500, 100]
+        self.step(10)
+        self.assertEqual(self.job.reason, "TRACK_MISMATCH")
+        self.assertTrue(self.control.ready)
+        self.assertEqual(self.motors.speeds, (0, 0))
+        self.step(250)
+        self.assertEqual(self.job.reason, "BLOCKED_RECOVERED")
+        self.send(0, "CANCEL")
+        self.assertIn("SESSION_CLOSED", self.send(0, "ARM"))
+        self.session = 2
+        self.send(0, "ARM")
+        self.tof.distance_mm = 30
+        self.step(25)
+        self.travel(-50)
+        self.assertLess(self.motors.speeds[0], 0)
+        self.feedback.encoders.counts = [0, -400]
+        self.step(400)
+        self.assertEqual(self.job.reason, "TRAVEL_DONE")
+        self.assertEqual(self.job.travelled_mm, -50)
+
+    def test_recovery_reverse_retains_local_stop_and_edge_guards(self):
+        for cause in ("STOP", "EDGE"):
+            with self.subTest(cause=cause):
+                self.setUp()
+                self.tof.distance_mm = 30
+                self.step(25)
+                self.travel(-50)
+                if cause == "STOP":
+                    self.uart.send("12 STOP")
+                else:
+                    self.sensors.values = [1024] * 5
+                self.step(25)
+                if cause == "EDGE":
+                    self.assertEqual(self.job.reason, "EDGE_BACK")
+                    self.assertTrue(self.job.armed)
+                    self.assertLessEqual(self.motors.speeds[0], -3000)
+                else:
+                    self.assertEqual(self.motors.speeds, (0, 0))
+                    self.assertFalse(self.job.armed)
 
     def test_bounded_silent_expression_during_job_does_not_cancel_motion(self):
         self.control.face.cooperative=True

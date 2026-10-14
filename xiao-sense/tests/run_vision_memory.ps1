@@ -2,7 +2,7 @@ $ErrorActionPreference = 'Stop'
 $project = Split-Path $PSScriptRoot
 $output = Join-Path $project 'test-artifacts\vision-memory'
 New-Item -ItemType Directory -Force $output | Out-Null
-foreach ($file in 'vision_service.cpp','vision_service.h') {
+foreach ($file in 'vision_service.cpp','vision_service.h','camera_frame_limits.h') {
     Copy-Item -LiteralPath (Join-Path $project "src\$file") -Destination (Join-Path $output $file)
 }
 foreach ($file in 'vision_memory_mocks.h','test_vision_memory.cpp') {

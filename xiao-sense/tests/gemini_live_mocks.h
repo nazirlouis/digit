@@ -15,14 +15,26 @@ using ws_transport_opcodes_t = int;
 constexpr int WS_TRANSPORT_OPCODES_CONT=0, WS_TRANSPORT_OPCODES_TEXT=1, WS_TRANSPORT_OPCODES_BINARY=2,
   WS_TRANSPORT_OPCODES_CLOSE=8, WS_TRANSPORT_OPCODES_PING=9, WS_TRANSPORT_OPCODES_PONG=10, WS_TRANSPORT_OPCODES_FIN=128;
 constexpr int MALLOC_CAP_SPIRAM=1, MALLOC_CAP_8BIT=2, ESP_OK=0, ESP_ERR_INVALID_ARG=-1, ESP_LOG_WARN=2, ESP_LOG_NONE=0;
+constexpr int IPPROTO_TCP=6,TCP_NODELAY=1;
+int esp_transport_get_socket(esp_transport_handle_t){return 7;}
+int setsockopt(int fd,int protocol,int option,const void* value,size_t length){
+ assert(fd==7&&protocol==IPPROTO_TCP&&option==TCP_NODELAY&&length==sizeof(int)&&*static_cast<const int*>(value)==1);return 0;
+}
 struct esp_transport_ws_config_t { const char* ws_path=nullptr; const char* headers=nullptr; bool propagate_control_frames=false; };
 struct Frame { std::string data; int opcode=1; bool fin=true; uint32_t epoch=UINT32_MAX; };
 struct Sent { std::string data; int opcode; uint32_t at; uint32_t epoch; };
 std::deque<Frame> frames;
 std::vector<std::vector<Frame>> connectionFrames;
 std::vector<Sent> sentFrames;
+std::vector<Sent> wireFrames;
+std::string fragmentedSend;
+uint32_t fragmentedAt=0, fragmentedEpoch=0;
+size_t maxFrameWrite=SIZE_MAX, failWriteAt=0, stopAfterWrite=0, clearEpochAfterWrite=0;
+int upgradeStatus=0;
 std::vector<gemini_live::Event> events;
 std::vector<std::string> eventText, cancelledIds;
+struct ToolTrace { std::string id, name, reason, status, result; };
+std::vector<ToolTrace> toolTraces;
 Frame current;
 size_t readOffset=0;
 uint32_t mockMs=1000, stopAt=3000;
@@ -54,7 +66,7 @@ void esp_crt_bundle_attach(){}
 esp_transport_handle_t esp_transport_ssl_init(){return reinterpret_cast<void*>(1);}
 esp_transport_handle_t esp_transport_ws_init(esp_transport_handle_t){return reinterpret_cast<void*>(2);}
 void esp_transport_ssl_crt_bundle_attach(esp_transport_handle_t,void(*)()){}
-void esp_transport_close(esp_transport_handle_t){frames.clear();readOffset=0;}
+void esp_transport_close(esp_transport_handle_t){frames.clear();readOffset=0;fragmentedSend.clear();}
 void esp_transport_destroy(esp_transport_handle_t){}
 int esp_transport_ws_set_config(esp_transport_handle_t,const esp_transport_ws_config_t* c){
  assert(std::string(c->ws_path).find("key=")==std::string::npos);
@@ -67,13 +79,30 @@ int esp_transport_connect(esp_transport_handle_t,const char* host,int port,int){
  if(size_t(connects)<connectionFrames.size())for(auto& f:connectionFrames[connects])frames.push_back(f);
  ++connects;return 0;
 }
+int esp_transport_ws_get_upgrade_request_status(esp_transport_handle_t){return upgradeStatus;}
 int esp_transport_ws_send_raw(esp_transport_handle_t,int opcode,const char* data,int length,int){
- sent.assign(data,length);sentOpcode=opcode;sentFrames.push_back({sent,opcode,mockMs,currentMediaEpoch});
+ wireFrames.push_back({std::string(data,length),opcode,mockMs,currentMediaEpoch});
+ const bool fail=!sendWorks||(failWriteAt&&wireFrames.size()==failWriteAt);
+ if(!fail&&size_t(length)<=maxFrameWrite) {
+  if((opcode&15)==WS_TRANSPORT_OPCODES_TEXT && !(opcode&WS_TRANSPORT_OPCODES_FIN)) {
+   assert(fragmentedSend.empty());fragmentedSend.assign(data,length);fragmentedAt=mockMs;fragmentedEpoch=currentMediaEpoch;
+  } else if((opcode&15)==WS_TRANSPORT_OPCODES_CONT) {
+   assert(!fragmentedSend.empty());fragmentedSend.append(data,length);
+   if(opcode&WS_TRANSPORT_OPCODES_FIN) {
+    sent=fragmentedSend;sentOpcode=WS_TRANSPORT_OPCODES_TEXT|WS_TRANSPORT_OPCODES_FIN;
+    sentFrames.push_back({sent,sentOpcode,fragmentedAt,fragmentedEpoch});fragmentedSend.clear();
+   }
+  } else {
+   sent.assign(data,length);sentOpcode=opcode;sentFrames.push_back({sent,opcode,mockMs,currentMediaEpoch});
+  }
+ }
  mockMs+=sendAdvanceMs;
  char* writable=const_cast<char*>(data);
  for(int i=0;i<length;++i)writable[i]^=0x5a;
  for(int i=0;i<length;++i)writable[i]^=0x5a;
- return sendWorks?length:-1;
+ if(stopAfterWrite&&wireFrames.size()==stopAfterWrite)stopped=true;
+ if(clearEpochAfterWrite&&wireFrames.size()==clearEpochAfterWrite)currentMediaEpoch=0;
+ return fail?-1:static_cast<int>(std::min<size_t>(length,maxFrameWrite));
 }
 int esp_transport_poll_read(esp_transport_handle_t,int timeout){
  mockMs+=timeout;
@@ -121,7 +150,8 @@ size_t readAudio(int16_t* dest,size_t cap,void*){
  const size_t n=std::min(cap,audioSource.size());std::copy_n(audioSource.data(),n,dest);return n;
 }
 bool playAudio(const int16_t*,size_t n,void*){if(stopDuringPlayback){stopDuringPlayback=false;currentMediaEpoch=0;return false;}playedSamples+=int(n);return true;}
-void event(gemini_live::Event e,const char* value,void*){events.push_back(e);eventText.emplace_back(value);if(clearEpochOnError&&e==gemini_live::Event::Error)currentMediaEpoch=0;}
+bool mockTaskActive=false;
+void event(gemini_live::Event e,const char* value,void*){if(e==gemini_live::Event::UserPrompt)mockTaskActive=true;events.push_back(e);eventText.emplace_back(value);if(clearEpochOnError&&e==gemini_live::Event::Error)currentMediaEpoch=0;}
 gemini_live::ActionResult action(const char* callId,const robot_actions::ToolRequest& request,void*){
  assert(robot_actions::validCommand(static_cast<int>(request.command)));++actionCalls;
  if(autoComplete)completions.push_back({callId,"Completed: mocked local outcome"});
@@ -130,17 +160,24 @@ gemini_live::ActionResult action(const char* callId,const robot_actions::ToolReq
 size_t readVideo(uint8_t* dest,size_t cap,uint32_t* sequence,void*){
  ++videoReads;if(jpeg.size()>cap)return 0;memcpy(dest,jpeg.data(),jpeg.size());*sequence=77;return jpeg.size();
 }
-void videoSent(size_t n,uint32_t sequence,void*){assert(n==jpeg.size()&&sequence==77);++videoSends;}
+void videoSent(const uint8_t* data,size_t n,uint32_t sequence,void*){assert(n==jpeg.size()&&sequence==77);assert(!memcmp(data,jpeg.data(),n));++videoSends;}
 void cancelTool(const char* id,void*){cancelledIds.emplace_back(id);if(completeOnCancel)completions.push_back({id,"STALE_COMPLETION"});}
 bool pollToolResult(char* id,size_t cap,char* result,size_t resultCap,void*){
  if(completions.empty())return false;auto value=completions.front();completions.pop_front();
  snprintf(id,cap,"%s",value.first.c_str());snprintf(result,resultCap,"%s",value.second.c_str());return true;
 }
 bool canResume(void*){return true;}
+bool taskActive(void*){return mockTaskActive;}
 uint32_t getMediaEpoch(void*){return currentMediaEpoch;}
-gemini_live::Callbacks callbacks(){return {nullptr,cancelled,readAudio,playAudio,event,action,readVideo,videoSent,cancelTool,pollToolResult,canResume};}
+void toolTrace(const char* id,const char* name,const robot_actions::ToolRequest& request,const char* status,const char* result,void*) {
+ toolTraces.push_back({id,name,request.actionReason,status,result});
+}
+gemini_live::Callbacks callbacks(){auto cb=gemini_live::Callbacks{nullptr,cancelled,nullptr,event,action,readVideo,videoSent,cancelTool,pollToolResult,canResume,nullptr,taskActive};cb.toolEvent=toolTrace;return cb;}
 void resetMocks(){
- assert(activeAllocations==0);frames.clear();connectionFrames.clear();sentFrames.clear();events.clear();eventText.clear();
+ mockTaskActive=false;
+ toolTraces.clear();
+ assert(activeAllocations==0);frames.clear();connectionFrames.clear();sentFrames.clear();wireFrames.clear();fragmentedSend.clear();events.clear();eventText.clear();
+ maxFrameWrite=SIZE_MAX;failWriteAt=stopAfterWrite=clearEpochAfterWrite=0;upgradeStatus=0;
  cancelledIds.clear();completions.clear();current={};readOffset=0;mockMs=1000;stopAt=3000;stopped=false;sendWorks=true;
  sendAdvanceMs=0;
  currentMediaEpoch=0;connectFailures=0;completeOnCancel=false;

@@ -8,6 +8,7 @@ import math
 import os
 from distance_calibration import load as load_distance_calibration
 from voice_turn import SPIN_ACCELERATION, SPIN_DECELERATION
+from local_recovery import LocalRecovery
 
 
 HEARTBEAT_MS = 750
@@ -15,6 +16,10 @@ FRONT_STOP_MM = 50  # Automatic obstacle stop is strictly below 5 cm.
 SETTLE_MS = 150
 SETTLE_CPS = 50
 MEASURE_SAMPLES = 3
+PUSH_SPEED = 6000
+PUSH_ACCELERATION = PUSH_DECELERATION = 30000
+PUSH_POWERED_MS = 2000
+PUSH_JOB_MS = 5000
 CRC_NIBBLES = (0x0000, 0x1021, 0x2042, 0x3063, 0x4084, 0x50a5, 0x60c6, 0x70e7,
                0x8108, 0x9129, 0xa14a, 0xb16b, 0xc18c, 0xd1ad, 0xe1ce, 0xf1ef)
 
@@ -89,10 +94,18 @@ class MotionJobs:
         self.travel_restarts = 0
         self.spin_scene = None
         self.failure_range = None
+        self.reverse_only = False
+        self.recovery_count = 0
+        self.recovery_cause = "NONE"
+        self.position_known = True
+        self.recovery = LocalRecovery(self)
+        self.push_started = None
+        self.push_progress_at = [None, None]
+        self.push_progress_counts = None
 
     @property
     def active(self):
-        return self.state in ("CALIBRATING", "RUNNING", "BRAKING", "SETTLING")
+        return self.state in ("CALIBRATING", "RUNNING", "BRAKING", "SETTLING", "RECOVERING", "PAUSED")
 
     def snapshot(self, wire="0", now=None):
         c = self.c
@@ -109,10 +122,34 @@ class MotionJobs:
             int(self.heading * 10), age, c.max_loop_gap_ms, c.loop_overruns,
             getattr(c.face, "max_slice_us", 0), int(target[0]), int(target[1]), range_status, raw_distance)
         body += " TRAVEL={}".format(int(self.travelled_mm))
+        body += " REC={} CAUSE={} KNOWN={}".format(self.recovery_count, self.recovery_cause, int(self.position_known))
+        body += " REV={}".format(int(c.edge_reverse.available()))
+        retreat = c.edge_retreat
+        if retreat.mask or retreat.blocked:
+            body += " ER={} BACK={}".format(retreat.mask, max(0, int(retreat.back_mm)))
+        if retreat.reject_reason:
+            body += " EREJ={} EDETAIL={}".format(retreat.reject_reason, retreat.reject_detail)
         c._send(frame(wire, body))
         self.reported = now
 
     def cancel(self, reason="CANCELLED", fault=False, smooth=False):
+        if fault and reason in ("ENCODER_DIRECTION", "ENCODER_RANGE") and self.c.ready:
+            self.recovery_cause = reason
+            self.c._latch(reason)
+            return
+        recoverable = (reason.startswith(("RANGE_", "GYRO_")) or reason in (
+            "OBSTACLE", "FEEDBACK_IO", "ENCODER_IO", "ENCODER_STALE", "ENCODER_STALL",
+            "TRACK_MISMATCH", "HEADING_ERROR", "TRAVEL_OVERSHOOT", "TRAVEL_INCOMPLETE",
+            "CONTROL_STALE", "BRAKE_TIMEOUT", "LOOK_GYRO", "LOOK_TIMEOUT",
+            "CIRCLE_STALLED", "CIRCLE_UNSETTLED", "SPIN_INCOMPLETE", "PUSH_TIMEOUT", "JOB_TIMEOUT"))
+        if fault and recoverable and self.kind != "DANCE" and not reason.endswith("_PERSISTENT"):
+            now = self.clock.ticks_ms()
+            if reason == "ENCODER_STALL" and self.kind == "TRAVEL" and not self.recovery.active:
+                readings = self.c.last_line_readings
+                if readings is not None and self.c.edge_retreat.begin(readings, now, blocked=True):
+                    return
+            if self.recovery.begin(reason, now):
+                return
         # Keep session + high-water job id after disarming. Old traffic cannot
         # re-arm or restart the most recently cancelled session.
         was_active = self.active or self.armed
@@ -120,7 +157,11 @@ class MotionJobs:
             self.failure_range = (self.c.distance_mm, self.c.range_at,
                                   self.c.range_status, self.c.raw_distance_mm)
         guarded_brake = smooth and self.kind == "DRIVE" and self.c._moving()
+        if self.kind == "EDGE":
+            self.c.edge_retreat.lock(fault)
+            smooth = False
         self.armed = False
+        self.recovery.active = False
         self.kind = None
         self.state = "FAULT" if fault else "DISARMED"
         self.reason = reason
@@ -137,6 +178,7 @@ class MotionJobs:
             self.snapshot()
 
     def _finish(self, reason):
+        self.recovery.active = False
         self.c._stop()
         self._release_spin_scene()
         self.state = "DONE"
@@ -176,15 +218,19 @@ class MotionJobs:
                 return
             if session < self.session:
                 return self._error(wire, "SESSION_CLOSED")
+            if self.c.expression_motion.active:
+                self.c._stop()  # A validated new driving session owns the tracks.
             if self.armed or self.c._moving() or self.c.look_id is not None:
                 return self._error(wire, "BUSY")
-            if not self.c.ready or self.c.calibration is not None:
+            reverse_only = self.c.edge_reverse.available()
+            if (not self.c.ready and not reverse_only) or self.c.calibration is not None:
                 return self._error(wire, "NOT_READY")
-            if not self.c.speed_control or not self.c.voice_turn:
+            if not self.c.speed_control or (not reverse_only and not self.c.voice_turn):
                 return self._error(wire, "FEEDBACK_REQUIRED")
             if not self._stopped(now):
                 return self._error(wire, "NOT_STOPPED")
             self.session, self.seq = session, 0
+            self.reverse_only = reverse_only
             self.failure_range = None
             self.payload = None
             self.armed = True
@@ -212,7 +258,7 @@ class MotionJobs:
             return
         if verb == "UPDATE":
             if seq == self.seq and (self.state == "DONE" or
-                    (self.kind == "DRIVE" and self.state in ("BRAKING", "SETTLING"))):
+                    (self.kind == "DRIVE" and self.state in ("BRAKING", "SETTLING", "RECOVERING", "PAUSED"))):
                 # A visual correction can have been queued before the host
                 # learns we are braking. It must neither resume nor fail the
                 # locally controlled arrival.
@@ -244,25 +290,34 @@ class MotionJobs:
             return self._error(wire, "STALE")
         if self.active or self.c._moving():
             return self._error(wire, "BUSY")
-        if not self.c.ready or not self._stopped(now):
+        if self.reverse_only and verb != "BACK":
+            return self._error(wire, "EDGE_REVERSE_ONLY")
+        if (not self.c.ready and not self.c.edge_reverse.available()) or not self._stopped(now):
             return self._error(wire, "NOT_STOPPED")
-        if verb == "DRIVE":
+        if verb == "BACK":
+            if not self.reverse_only or len(args) != 1 or not 10 <= args[0] <= 100:
+                return self._error(wire, "EDGE_REVERSE_ONLY")
+        elif verb == "DRIVE":
             if (len(args) != 5 or not all(3000 <= v <= 3200 for v in args[:2]) or
                     not 500 <= args[2] <= 6000 or args[3] not in (50, 100) or not 100 <= args[4] <= 60000):
                 return self._error(wire, "ARGUMENT")
-            if not self.c._range_valid(now):
+            if not (self.c._range_valid(now) or self.c._range_no_return(now)):
                 return self._error(wire, "RANGE_UNAVAILABLE")
-            if self.c.distance_mm < FRONT_STOP_MM:
+            if self.c._range_valid(now) and self.c.distance_mm < FRONT_STOP_MM:
                 return self._error(wire, "OBSTACLE")
-        elif verb == "TRAVEL":
-            if (len(args) != 4 or not -100 <= args[0] <= 300 or not args[0] or
+        elif verb in ("TRAVEL", "PUSH"):
+            if verb == "PUSH" and (len(args) != 1 or not 10 <= args[0] <= 300):
+                return self._error(wire, "ARGUMENT")
+            if verb == "TRAVEL" and (len(args) not in (4, 5) or not -100 <= args[0] <= 300 or not args[0] or
                     args[1] != 3000 or not 500 <= args[2] <= 6000 or not 100 <= args[3] <= 15000):
                 return self._error(wire, "ARGUMENT")
+            if len(args) == 5 and (args[4] != 1 or args[0] <= 0 or self.c.edge_retreat.acc is None):
+                return self._error(wire, "EDGE_CAPABILITY")
             if self.distance_scale is None or not hasattr(self.c.speed_control, "encoders"):
                 return self._error(wire, "DISTANCE_CALIBRATION")
             if not (self.c._range_valid(now) or self.c._range_no_return(now)):
                 return self._error(wire, "RANGE_UNAVAILABLE")
-            if args[0] > 0 and self.c._range_valid(now) and self.c.distance_mm < FRONT_STOP_MM:
+            if verb != "PUSH" and args[0] > 0 and self.c._range_valid(now) and self.c.distance_mm < FRONT_STOP_MM:
                 return self._error(wire, "OBSTACLE")
             try:
                 origin = self.c.speed_control.encoders.get_counts()
@@ -290,13 +345,26 @@ class MotionJobs:
         elif verb == "MEASURE":
             if len(args) != 1 or not 100 <= args[0] <= 5000:
                 return self._error(wire, "ARGUMENT")
+        elif verb == "DANCE":
+            if len(args) != 1 or args[0] != 8000:
+                return self._error(wire, "ARGUMENT")
+            if not getattr(self.c.face, "cooperative", False) or self.c.rgb_leds is None:
+                return self._error(wire, "DANCE_DISPLAY_REQUIRED")
+            if not (self.c._range_valid(now) or self.c._range_no_return(now)):
+                return self._error(wire, "RANGE_UNAVAILABLE")
+            if self.c._range_valid(now) and self.c.distance_mm < FRONT_STOP_MM:
+                return self._error(wire, "OBSTACLE")
         else:
             return self._error(wire, "VERB")
         self.c._stop()
         self.seq, self.payload = seq, fields[4:]
         self.failure_range = None
         self.kind, self.state, self.reason = verb, "RUNNING", "ACCEPTED"
-        self.started, self.limit = now, args[-1]
+        self.started, self.limit = now, PUSH_JOB_MS if verb == "PUSH" else 10500 if verb == "BACK" else args[3] if verb == "TRAVEL" else args[-1]
+        self.c.edge_retreat.prepare((verb == "TRAVEL" and len(args) == 5) or
+                                   (verb == "PUSH" and self.c.edge_retreat.acc is not None))
+        self.recovery.active = False
+        self.recovery_count, self.recovery_cause, self.position_known = 0, "NONE", True
         self.settled = None
         self.acked = False
         self.revision = 0
@@ -308,13 +376,20 @@ class MotionJobs:
         self.closing_index = 0
         self.approach_restarts = 0
         self.travelled_mm = 0.0
-        if verb == "TRAVEL":
+        if verb == "BACK":
+            if not self.c.edge_reverse.begin(now, args[0]):
+                self.cancel("EDGE_UNAVAILABLE", True)
+                return
+        elif verb in ("TRAVEL", "PUSH"):
             self.travel_target = args[0]
             self.travel_counts = origin
             self.travel_tracks = [0.0, 0.0]
             self.travel_restarts = 0
-            self.left = self.right = args[1] if args[0] > 0 else -args[1]
-            self.acceleration = args[2]
+            self.left = self.right = PUSH_SPEED if verb == "PUSH" else args[1] if args[0] > 0 else -args[1]
+            self.acceleration = PUSH_ACCELERATION if verb == "PUSH" else args[2]
+            self.push_started = None
+            self.push_progress_at = [None, None]
+            self.push_progress_counts = list(origin)
             self.target_heading = self.heading
             self.gyro_at = now
             self.state = "CALIBRATING"
@@ -344,6 +419,10 @@ class MotionJobs:
             self.acceleration = args[1]
             self.c.voice_turn.start(args[0], now, args[1])
             self.c.voice_turn.timeout_ms = args[2]
+        elif verb == "DANCE":
+            self.c.face.show_scene("happy", "NONE", timing=(180, 6500, 300))
+            self.c.dance_motion.start(self.c.face.active_scene_sequence, now)
+            self.position_known = False  # Timed wiggles do not measure restored heading.
         elif verb == "SPIN":
             self.turn_origin = self.heading
             self.spin_range_at = self.c.range_at
@@ -383,6 +462,8 @@ class MotionJobs:
         if not gyro.data_ready():
             return None
         gyro.read()
+        if self.c.edge_retreat.allowed or self.c.edge_retreat.active:
+            self.c.edge_retreat.sample_imu(now, gyro.last_reading_dps)
         rate = gyro.last_reading_dps[2]
         if not math.isfinite(rate) or abs(rate) > 500:
             raise RuntimeError("GYRO_RANGE")
@@ -424,12 +505,12 @@ class MotionJobs:
 
     def _range_motion(self, now):
         c = self.c
+        if not self._range_guard(now):
+            return False
+        # A missed observation retains the previous measured range within the
+        # guard's time/clearance window; never turn status -1 into an obstacle.
         if not c._range_valid(now):
-            self.cancel("RANGE_UNAVAILABLE", True)
-            return False
-        if c.distance_mm < FRONT_STOP_MM:
-            self.cancel("OBSTACLE", True)
-            return False
+            return True
         if c.range_at != self.last_range_at:
             if self.last_range_at is not None and self.last_distance is not None:
                 dt = self.clock.ticks_diff(c.range_at, self.last_range_at)
@@ -453,10 +534,76 @@ class MotionJobs:
                 self.snapshot(now=now)
         return True
 
+    def _range_guard(self, now, allow_no_return=True, obstacle=True):
+        c = self.c
+        valid = c._range_valid(now)
+        if valid and obstacle and c.distance_mm < FRONT_STOP_MM:
+            self.cancel("OBSTACLE", True)
+            return False
+        if valid or (allow_no_return and c._range_no_return(now)):
+            at, distance, status = c.range_at, c.distance_mm, c.range_status
+        else:
+            at, distance, status = c.range_good_at, c.range_good_distance, c.range_good_status
+        age = self.clock.ticks_diff(now, at) if at is not None else 65535
+        usable = at is not None and 0 <= age < 250 and (distance > 0 or (allow_no_return and status == 2))
+        if usable and obstacle and distance > 0 and age > 40 and self.distance_scale is not None and c.left + c.right > 0:
+            velocity = max(0, sum(c.speed_control.velocity[i] / self.distance_scale[i] for i in range(2)) / 2)
+            lead = velocity * (age / 1000.0 + max(abs(c.left), abs(c.right)) / 24000.0 + .060)
+            usable = distance > FRONT_STOP_MM + lead
+        if not usable:
+            reason = ("RANGE_IO" if c.range_failed or c.tof is None else
+                      "RANGE_STALE" if c.range_at is None or self.clock.ticks_diff(now, c.range_at) >= 250 else
+                      "RANGE_STATUS_{}".format(c.range_status) if c.range_status not in (0, 2) else "RANGE_UNAVAILABLE")
+            self.cancel(reason, True)
+            return False
+        return True
+
+    def _dance(self, now):
+        c = self.c
+        if not self._range_guard(now):
+            return
+        if self.state == "SETTLING":
+            if self._settled(now):
+                self._finish("DANCE_DONE")
+            return
+        left, right = c.dance_motion.update(now, c.face)
+        if c.dance_motion.result:
+            if c.dance_motion.result != "DANCE_DONE":
+                self.cancel(c.dance_motion.result, True)
+                return
+            left = right = 0
+            self.state, self.reason, self.settled = "SETTLING", "DANCE_SETTLING", None
+        if (left or right) and (left, right) != (c.left, c.right):
+            readings = c._read_edge()
+            if readings is None:
+                self.cancel("DANCE_LINE_IO", True)
+                return
+            if any(readings[i] >= c.thresholds[i] for i in range(5)):
+                if not c.edge_retreat.begin(readings, now):
+                    self.cancel("DANCE_EDGE", True)
+                    c._latch("EDGE")
+                return
+        c.target_left, c.target_right = left, right
+        c.ramp_left, c.ramp_right = float(left), float(right)
+        c.ramp_at = now
+        if (left, right) != (c.left, c.right):
+            c.motors.set_speeds(left, right)
+            c.left, c.right = left, right
+        if left or right or c.dance_show.started is not None:
+            try:
+                c.dance_show.update(now)
+            except Exception:
+                self.cancel("DANCE_LED_IO", True)
+                return
+        if (left or right) and self.reason != "DANCING":
+            self.reason = "DANCING"
+            self.snapshot(now=now)  # Correlated actual first pulse starts XIAO music.
+
     def tick(self, now):
         c = self.c
         if self.armed:
-            if not c.ready or c.button_c.is_pressed():
+            reverse_ok = self.reverse_only and (c.edge_reverse.available() or c.edge_reverse.active)
+            if (not c.ready and not c.edge_retreat.active and not reverse_ok) or c.button_c.is_pressed():
                 self.cancel((c.fault if c.fault != "NONE" else "NOT_READY") if not c.ready else "BUTTON_C", True)
             elif self.clock.ticks_diff(now, self.heartbeat) >= HEARTBEAT_MS:
                 self.cancel("HEARTBEAT_TIMEOUT", True)
@@ -465,12 +612,33 @@ class MotionJobs:
                 self.snapshot(now=now)
             return
         if self.clock.ticks_diff(now, self.started) >= self.limit:
-            self.cancel("JOB_TIMEOUT", True)
+            if self.kind == "PUSH":
+                self.cancel("PUSH_DEADLINE", True)
+                return
+            if not self.recovery.active:
+                self.cancel("JOB_TIMEOUT", True)
+                return
+            # The powered deadline never extends. An already stationary
+            # recovery may only verify rest and report a partial result.
+            self.recovery.resumable = False
+            if self.recovery.cause != "JOB_TIMEOUT":
+                self.recovery.cause = self.recovery_cause = self.reason = "JOB_TIMEOUT"
+        if self.recovery.active:
+            self.recovery.tick(now)
             return
-        if self.kind == "TRAVEL":
+        if self.kind == "BACK":
+            c.edge_reverse.tick(now)
+            self.travelled_mm = -c.edge_reverse.back_mm
+            if c.edge_reverse.state == "DONE" and c.ready:
+                self._finish("EDGE_BACK_DONE")
+        elif self.kind == "EDGE":
+            c.edge_retreat.tick(now)
+        elif self.kind in ("TRAVEL", "PUSH"):
             self._travel(now)
         elif self.kind == "SPIN":
             self._spin(now)
+        elif self.kind == "DANCE":
+            self._dance(now)
         elif self.kind == "CIRCLE":
             self._circle(now)
         elif self.kind == "DRIVE":
@@ -484,7 +652,7 @@ class MotionJobs:
                 return
             if self.state == "BRAKING":
                 if self._settled(now):
-                    if c.distance_mm <= self.stop_mm + 10:
+                    if c._range_valid(now) and c.distance_mm <= self.stop_mm + 10:
                         self._finish("WALL_STOPPED")
                     elif self.approach_restarts >= 6:
                         self.cancel("APPROACH_UNSETTLED", True)
@@ -503,11 +671,7 @@ class MotionJobs:
             if self.state == "RUNNING" and rate is not None:
                 self._drive(now, rate)
         elif self.kind == "TURN":
-            if not (c._range_valid(now) or c._range_no_return(now)):
-                self.cancel("RANGE_UNAVAILABLE", True)
-                return
-            if c._range_valid(now) and c.distance_mm < FRONT_STOP_MM:
-                self.cancel("OBSTACLE", True)
+            if not self._range_guard(now):
                 return
             if self.state == "SETTLING":
                 try:
@@ -546,21 +710,7 @@ class MotionJobs:
 
     def _spin(self, now):
         c = self.c
-        usable = c._range_valid(now) or c._range_no_return(now)
-        if usable:
-            self.spin_range_at = c.range_at
-        elif c.range_failed or c.tof is None:
-            self.cancel("RANGE_IO", True)
-            return
-        elif c.range_at is None or self.clock.ticks_diff(now, c.range_at) >= 250:
-            self.cancel("RANGE_STALE", True)
-            return
-        elif (c.range_status in (3, 5, 255) or self.spin_range_at is None or
-              self.clock.ticks_diff(now, self.spin_range_at) >= 250):
-            self.cancel("RANGE_STATUS_{}".format(c.range_status), True)
-            return
-        if c._range_valid(now) and c.distance_mm < FRONT_STOP_MM:
-            self.cancel("OBSTACLE", True)
+        if not self._range_guard(now):
             return
         turn = c.voice_turn
         if self.state == "SETTLING":
@@ -613,24 +763,7 @@ class MotionJobs:
 
     def _circle(self, now):
         c = self.c
-        usable = c._range_valid(now) or c._range_no_return(now)
-        if usable:
-            self.circle_range_at = c.range_at
-        elif c.range_failed or c.tof is None:
-            self.cancel("RANGE_IO", True)
-            return
-        elif c.range_at is None or self.clock.ticks_diff(now, c.range_at) >= 250:
-            self.cancel("RANGE_STALE", True)
-            return
-        elif (c.range_status in (3, 5, 255) or self.circle_range_at is None or
-              self.clock.ticks_diff(now, self.circle_range_at) >= 250):
-            self.cancel("RANGE_STATUS_{}".format(c.range_status), True)
-            return
-        # A brief unreliable sample is not an obstacle and is not stale data.
-        # Retain the bounded 250 ms grace since the last usable observation;
-        # every valid reading below the obstacle threshold still stops now.
-        if c._range_valid(now) and c.distance_mm < FRONT_STOP_MM:
-            self.cancel("OBSTACLE", True)
+        if not self._range_guard(now):
             return
         try:
             rate = self._gyro(now)
@@ -679,28 +812,21 @@ class MotionJobs:
     def _travel(self, now):
         c = self.c
         forward = self.travel_target > 0
-        if not (c._range_valid(now) or c._range_no_return(now)):
-            self.cancel("RANGE_UNAVAILABLE", True)
-            return
-        if forward and c._range_valid(now) and c.distance_mm < FRONT_STOP_MM:
-            self.cancel("OBSTACLE", True)
+        push = self.kind == "PUSH"
+        if not self._range_guard(now, obstacle=forward and not push):
             return
         try:
             rate = self._gyro(now)
-            counts = c.speed_control.encoders.get_counts()
-            for i in range(2):
-                delta = ((counts[i] - self.travel_counts[i] + 0x80000000) & 0xffffffff) - 0x80000000
-                if abs(delta) > 10000:
-                    raise RuntimeError("ENCODER_RANGE")
-                self.travel_tracks[i] += delta / self.distance_scale[i]
-            self.travel_counts = counts
-            self.travelled_mm = sum(self.travel_tracks) / 2.0
+            self._sample_travel()
         except Exception as error:
             self.cancel(str(error) if str(error).startswith(("GYRO_", "ENCODER_", "CALIBRATION_")) else "FEEDBACK_IO", True)
             return
         direction = 1 if forward else -1
         progress = self.travelled_mm * direction
         goal = abs(self.travel_target)
+        if push and self.push_started is not None and self.clock.ticks_diff(now, self.push_started) >= PUSH_POWERED_MS and c._moving():
+            self.cancel("PUSH_TIMEOUT", True)
+            return
         if progress < -5:
             self.cancel("ENCODER_DIRECTION", True)
             return
@@ -716,8 +842,8 @@ class MotionJobs:
         if self.state == "BRAKING":
             if self._settled(now):
                 if progress >= goal-3:
-                    self._finish("TRAVEL_DONE")
-                elif self.travel_restarts >= 3:
+                    self._finish("PUSH_DONE" if push else "TRAVEL_DONE")
+                elif push or self.travel_restarts >= 3:
                     self.cancel("TRAVEL_INCOMPLETE", True)
                 else:
                     self.travel_restarts += 1
@@ -727,14 +853,48 @@ class MotionJobs:
         if self.state != "RUNNING" or rate is None:
             return
         velocity = max(0, sum(c.speed_control.velocity[i] * direction / self.distance_scale[i] for i in range(2))/2)
-        lead = velocity * (max(abs(c.left),abs(c.right))/24000.0 + .060)
+        deceleration = PUSH_DECELERATION if push else 12000
+        lead = velocity * (max(abs(c.left),abs(c.right))/(2.0*deceleration) + .060)
+        if push:
+            if self._push_stalled(now):
+                self.cancel("ENCODER_STALL", True)
+                return
         if progress + lead >= goal-1:
             c._stop(smooth=True)
-            self.state, self.reason, self.settled = "BRAKING", "TRAVEL_BRAKING", None
+            c.deceleration = deceleration
+            self.state, self.reason, self.settled = "BRAKING", "PUSH_BRAKING" if push else "TRAVEL_BRAKING", None
             self.snapshot(now=now)
             return
         error = self.target_heading-self.heading
         correction = max(-200,min(200,(error*35-rate*5)*c.voice_turn.motor_sign))
-        left = direction*max(3000,min(3200,3000-direction*correction))
-        right = direction*max(3000,min(3200,3000+direction*correction))
-        c._target_motion(int(left),int(right),now,self.acceleration)
+        if push:
+            left = PUSH_SPEED - max(0, correction)
+            right = PUSH_SPEED + min(0, correction)
+            if self.push_started is None:
+                self.push_started = now
+            c._target_motion(int(left), int(right), now, PUSH_ACCELERATION, PUSH_DECELERATION)
+        else:
+            left = direction*max(3000,min(3200,3000-direction*correction))
+            right = direction*max(3000,min(3200,3000+direction*correction))
+            c._target_motion(int(left),int(right),now,self.acceleration)
+
+    def _sample_travel(self):
+        counts = self.c.speed_control.encoders.get_counts()
+        for i in range(2):
+            delta = ((counts[i] - self.travel_counts[i] + 0x80000000) & 0xffffffff) - 0x80000000
+            if abs(delta) > 10000:
+                raise RuntimeError("ENCODER_RANGE")
+            self.travel_tracks[i] += delta / self.distance_scale[i]
+        self.travel_counts = counts
+        self.travelled_mm = sum(self.travel_tracks) / 2.0
+
+    def _push_stalled(self, now):
+        counts = self.travel_counts
+        for i, effort in enumerate((self.c.left, self.c.right)):
+            delta = ((counts[i] - self.push_progress_counts[i] + 0x80000000) & 0xffffffff) - 0x80000000
+            if effort < 3000 or self.push_progress_at[i] is None or delta >= 2:
+                self.push_progress_at[i] = now
+                self.push_progress_counts[i] = counts[i]
+            elif self.clock.ticks_diff(now, self.push_progress_at[i]) >= 200:
+                return True
+        return False

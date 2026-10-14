@@ -5,6 +5,19 @@ CONFIG_SPIRAM=y
 CONFIG_SPIRAM_MODE_OCT=y
 CONFIG_SPIRAM_SPEED_80M=y
 CONFIG_SPIRAM_USE_MALLOC=y
+# Simultaneous microphone, camera and dashboard traffic exhausted internal
+# RAM on hardware. Keep eligible networking buffers in PSRAM, preserving the
+# internal pool for DMA and the stacks that cannot use external memory.
+CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
+CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=1024
+CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=65536
+# PSRAM networking selects fixed DMA TX buffers. The default 16-buffer pool
+# exhausted internal DMA RAM during Wi-Fi init on this audio/camera board.
+# Keep six RX buffers for the existing six-frame receive aggregation window;
+# four fixed TX buffers feed a bounded queue held in external memory.
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=6
+CONFIG_ESP_WIFI_STATIC_TX_BUFFER_NUM=4
+CONFIG_ESP_WIFI_CACHE_TX_BUFFER_NUM=32
 CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
 CONFIG_PEDESTRIAN_DETECT_MODEL_IN_FLASH_PARTITION=y
 CONFIG_PARTITION_TABLE_CUSTOM=y
@@ -14,7 +27,32 @@ CONFIG_LWIP_MAX_SOCKETS=20
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
 CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
+# Hardware AES allocates internal DMA scratch/descriptors for PSRAM TLS data.
+# Real Gemini cold starts failed with esp-aes: Failed to allocate memory.
+# Software AES keeps TLS encrypted/verified without transient DMA allocations.
+CONFIG_MBEDTLS_HARDWARE_AES=n
 CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+# Gemini tool dispatch nests controller snapshots and formatted observations.
+# IDF's 3584-byte main stack overflowed during live exploration on hardware.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
 CONFIG_ESP32S3_INSTRUCTION_CACHE_32KB=y
 CONFIG_ESP32S3_DATA_CACHE_64KB=y
 CONFIG_ESP32S3_DATA_CACHE_LINE_64B=y
+
+# Detection uses RGB565 camera pixels; RGB888 conversion also handles letterbox padding.
+# Keep only these two ESP-DL conversion families to avoid unused image code in flash.
+# CONFIG_PIX_CVT_RGB565_TO_RGB565_SUPPORT is not set
+CONFIG_PIX_CVT_RGB565_TO_RGB888_SUPPORT=y
+# CONFIG_PIX_CVT_RGB565_TO_GRAY_SUPPORT is not set
+# CONFIG_PIX_CVT_RGB565_TO_HSV_SUPPORT is not set
+CONFIG_PIX_CVT_RGB888_TO_RGB888_SUPPORT=y
+# CONFIG_PIX_CVT_RGB888_TO_RGB565_SUPPORT is not set
+# CONFIG_PIX_CVT_RGB888_TO_GRAY_SUPPORT is not set
+# CONFIG_PIX_CVT_RGB888_TO_HSV_SUPPORT is not set
+# CONFIG_PIX_CVT_GRAY_TO_GRAY_SUPPORT is not set
+# CONFIG_PIX_CVT_HSV_TO_HSV_MASK_SUPPORT is not set
+# CONFIG_PIX_CVT_YUV_TO_RGB888_SUPPORT is not set
+# CONFIG_PIX_CVT_YUV_TO_RGB565_SUPPORT is not set
+# CONFIG_PIX_CVT_YUV_TO_GRAY_SUPPORT is not set
+# CONFIG_PIX_CVT_YUV_TO_HSV_SUPPORT is not set
+# CONFIG_PIX_CVT_YUV_TO_YUV_SUPPORT is not set

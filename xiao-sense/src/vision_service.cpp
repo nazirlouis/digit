@@ -1,19 +1,20 @@
 #include "vision_service.h"
+#include "wake_word.h"
 
 #include <cstring>
 #include <new>
 #include "Arduino.h"
 #include "camera_service.h"
+#include "camera_frame_limits.h"
 #include "esp_heap_caps.h"
 #include "esp_jpeg_dec.h"
 #include "esp_partition.h"
 #include "pedestrian_detect.hpp"
 #include "battery_detector.h"
 #include "object_model_config.h"
-#include "wake_word.h"
 
 namespace {
-constexpr size_t kJpegCapacity = 256 * 1024;
+constexpr size_t kJpegCapacity = camera_frame_limits::kMaxJpegBytes;
 constexpr int kWidth = 320;
 constexpr int kHeight = 240;
 // Leave headroom for occasional camera waits while the MJPEG stream is active.
@@ -307,8 +308,9 @@ bool setMode(bool enabled, bool battery) {
   state.intervalMs = 0;
   result_at = 0;
   ++generation;
-  wake_word::setVisionEnabled(enabled);
+
   portEXIT_CRITICAL(&lock);
+  wake_word::setVisionEnabled(enabled);
   if (worker) xTaskNotifyGive(worker);
   return true;
 }

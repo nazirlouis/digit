@@ -3,7 +3,7 @@
 #include "Arduino.h"
 #include "app_config.h"
 #include "robot_actions.h"
-#include "speech_commands.h"
+#include "robot_session.h"
 #include "wake_word.h"
 #include "zumo_link.h"
 #include <cstring>
@@ -247,7 +247,7 @@ void submit(const int32_t* stereo, size_t count) {
 void poll() {
   robot_actions::Guard control;
   const auto actions = robot_actions::snapshot();
-  const auto speech = speech_commands::activity();
+  const auto speech = robot_session::activity();
   const auto zumo = zumo_link::snapshot();
   const auto wake = wake_word::snapshot();
   const bool manual = zumo.manualDriving;

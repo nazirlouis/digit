@@ -5,12 +5,17 @@ hardware imports so its timing and safety rules can be tested on a desktop.
 """
 
 
+import math
 from digit_face_engine import EXPRESSIONS
 from wake_reaction import WakeReaction
 from reaction_catalog import CATALOG_VERSION
 from voice_turn import VoiceTurn, WIGGLE_ACCELERATION, WIGGLE_DECELERATION, movement_target
 from motion_jobs import MotionJobs, FRONT_STOP_MM
 from circle_show import CircleShow
+from edge_retreat import EdgeRetreat
+from edge_reverse import EdgeReverse
+from expression_motion import ExpressionMotion, LINK_TIMEOUT_MS, MAX_LOOP_GAP_MS
+from dance_motion import DanceMotion, DanceShow
 
 
 MAX_LINE = 159
@@ -30,6 +35,9 @@ EDGE_POLL_MS = 20
 EDGE_EXTRA_MARGIN = 60
 EDGE_CONFIRM_MS = 20
 EDGE_STRONG_READING = 950
+EDGE_CLEAR_MS = 1000
+EDGE_CLEAR_MARGIN = 60
+EDGE_CLEAR_MAX_GAP_MS = 100
 CALIBRATION_INTERVAL_MS = 10
 CALIBRATION_SAMPLES = 60
 MAX_SURFACE_BASELINE = 850
@@ -39,7 +47,8 @@ MIN_EDGE_MARGIN = 180
 class UARTController:
     def __init__(self, uart, motors, line_sensors, battery, face,
                  button_a, button_b, button_c, clock, rgb_leds=None,
-                 gyro=None, turn_motor_sign=1, tof=None, speed_control=None):
+                 gyro=None, turn_motor_sign=1, tof=None, speed_control=None,
+                 accelerometer=None):
         self.uart = uart
         self.motors = motors
         self.line_sensors = line_sensors
@@ -50,19 +59,31 @@ class UARTController:
         self.button_b = button_b
         self.button_c = button_c
         self.clock = clock
+        self.boot_health = None
         self.tof = tof
         self.speed_control = speed_control
+        self.accelerometer = accelerometer
+        self.orientation_at = self.orientation_since = None
+        self.edge_release_mask = 0
+        self.orientation_safe = False
+        self.accel_at = self.accel_poll_at = None
+        self.accel_reading = None
+        self.accel_error = "NONE" if accelerometer is not None else "ACC_MISSING"
         self.raw_distance_mm = -1
         self.range_status = 255
         self.distance_mm = -1
         self.range_at = None
         self.last_range_poll = None
         self.range_failed = False
+        self.range_good_at = None
+        self.range_good_distance, self.range_good_status = -1, 255
         self.safe_motion = False
         self.approach_stop_mm = 0
         self.approach_arrived = False
         self.wake = WakeReaction(face, rgb_leds, clock)
         self.dance = CircleShow(face, rgb_leds, clock)
+        self.dance_motion = DanceMotion(clock)
+        self.dance_show = DanceShow(face, rgb_leds, clock)
         self.voice_turn = VoiceTurn(gyro, clock, turn_motor_sign) if gyro else None
         self.look_id = None
         self.last_keep = None
@@ -79,7 +100,10 @@ class UARTController:
         self.edge = False
         self.edge_since = [None] * 5
         self.thresholds = None
+        self.surface_thresholds = None  # Last successful calibration survives faults.
         self.blocked_thresholds = None
+        self.edge_restore_thresholds = None
+        self.edge_clear_since = self.edge_clear_sample_at = None
         self.left = 0
         self.right = 0
         self.target_left = self.target_right = 0
@@ -92,6 +116,7 @@ class UARTController:
         self.brake_started = None
         self.last_drive = None
         self.last_edge_poll = None
+        self.last_line_readings = None
         self.calibration = None
         self.motors.off()
         self.last_tick_at = None
@@ -102,13 +127,28 @@ class UARTController:
         self.wake_wire = None
         self.wake_sequence = None
         self.motion = MotionJobs(self)
+        self.edge_retreat = EdgeRetreat(self, accelerometer)
+        self.edge_reverse = EdgeReverse(self)
+        self.expression_motion = ExpressionMotion(clock)
+        self.expression_wire = None
+        self.expression_name = None
+        self.expression_announced = False
+        self.last_host_at = clock.ticks_ms()
         if hasattr(face, "enable_cooperative"):
             face.enable_cooperative()
 
     def _send(self, value):
         self.uart.write((value + "\n").encode())
 
-    def _stop(self, smooth=False):
+    def _stop(self, smooth=False, expression_completed=False):
+        self.edge_reverse.cancel()
+        # Even a smooth dashboard Stop must immediately end these short pulses.
+        if self.expression_motion.active:
+            smooth = False
+        self.expression_motion.cancel()
+        dance_completed = self.dance_motion.result == "DANCE_DONE"
+        self.dance_motion.cancel()
+        self.dance_show.cancel(reset_face=not dance_completed)
         self.track_speed_ratios = None
         if self.speed_control:
             self.speed_control.reset()
@@ -124,6 +164,13 @@ class UARTController:
             self.left = 0
             self.right = 0
             self.ramp_left = self.ramp_right = 0.0
+        # Notify only after motor power is removed. Waiting/skipped gestures
+        # never produce a START, so the speaker cannot invent a movement.
+        if self.expression_announced:
+            reason = "DONE" if expression_completed else "CANCEL"
+            self._send(self.expression_wire + " EVENT GESTURE END " + self.expression_name + " " + reason)
+        self.expression_wire = self.expression_name = None
+        self.expression_announced = False
         self.target_left = self.target_right = 0
         self.last_drive = None
         if not smooth:
@@ -156,6 +203,70 @@ class UARTController:
     def _moving(self):
         return bool(self.left or self.right or self.target_left or self.target_right)
 
+    def _queue_expression_motion(self, expression, now, require_link=True, wire=None):
+        # A busy/locked request is face-only, never deferred until later idle.
+        # Only bounded cooperative rendering may share a loop with track motion.
+        if (not getattr(self.face, "cooperative", False) or
+                not self.ready or self.fault != "NONE" or self.edge or
+                self.thresholds is None or self.calibration is not None or
+                self._moving() or self.braking or self.last_drive is not None or
+                self.look_id is not None or self.motion.armed or self.motion.active or
+                self.wake.active or self.button_c.is_pressed() or
+                not (self._range_valid(now) or self._range_no_return(now))):
+            return
+        sequence = getattr(self.face, "active_scene_sequence", None)
+        if sequence is not None:
+            self.expression_motion.start(expression, sequence, now, require_link)
+            self.expression_wire = wire
+            self.expression_name = expression.upper()
+            self.expression_announced = False
+
+    def _update_expression_motion(self, now):
+        gesture = self.expression_motion
+        if (not self.ready or self.fault != "NONE" or self.calibration is not None or
+                self.motion.armed or self.motion.active or self.look_id is not None or
+                self.button_c.is_pressed() or
+                not (self._range_valid(now) or self._range_no_return(now)) or
+                (gesture.require_link and
+                 self.clock.ticks_diff(now, self.last_host_at) >= LINK_TIMEOUT_MS)):
+            self._stop()
+            return
+        left, right = gesture.update(now, self.face)
+        if not gesture.active:
+            self._stop(expression_completed=gesture.completed)
+            return
+        if (left != right and self._range_valid(now) and
+                self.distance_mm < FRONT_STOP_MM):
+            self._stop()
+            return
+        # Sample floor sensors before every new pulse, even between regular
+        # safety polls. No expression can use the edge-retreat exception.
+        if (left or right) and not (self.left or self.right):
+            readings = self._read_edge()
+            if readings is None:
+                return
+            if any(readings[i] >= self.thresholds[i] for i in range(5)):
+                self._latch("EDGE")
+                return
+        if self.speed_control:
+            try:
+                # Keep encoder I/O/direction checks alive, but do not apply PI
+                # power boosts to tiny gestures or ramp below breakaway effort.
+                self.speed_control.update(now, (left, right), (self.left, self.right))
+            except Exception as error:
+                self._latch("ENCODER")
+                print("EXPRESSION ENCODER:", error)
+                return
+        self.target_left, self.target_right = left, right
+        self.ramp_left, self.ramp_right = float(left), float(right)
+        self.ramp_at = now
+        if (left, right) != (self.left, self.right):
+            self.motors.set_speeds(left, right)
+            self.left, self.right = left, right
+        if (left or right) and self.expression_wire and not self.expression_announced:
+            self.expression_announced = True
+            self._send(self.expression_wire + " EVENT GESTURE START " + self.expression_name)
+
     def _target_motion(self, left, right, now, acceleration, deceleration=DECELERATION,
                        rate_ratios=None):
         if not self._moving():
@@ -176,6 +287,18 @@ class UARTController:
         return min(target, current + step) if target > current else max(target, current - step)
 
     def _update_motion(self, now):
+        if self.motion.kind == "DANCE" and self.motion.active:
+            # Preserve encoder fault detection without PI boosts or a ramp
+            # below measured breakaway effort during these short pulses.
+            if self.speed_control:
+                try:
+                    self.speed_control.update(now, (self.target_left, self.target_right), (self.left, self.right))
+                except Exception as error:
+                    self.motion.cancel(str(error), True)
+            return
+        if self.expression_motion.active:
+            self._update_expression_motion(now)
+            return
         elapsed = max(0, min(MAX_RAMP_STEP_MS, self.clock.ticks_diff(now, self.ramp_at)))
         self.ramp_at = now
         step = self.acceleration * elapsed / 1000.0
@@ -189,6 +312,10 @@ class UARTController:
                     targets = self.speed_control.update(now, targets, (self.left, self.right),
                                                        self.braking, self.track_speed_ratios)
             except Exception as error:
+                reason = str(error)
+                if self.motion.active and reason in ("ENCODER_IO", "ENCODER_STALE", "ENCODER_STALL"):
+                    self.motion.cancel(reason, True)
+                    return
                 self._latch("ENCODER")
                 print("ENCODER CONTROL:", error)
                 return
@@ -204,24 +331,34 @@ class UARTController:
             self.safe_motion = False
 
     def _latch(self, reason):
-        if self.motion.armed or self.motion.active:
-            self.motion.cancel(reason, True)
+        # Only an ordinary edge stop may reuse its known-good calibration.
+        # Sensor/encoder/button faults and failed automatic retreats stay locked.
+        restore = self.thresholds[:] if reason == "EDGE" and self.thresholds is not None else None
+        if restore is not None and not self.edge_retreat.active:
+            self.edge_reverse.used = False
         self._stop()
         self.ready = False
-        if reason == "EDGE":
+        if reason == "EDGE" and self.thresholds is not None:
             self.blocked_thresholds = self.thresholds
         self.thresholds = None
         self.calibration = None
         self.fault = reason
-        self.edge = reason == "EDGE"
+        self.edge = reason.startswith("EDGE")
+        self.edge_restore_thresholds = restore
+        self.edge_clear_since = self.edge_clear_sample_at = None
+        # Publish the reverse gate in the same checksummed terminal result.
+        # The interrupted session is still closed and can never be replayed.
+        if self.motion.armed or self.motion.active:
+            self.motion.cancel(reason, True)
         self._send("0 EVENT " + reason)
         print("UART CONTROL: motor stop,", reason)
 
     def _read_edge(self):
         try:
             readings = self.line_sensors.read()
-            if len(readings) != 5:
+            if len(readings) != 5 or any(not isinstance(v, int) or not 0 <= v <= 65535 for v in readings):
                 raise ValueError("expected five line readings")
+            self.last_line_readings = readings[:]
             return readings
         except Exception as error:
             print("UART CONTROL: line sensor error:", error)
@@ -232,6 +369,11 @@ class UARTController:
         now = self.clock.ticks_ms()
         confirmed = False
         for i in range(5):
+            if self.edge_release_mask & (1 << i):
+                if readings[i] < self.thresholds[i]:
+                    self.edge_release_mask &= ~(1 << i)
+                else:
+                    continue  # Do not relatch the same edge after its completed reverse.
             if readings[i] < self.thresholds[i]:
                 self.edge_since[i] = None
             elif readings[i] >= max(EDGE_STRONG_READING, self.thresholds[i]):
@@ -241,6 +383,58 @@ class UARTController:
             elif self.clock.ticks_diff(now, self.edge_since[i]) >= EDGE_CONFIRM_MS:
                 confirmed = True
         return confirmed
+
+    def _sample_edge_restore(self, now):
+        # A requested reverse owns all restoration once it starts. Its final
+        # encoder-confirmed rest must pass before readiness can return.
+        # Cancelled reverse traffic must not regain readiness through this
+        # ordinary pickup path, either.
+        if self.edge_reverse.active or self.edge_reverse.used:
+            return
+        thresholds = self.edge_restore_thresholds
+        if thresholds is None or self.fault != "EDGE" or self.calibration is not None:
+            return
+        previous = self.edge_clear_sample_at
+        if previous is not None:
+            gap = self.clock.ticks_diff(now, previous)
+            if 0 <= gap < EDGE_POLL_MS:
+                return
+            if gap < 0 or gap > EDGE_CLEAR_MAX_GAP_MS:
+                self.edge_clear_since = None
+        self.edge_clear_sample_at = now
+        readings = self._read_edge()
+        if readings is None:
+            return  # _read_edge latches SENSOR and revokes restoration.
+        clear = (not self.button_c.is_pressed() and not self._moving() and
+                 not self.braking and not self.motion.armed and not self.motion.active and
+                 all(readings[i] < thresholds[i] - EDGE_CLEAR_MARGIN for i in range(5)))
+        if not clear:
+            self.edge_clear_since = None
+        elif self.edge_clear_since is None:
+            self.edge_clear_since = now
+        elif self.clock.ticks_diff(now, self.edge_clear_since) >= EDGE_CLEAR_MS:
+            self._restore_edge_ready(now)
+
+    def _restore_edge_ready(self, now):
+        # Called only after the owning recovery has verified its whole dwell.
+        thresholds = self.edge_restore_thresholds
+        if thresholds is None or self.fault != "EDGE" or self.calibration is not None:
+            return False
+        reverse_done = self.edge_reverse.active
+        self._stop()
+        if reverse_done:
+            self.edge_reverse.state = "DONE"
+        self.thresholds = thresholds
+        self.blocked_thresholds = self.edge_restore_thresholds = None
+        self.edge_clear_since = self.edge_clear_sample_at = None
+        self.edge_since = [None] * 5
+        self.ready, self.edge, self.fault = True, False, "NONE"
+        if not reverse_done:
+            self.edge_reverse.used = False
+        self.last_edge_poll = now
+        self._send("0 EVENT READY")
+        print("UART CONTROL: surface restored; existing calibration retained, motors stopped")
+        return True
 
     def start_calibration(self, command_id="0", now=None):
         """Begin stationary surface sampling; ID 0 is used at startup."""
@@ -257,12 +451,17 @@ class UARTController:
             return
         self._stop()
         self.ready = False
+        self.edge_reverse.used = False
+        self.edge_release_mask = 0
+        self.edge_restore_thresholds = None
+        self.edge_clear_since = self.edge_clear_sample_at = None
         self.edge_since = [None] * 5
         self.thresholds = None
         self.calibration = {
             "count": 0,
             "totals": [0] * 5,
             "next": now,
+            "user_requested": command_id != "0",
         }
         self._send(command_id + " OK CALIBRATING")
         print("UART CONTROL: calibrating on stationary surface")
@@ -291,9 +490,20 @@ class UARTController:
             print("UART CONTROL: calibration rejected:", baselines)
             return
         self.thresholds = [
-            min(975, value + max(MIN_EDGE_MARGIN, (1024 - value) // 2) + EDGE_EXTRA_MARGIN)
+            min(975, value + max(MIN_EDGE_MARGIN, (1024 - value) * 3 // 4) + EDGE_EXTRA_MARGIN)
             for value in baselines
         ]
+        self.surface_thresholds = self.thresholds[:]
+        if self.fault == "ORIENTATION" and (not self.orientation_safe or self.orientation_at is None or
+                self.clock.ticks_diff(now, self.orientation_at) > 100):
+            self._latch("ORIENTATION")
+            return
+        if self.boot_health is not None and state["user_requested"]:
+            try:
+                self.boot_health.clear_after_user_calibration()
+            except Exception:
+                self._latch("BOOT_HEALTH")
+                return
         self.fault = "NONE"
         self.edge = False
         self.edge_since = [None] * 5
@@ -313,12 +523,12 @@ class UARTController:
         age = self.clock.ticks_diff(self.clock.ticks_ms(), self.range_at) if self.range_at is not None else 65535
         velocity = self.speed_control.velocity if self.speed_control else (0, 0)
         target = self.speed_control.targets if self.speed_control else (0, 0)
-        self._send("{} OK READY={} FAULT={} L={} R={} BAT={} EDGE={} VOICE={} DIST={} RANGE={} AUTO=1 BRAKE=1 LOOKRAMP=1 WIGGLE=2 SCENE=1 SAFE2=1 CLOSE=2 RA={} RS={} RAW={} ENC={} VL={} VR={} MOTION=1 BOOT={} SESSION={} GAP={} OVERRUN={} DSUS={} TL={} TR={} CIRCLE=2 SPIN=1 REACT={:08x} NR={} TRAVEL=1 DCAL={} EXPR=1 CL={} CR={}".format(
+        self._send("{} OK READY={} FAULT={} L={} R={} BAT={} EDGE={} VOICE={} DIST={} RANGE={} AUTO=1 BRAKE=1 LOOKRAMP=1 WIGGLE=2 SCENE=1 SAFE2=1 CLOSE=2 RA={} RS={} RAW={} ENC={} VL={} VR={} MOTION=1 BOOT={} SESSION={} GAP={} OVERRUN={} DSUS={} TL={} TR={} CIRCLE=2 SPIN=1 REACT={:08x} NR={} TRAVEL=1 DCAL={} EXPR=1 CL={} CR={} ERET={} EREV=1 REV={} RECOVERY=1 PUSH=1 DANCE=1 E100=1 EDIRECT=1 EREC={}".format(
             command_id, int(self.ready), self.fault, self.left, self.right,
             millivolts, int(self.edge), int(self.voice_turn is not None),
             self.distance_mm, int(valid), min(65535, age), self.range_status,
             self.raw_distance_mm, int(self.speed_control is not None), int(velocity[0]), int(velocity[1]), self.motion.boot, self.motion.session,
-            self.max_loop_gap_ms, self.loop_overruns, getattr(self.face, "max_slice_us", 0), int(target[0]), int(target[1]), CATALOG_VERSION, int(self._range_no_return(self.clock.ticks_ms())), int(self.motion.distance_scale is not None), *(getattr(self.speed_control,"counts",(0,0)) if self.speed_control else (0,0))))
+            self.max_loop_gap_ms, self.loop_overruns, getattr(self.face, "max_slice_us", 0), int(target[0]), int(target[1]), CATALOG_VERSION, int(self._range_no_return(self.clock.ticks_ms())), int(self.motion.distance_scale is not None), *(getattr(self.speed_control,"counts",(0,0)) if self.speed_control else (0,0)), int(self.speed_control is not None and self.motion.distance_scale is not None), int(self.edge_reverse.available() or self.edge_reverse.active), int(self.edge_reverse.active and self.edge_reverse.automatic)))
         if self.motion.session:
             self.motion.snapshot(command_id)
 
@@ -353,6 +563,9 @@ class UARTController:
                 # distance_mm remains -1 unless the distance itself is valid.
                 self.range_at = now
                 self.range_failed = False
+                if valid or status == 2:
+                    self.range_good_at = now
+                    self.range_good_distance, self.range_good_status = self.distance_mm, status
         except Exception as error:
             self.distance_mm = -1
             self.range_at = None
@@ -362,8 +575,85 @@ class UARTController:
                 print("UART CONTROL: range sensor error:", error)
             self.range_failed = True
 
+    def _sample_accelerometer(self, now):
+        # One hardware reader; consumers share the ORIGINAL sample timestamp.
+        # Reading the sensor clears data-ready, so independent readers starve.
+        if self.accel_poll_at == now:
+            return
+        self.accel_poll_at = now
+        acc = self.accelerometer
+        if acc is None:
+            self.accel_reading = self.accel_at = None
+            self.accel_error = "ACC_MISSING"
+            return
+        try:
+            if not acc.data_ready():
+                return
+            acc.read()
+            values = tuple(acc.last_reading_g)
+            if len(values) != 3 or not all(math.isfinite(v) for v in values):
+                self.accel_reading = self.accel_at = None
+                self.accel_error = "ACC_INVALID"
+                return
+            self.accel_reading, self.accel_at = values, now
+            self.accel_error = "NONE"
+        except Exception:
+            self.accel_reading = self.accel_at = None
+            self.accel_error = "ACC_IO"
+
+    def _poll_orientation(self, now):
+        if ((self.edge_retreat.active and not self.edge_retreat.blocked) or
+                self.edge_reverse.active or self.edge_reverse.available()):
+            self.orientation_since = None
+            return  # Edge-triggered 100 mm reverse explicitly ignores IMU gates.
+        # Only persistent, near-gravity sideways/inverted observations count.
+        # A forward launch/contact impulse changes acceleration magnitude and
+        # must not masquerade as gravity-based tilt. No pose is inferred from
+        # absent/stale accelerometer data.
+        self._sample_accelerometer(now)
+        try:
+            if self.accel_at is None or self.accel_at == self.orientation_at:
+                if self.accel_error != "NONE" or self.orientation_at is None or self.clock.ticks_diff(now, self.orientation_at) > 100:
+                    self.orientation_since = None
+                return
+            x, y, z = self.accel_reading
+            norm = x*x + y*y + z*z
+            if not all(math.isfinite(v) for v in (x, y, z)):
+                self.orientation_since = None
+                return
+            if self.orientation_at is not None and self.clock.ticks_diff(now, self.orientation_at) > 100:
+                self.orientation_since = None
+            self.orientation_at = self.accel_at
+            self.orientation_safe = .70 <= norm <= 1.30 and z >= .5 * math.sqrt(norm)
+            # More than 75 degrees from upright for 200 ms is extreme tilt.
+            severe = .70 <= norm <= 1.30 and z < .258819 * math.sqrt(norm)
+            if not severe:
+                self.orientation_since = None
+            elif self.orientation_since is None:
+                self.orientation_since = now
+            elif self.clock.ticks_diff(now, self.orientation_since) >= 200 and (self.fault != "ORIENTATION" or self.calibration is not None):
+                self._latch("ORIENTATION")
+        except Exception:
+            self.orientation_since = None
+
     def _apply_motion(self, command_id, left, right, now, reply,
                       acceleration=DEFAULT_ACCELERATION):
+        if self.edge_reverse.active and self.edge_reverse.automatic:
+            self._send(command_id + " OK STOPPED")
+            return False  # Stale held DRIVE traffic cannot cancel/steer recovery.
+        # Held recovery traffic cannot become ordinary reverse on clear floor.
+        if self.edge_reverse.manual and self.edge_reverse.state == "DONE":
+            self._send(command_id + " OK STOPPED")
+            return False
+        if not self.ready and self.fault == "EDGE" and reply == "DRIVE":
+            if left == right and left < 0:
+                if self.edge_reverse.active or self.edge_reverse.begin(now, manual=True):
+                    self.last_drive = now
+                    self._send(command_id + " OK DRIVE")
+                    return True
+            self._stop()
+            self._send(command_id + " ERR " + ("EDGE_REVERSE_ONLY" if self.edge_reverse.available() else "NOT_READY"))
+            return False
         if not self.ready:
             self._send(command_id + " ERR NOT_READY")
             return False
@@ -374,7 +664,8 @@ class UARTController:
         readings = self._read_edge()
         if readings is None or self._edge_seen(readings):
             if readings is not None:
-                self._latch("EDGE")
+                if not self.edge_reverse.begin_automatic(readings, now) and self.fault in ("NONE", "EDGE"):
+                    self._latch("EDGE")
             self._send(command_id + " ERR " + self.fault)
             return False
         if self.look_id is not None:
@@ -414,15 +705,20 @@ class UARTController:
         if command == "M2":
             self.motion.handle(command_id, line[len(command_id) + 1:], now)
             return
+        if command in ("STOP", "BRAKE", "CALIBRATE", "DRIVE", "SAFE", "LOOK", "WIGGLE", "TURN", "WAKE") and self.expression_motion.active:
+            self._stop()  # Manual actions take priority, including during pauses.
         if command in ("STOP", "BRAKE", "CALIBRATE", "DRIVE", "SAFE", "LOOK", "WIGGLE", "TURN") and self.motion.armed:
             # Manual takeover closes the autonomous session before accepting a
             # legacy command. Delayed autonomous traffic can never resume it.
             self.motion.cancel("CANCELLED" if command in ("STOP", "BRAKE") else "MANUAL_TAKEOVER", smooth=command == "BRAKE")
         if command == "PING" and not args:
+            self.last_host_at = now
             self._send(command_id + " OK PONG")
         elif command == "STATUS" and not args:
+            self.last_host_at = now
             self._status(command_id)
         elif command in ("STOP", "BRAKE") and not args:
+            self.edge_reverse.manual = False
             self.scene_wire = self.scene_sequence = None
             self._stop(smooth=command == "BRAKE")
             self.calibration = None
@@ -558,12 +854,16 @@ class UARTController:
             elif (self._moving() or self.look_id is not None or self.calibration is not None) and not getattr(self.face, "cooperative", False):
                 self._send(command_id + " ERR MOVING")
             else:
+                if self.expression_motion.active:
+                    self._stop()
                 self.scene_wire = self.scene_sequence = None
                 try:
                     self._cancel_wake()
                     self.face.show_scene(expression.lower(), caption)
                     if duration is not None:
                         self.face.hold_ms=max(0,duration-getattr(self.face,"enter_ms",0)-getattr(self.face,"exit_ms",0))
+                    self.last_host_at = now
+                    self._queue_expression_motion(expression.lower(), now, wire=command_id)
                     self._send(command_id + " OK SCENE")
                     if getattr(self.face, "cooperative", False):
                         self.scene_wire = command_id
@@ -575,9 +875,16 @@ class UARTController:
             if (self._moving() or self.look_id is not None) and not getattr(self.face, "cooperative", False):
                 self._send(command_id + " ERR MOVING")
             elif args[0] == args[0].upper() and args[0].lower() in EXPRESSIONS:
+                if self.expression_motion.active:
+                    self._stop()
                 self.scene_wire = self.scene_sequence = None
                 self._cancel_wake()
-                self.face.play(args[0].lower())
+                if getattr(self.face, "cooperative", False):
+                    self.face.show_scene(args[0].lower(), "NONE")
+                    self.last_host_at = now
+                    self._queue_expression_motion(args[0].lower(), now, wire=command_id)
+                else:
+                    self.face.play(args[0].lower())
                 self._send(command_id + " OK FACE")
             else:
                 self._send(command_id + " ERR ARGUMENT")
@@ -639,13 +946,21 @@ class UARTController:
                 self.loop_overruns += 1
             if gap > 150 and self.motion.active:
                 self.motion.cancel("CONTROL_STALE", True)
+            if gap > MAX_LOOP_GAP_MS:
+                if self.motion.kind == "DANCE" and self.motion.active:
+                    self.motion.cancel("DANCE_CONTROL_STALE", True)
+                elif self.expression_motion.active:
+                    self._stop()
         self.last_tick_at = now
         if self.button_c.check() is True:
             self._latch("BUTTON_C")
         if (self.brake_started is not None and
                 self.clock.ticks_diff(now, self.brake_started) >= BRAKE_TIMEOUT_MS):
-            self._stop()
-            self._send("0 EVENT TIMEOUT")
+            if self.motion.active:
+                self.motion.cancel("BRAKE_TIMEOUT", True)
+            else:
+                self._stop()
+                self._send("0 EVENT TIMEOUT")
         if (self.look_id is not None and
                 self.clock.ticks_diff(now, self.last_keep) >= DRIVE_TIMEOUT_MS):
             self._stop()
@@ -655,12 +970,18 @@ class UARTController:
             self._stop()
             self._send("0 EVENT TIMEOUT")
             print("UART CONTROL: drive timeout")
-        if (self.ready and (self.last_edge_poll is None or
+        if ((self.ready or (self.edge_retreat.active and self.edge_retreat.blocked)) and (self.last_edge_poll is None or
                 self.clock.ticks_diff(now, self.last_edge_poll) >= EDGE_POLL_MS)):
             self.last_edge_poll = now
             readings = self._read_edge()
-            if readings is not None and self._edge_seen(readings):
-                self._latch("EDGE")
+            if readings is not None:
+                self.edge_retreat.line_sample(readings, now)
+                if self.ready and self._edge_seen(readings):
+                    recovered = (self.edge_retreat.begin(readings, now) if self.motion.armed and self.motion.active
+                                 else self.edge_reverse.begin_automatic(readings, now))
+                    if not recovered and self.fault in ("NONE", "EDGE"):
+                        self._latch("EDGE")
+        self._poll_orientation(now)
         self._poll_range(now)
         if self.safe_motion:
             if not self._range_valid(now):
@@ -675,7 +996,15 @@ class UARTController:
                     self._send("0 EVENT ARRIVED")
         self._poll_uart(now)
         self._sample_calibration(now)
+        # Process queued Stop/calibration requests before considering readiness.
+        # This never arms a motion session or replays an interrupted command.
+        self._sample_edge_restore(now)
         self.motion.tick(now)
+        if self.edge_reverse.active and self.motion.kind != "BACK":
+            lease = self.last_drive
+            self.edge_reverse.tick(now)
+            if self.edge_reverse.active:
+                self.last_drive = lease
         if self.look_id is not None:
             left, right = self.voice_turn.update(now, max(abs(self.left), abs(self.right)))
             if self.voice_turn.result is not None:
@@ -736,11 +1065,23 @@ class UARTController:
         pressed_b = self.button_b.check() is True
         if not self._moving() and self.look_id is None and not self.motion.active:
             if pressed_a:
+                if self.expression_motion.active:
+                    self._stop()
                 self._cancel_wake()
-                self.face.play_sad()
+                if getattr(self.face, "cooperative", False):
+                    self.face.show_scene("sad", "NONE")
+                    self._queue_expression_motion("sad", now, require_link=False)
+                else:
+                    self.face.play_sad()
             if pressed_b:
+                if self.expression_motion.active:
+                    self._stop()
                 self._cancel_wake()
-                self.face.play_happy()
+                if getattr(self.face, "cooperative", False):
+                    self.face.show_scene("happy", "NONE")
+                    self._queue_expression_motion("happy", now, require_link=False)
+                else:
+                    self.face.play_happy()
         if self.motion.kind == "CIRCLE" and self.motion.state in ("RUNNING", "BRAKING"):
             self.dance.update(now)
         # LCD transfers can take longer than a control-loop tick. Keep the

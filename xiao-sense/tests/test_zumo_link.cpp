@@ -10,6 +10,115 @@ void reply(bool brakeCapable=true) {
       : "1 OK READY=1 FAULT=NONE L=0 R=0 BAT=5800 EDGE=0 VOICE=1 DIST=900 RANGE=1 AUTO=1",nowMs);
   zumoUart.outgoing.clear();
 }
+void gestureAudioTests() {
+  const char* peer="1 OK READY=1 FAULT=NONE L=0 R=0 BAT=5800 EDGE=0 VOICE=1 DIST=900 RANGE=1 AUTO=1 SCENE=1 EXPR=1";
+  uint32_t generation=0; uint8_t expression=0;
+  auto read=[&]{zumo_link::gestureAudio(generation,expression);};
+  auto prepare=[&]{
+    zumo_link::stop();zumo_link::poll();nowMs+=20;
+    status.motionArmed=false;status.motionActive=false;
+    handleLine(peer,nowMs);
+    assert(zumo_link::scene("HAPPY","NONE",3000));zumo_link::poll();
+    const auto wire=sceneId;
+    handleLine((std::to_string(wire)+" OK SCENE_VISIBLE").c_str(),nowMs);
+    read();assert(!expression); // Visibility alone cannot trigger sound.
+    return wire;
+  };
+  auto start=[&](unsigned wire,const char* face="HAPPY") {
+    handleLine((std::to_string(wire)+" EVENT GESTURE START "+face).c_str(),nowMs);read();
+  };
+  auto wire=prepare();start(wire+1);assert(!expression);
+  start(wire,"SAD");assert(!expression);
+  start(wire);assert(expression==2);const auto once=generation;
+  start(wire);assert(generation==once); // Repeated notification never replays.
+  handleLine((std::to_string(wire+1)+" EVENT GESTURE END HAPPY").c_str(),nowMs);
+  read();assert(expression==2);
+  handleLine((std::to_string(wire)+" EVENT GESTURE END HAPPY").c_str(),nowMs);
+  read();assert(!expression && generation!=once);start(wire);assert(!expression);
+  wire=prepare();start(wire);const auto fullPhrase=generation;
+  nowMs+=600;handleLine(peer,nowMs);
+  handleLine((std::to_string(wire)+" EVENT GESTURE END HAPPY DONE").c_str(),nowMs);
+  read();assert(expression==2 && generation==fullPhrase);
+  nowMs+=600;handleLine(peer,nowMs);read();assert(expression==2);
+  nowMs+=501;handleLine(peer,nowMs);read();assert(!expression);
+  wire=prepare();start(wire);
+  handleLine((std::to_string(wire)+" EVENT GESTURE END HAPPY CANCEL").c_str(),nowMs);
+  read();assert(!expression);
+  for (int reason=0;reason<7;++reason) {
+    wire=prepare();start(wire);assert(expression==2);
+    if(reason==0)zumo_link::stop();
+    if(reason==1)zumo_link::cancelScene();
+    if(reason==2)handleLine("0 EVENT EDGE",nowMs);
+    if(reason==3)nowMs+=501;
+    if(reason==4)assert(zumo_link::drive(3000,3000));
+    if(reason==5)handleLine((std::string(peer)+" MOTION=1 BOOT=99 SESSION=0").c_str(),nowMs);
+    if(reason==6)assert(zumo_link::scene("SAD","NONE",3000));
+    read();assert(!expression);start(wire);assert(!expression);
+  }
+  wire=prepare();nowMs+=1500;handleLine(peer,nowMs);start(wire);assert(!expression);
+  wire=prepare();strcpy(status.fault,"SENSOR");start(wire);assert(!expression);
+  zumo_link::stop();zumo_link::poll();
+  std::cout<<"PASS approved phrase continues after natural gesture completion, legacy/cancel End and all safety/Stop/replacement paths cancel immediately\n";
+}
+void wakeAudioTests() {
+  const char* peer="1 OK READY=1 FAULT=NONE L=0 R=0 BAT=5800 EDGE=0 VOICE=1 DIST=900 RANGE=1 AUTO=1 SCENE=1 EXPR=1 MOTION=1 BOOT=42 SESSION=0";
+  uint32_t generation=0; uint8_t expression=0;
+  auto read=[&]{zumo_link::gestureAudio(generation,expression);};
+  auto request=[&]{zumo_link::stop();zumo_link::poll();nowMs+=20;
+    status.motionArmed=false;status.motionActive=false;handleLine(peer,nowMs);
+    assert(zumo_link::wake());zumo_link::poll();assert(wakeCommandId);read();assert(!expression);return wakeCommandId;};
+  auto wire=request();
+  handleLine((std::to_string(wire+1)+" OK WAKE_VISIBLE").c_str(),nowMs);read();assert(!expression);
+  handleLine((std::to_string(wire)+" OK WAKE").c_str(),nowMs);read();assert(!expression);
+  handleLine((std::to_string(wire)+" OK WAKE_VISIBLE").c_str(),nowMs);read();assert(expression==14);
+  const auto once=generation;
+  handleLine((std::to_string(wire)+" OK WAKE_VISIBLE").c_str(),nowMs);read();assert(generation==once);
+  nowMs+=500;handleLine(peer,nowMs);read();assert(expression==14);
+  nowMs+=461;handleLine(peer,nowMs);read();assert(!expression);
+  wire=request();zumo_link::cancelWake();
+  handleLine((std::to_string(wire)+" OK WAKE_VISIBLE").c_str(),nowMs);read();assert(!expression);
+  wire=request();handleLine((std::to_string(wire)+" OK WAKE_VISIBLE").c_str(),nowMs);
+  read();assert(expression==14);zumo_link::cancelWake();read();assert(!expression);
+  wire=request();handleLine((std::to_string(wire)+" OK WAKE_VISIBLE").c_str(),nowMs);
+  handleLine("0 EVENT WAKE_FAILED",nowMs);read();assert(!expression);
+  zumo_link::stop();zumo_link::poll();
+  std::cout<<"PASS wake acknowledgment waits for visible face, plays once, rejects stale replies and cancels on Stop/wake failure\n";
+}
+void stillEmotionAudioTests() {
+  const char* peer="1 OK READY=1 FAULT=NONE L=0 R=0 BAT=5800 EDGE=0 VOICE=1 DIST=900 RANGE=1 AUTO=1 SCENE=1 EXPR=1 MOTION=1 BOOT=42 SESSION=0";
+  uint32_t generation=0; uint8_t expression=0;
+  auto read=[&]{zumo_link::gestureAudio(generation,expression);};
+  auto request=[&](const char* name,uint32_t duration=3000) {
+    zumo_link::stop();zumo_link::poll();nowMs+=20;
+    status.motionArmed=false;status.motionActive=false;handleLine(peer,nowMs);
+    assert(zumo_link::scene(name,"NONE",duration));zumoUart.outgoing.clear();zumo_link::poll();
+    assert(zumoUart.outgoing.find(" DRIVE ")==std::string::npos);
+    const auto wire=sceneId;read();assert(!expression);
+    handleLine((std::to_string(wire)+" OK SCENE").c_str(),nowMs);read();assert(!expression);
+    return wire;
+  };
+  auto visible=[&](unsigned wire){handleLine((std::to_string(wire)+" OK SCENE_VISIBLE").c_str(),nowMs);read();};
+  for (const char* name : {"NEUTRAL","SERIOUS","SLEEPING"}) {
+    auto wire=request(name);
+    handleLine((std::to_string(wire)+" EVENT GESTURE START "+name).c_str(),nowMs);read();
+    assert(!expression); // Still emotions never depend on a motor-start event.
+    visible(wire+1);assert(!expression);
+    visible(wire);assert(expression==faceIndex(name));const auto once=generation;
+    visible(wire);assert(expression==faceIndex(name) && generation==once);
+    zumo_link::stop();read();assert(!expression);visible(wire);assert(!expression);
+    wire=request(name);zumo_link::stop();visible(wire);assert(!expression);
+    wire=request(name);nowMs+=1500;visible(wire);assert(!expression);
+    wire=request(name);handleLine("0 EVENT EDGE",nowMs);visible(wire);assert(!expression);
+    wire=request(name);assert(zumo_link::drive(3000,3000));visible(wire);assert(!expression);
+  }
+  // Internal neutral resets (expiry, navigation and Stop) are unbounded SCENE
+  // or legacy FACE requests, and must never generate a fresh neutral chirp.
+  auto wire=request("NEUTRAL",0);visible(wire);assert(!expression);
+  assert(zumo_link::face("NEUTRAL"));zumo_link::poll();
+  handleLine((std::to_string(nextId-1)+" OK FACE").c_str(),nowMs);read();assert(!expression);
+  zumo_link::stop();zumo_link::poll();
+  std::cout<<"PASS all three still emotions sound once after visibility, no drive commands, stale/safety/Stop/manual cancellation and silent automatic resets\n";
+}
 void assertCommand(const char* expected, const char* forbidden) {
   const std::string line=" "+std::string(expected)+"\n";
   const std::string other=" "+std::string(forbidden)+"\n";
@@ -23,6 +132,250 @@ std::string m2Reply(uint32_t boot,uint32_t session,unsigned job,const char* phas
       static_cast<unsigned long>(boot),static_cast<unsigned long>(session),job,phase,reason,distance,heading,rangeStatus,rawDistance);
   snprintf(frame,sizeof(frame),"0 %s *%04X",body,motionCrc(body,strlen(body)));
   return frame;
+}
+std::string calibrationStatus(unsigned id=1, bool ready=false, const char* fault="EDGE", unsigned boot=0x42) {
+  return std::to_string(id)+" OK READY="+(ready ? "1" : "0")+" FAULT="+fault+
+      " L=0 R=0 BAT=5800 EDGE="+(!strcmp(fault,"EDGE") ? "1" : "0")+
+      " VOICE=1 DIST=500 RANGE=1 AUTO=1 ENC=1 VL=0 VR=0 MOTION=1 BOOT="+
+      (boot==0x42 ? "42" : "43")+" SESSION=0";
+}
+void danceCueTests() {
+  zumo_link::stop();zumo_link::poll();
+  constexpr uint32_t boot=0x55aa00bb;
+  handleLine("1 OK READY=1 FAULT=NONE L=0 R=0 BAT=5800 EDGE=0 VOICE=1 DIST=500 RANGE=1 AUTO=1 ENC=1 VL=0 VR=0 MOTION=1 BOOT=55aa00bb SESSION=0 DANCE=1",nowMs);
+  zumo_link::poll();zumo_link::superviseMotion();assert(status.danceCapable);
+  assert(!zumo_link::armMotion());zumo_link::poll();
+  handleLine(m2Reply(boot,motionSession,0,"ARMED","NONE").c_str(),nowMs);
+  assert(zumo_link::armMotion());const auto job=zumo_link::danceJob();assert(job);
+  zumo_link::poll();uint32_t generation=0;uint8_t expression=0;zumo_link::gestureAudio(generation,expression);assert(!expression);
+  handleLine(m2Reply(boot,motionSession,job,"RUNNING","DANCING").c_str(),nowMs);
+  zumo_link::gestureAudio(generation,expression);assert(expression==15);const auto first=generation;
+  handleLine(m2Reply(boot,motionSession,job,"RUNNING","DANCING").c_str(),nowMs);
+  zumo_link::gestureAudio(generation,expression);assert(expression==15&&generation==first);
+  handleLine(m2Reply(boot,motionSession,job,"DONE","DANCE_DONE").c_str(),nowMs);
+  zumo_link::gestureAudio(generation,expression);assert(!expression);
+  handleLine(m2Reply(boot,motionSession,job,"RUNNING","DANCING").c_str(),nowMs);
+  zumo_link::gestureAudio(generation,expression);assert(!expression);
+  zumo_link::stop();zumo_link::poll();
+  std::cout<<"PASS dance music starts once from a correlated actual pulse, ends on completion, and cannot replay\n";
+}
+void resetCalibration() {
+  zumo_link::stop();zumo_link::poll();nowMs+=10;
+  discardMotion("CANCELLED");
+  handleLine(calibrationStatus().c_str(),nowMs);
+  zumoUart.outgoing.clear();
+}
+uint16_t startCalibration() {
+  assert(zumo_link::calibrateSurface());
+  zumo_link::poll(); // Stationary STOP precedes sampling.
+  zumo_link::poll();
+  assert(calibrationId && calibrationActive);
+  assert(zumoUart.outgoing.find(" CALIBRATE\n")!=std::string::npos);
+  assert(zumoUart.outgoing.find(" ARM ")==std::string::npos && zumoUart.outgoing.find(" DRIVE ")==std::string::npos);
+  return calibrationId;
+}
+void calibrationTests() {
+  resetCalibration();const auto first=startCalibration();
+  handleLine("0 EVENT READY",nowMs);assert(!calibrationVerifyPending && status.calibrating);
+  handleLine((std::to_string(first)+" OK CALIBRATING").c_str(),nowMs);
+  handleLine("0 EVENT READY",nowMs);assert(!calibrationVerifyPending); // Too early for 60 samples.
+  nowMs+=600;handleLine(calibrationStatus().c_str(),nowMs);handleLine("0 EVENT READY",nowMs);
+  zumo_link::poll();const auto verification=calibrationVerifyId;assert(verification);
+  handleLine(calibrationStatus(verification+1,true,"NONE").c_str(),nowMs);
+  assert(status.calibrating && strcmp(status.calibrationResult,"COMPLETED"));
+  handleLine(calibrationStatus(verification,false,"NONE").c_str(),nowMs);
+  assert(status.calibrating && strcmp(status.calibrationResult,"COMPLETED")); // Stale READY is not success.
+  nowMs+=100;handleLine("0 EVENT READY",nowMs);zumo_link::poll();assert(calibrationVerifyId);
+  handleLine(calibrationStatus(calibrationVerifyId,true,"NONE").c_str(),nowMs);
+  assert(!status.calibrating && status.ready && !strcmp(status.calibrationResult,"COMPLETED"));
+
+  resetCalibration();assert(zumo_link::calibrateSurface());const auto generation=status.calibrationGeneration;
+  zumo_link::stop();zumo_link::poll();assert(!calibrationPending && !calibrationActive);
+  assert(zumoUart.outgoing.find(" CALIBRATE\n")==std::string::npos);
+  handleLine((std::to_string(first)+" OK CALIBRATING").c_str(),nowMs);handleLine("0 EVENT READY",nowMs);
+  assert(!status.calibrating && !strcmp(status.calibrationResult,"CANCELLED") && status.calibrationGeneration==generation);
+
+  resetCalibration();startCalibration();const auto current=calibrationId;zumo_link::stop();zumo_link::poll();
+  handleLine((std::to_string(current)+" OK CALIBRATING").c_str(),nowMs);handleLine("0 EVENT READY",nowMs);
+  assert(!status.calibrating && !calibrationId && !strcmp(status.calibrationResult,"CANCELLED"));
+
+  resetCalibration();assert(zumo_link::calibrateSurface());zumo_link::poll();zumoUart.outgoing.clear();
+  beforeCritical=[] { beforeCritical=[] { zumo_link::stop(); }; };
+  zumo_link::poll();assert(zumoUart.outgoing.find(" CALIBRATE\n")==std::string::npos);
+  assert(!strcmp(status.calibrationResult,"CANCELLED"));
+  resetCalibration();assert(zumo_link::calibrateSurface());zumo_link::poll();zumoUart.outgoing.clear();
+  beforeCritical=[] { beforeCritical=[] { status.encoderLeftCps=100; }; };
+  zumo_link::poll();assert(zumoUart.outgoing.find(" CALIBRATE\n")==std::string::npos);
+  assert(!strcmp(status.calibrationResult,"MOVING"));
+
+  resetCalibration();const auto rejected=startCalibration();
+  handleLine((std::to_string(rejected)+" OK CALIBRATING").c_str(),nowMs);
+  const auto safety=status.safetyEvents;handleLine("0 EVENT CAL_FAILED",nowMs);
+  assert(!status.ready && !status.calibrating && status.safetyEvents==safety+1 && !strcmp(status.calibrationResult,"CAL_FAILED"));
+
+  resetCalibration();const auto timeout=startCalibration();
+  handleLine((std::to_string(timeout)+" OK CALIBRATING").c_str(),nowMs);
+  nowMs+=3000;handleLine(calibrationStatus().c_str(),nowMs);zumo_link::poll();
+  assert(!calibrationActive && !strcmp(status.calibrationResult,"TIMEOUT"));
+  handleLine("0 EVENT READY",nowMs);assert(!strcmp(status.calibrationResult,"TIMEOUT"));
+
+  resetCalibration();startCalibration();nowMs+=2001;zumo_link::poll();
+  assert(!calibrationPending && !calibrationActive && !strcmp(status.calibrationResult,"DISCONNECTED"));
+  resetCalibration();startCalibration();nowMs+=251;handleLine("1 OK PONG",nowMs);zumo_link::poll();
+  assert(!strcmp(status.calibrationResult,"STATUS_STALE"));
+  resetCalibration();startCalibration();handleLine(calibrationStatus(1,false,"NONE",0x43).c_str(),nowMs);
+  assert(!calibrationActive && !strcmp(status.calibrationResult,"PEER_RESTART"));
+
+  for(int guard=0;guard<12;++guard){
+    resetCalibration();
+    switch(guard){
+      case 0:nowMs+=251;break;case 1:status.encoderControl=false;break;
+      case 2:status.encoderLeftCps=51;break;case 3:status.encoderRightCps=-51;break;
+      case 4:status.left=1;break;case 5:status.targetRightCps=1;break;
+      case 6:status.motionArmed=true;break;case 7:status.motionActive=true;break;
+      case 8:driveWanted=true;break;case 9:status.lookActive=true;break;
+      case 10:stopPending=true;break;case 11:status.calibrating=true;break;
+    }
+    assert(!zumo_link::calibrateSurface());
+  }
+  for(const char* fault:{"BUTTON_C","SENSOR","ENCODER","TURN_FAULT"}){
+    resetCalibration();strcpy(status.fault,fault);assert(!zumo_link::calibrateSurface());
+  }
+  resetCalibration();strcpy(status.fault,"CAL_FAILED");assert(zumo_link::calibrateSurface());
+  resetCalibration();strcpy(status.fault,"BUTTON_C");assert(zumo_link::calibrate()); // Dashboard retains explicit recovery.
+  zumo_link::stop();zumo_link::poll();
+  std::cout<<"PASS stationary calibration: EDGE, strict rest/fault gates, ordered acknowledgement/status verification, stale replies, Stop, failure, timeout and disconnect\n";
+}
+void edgeRetreatTests() {
+ const std::string peer="1 OK READY=1 FAULT=NONE L=0 R=0 BAT=5800 EDGE=0 VOICE=1 DIST=500 RANGE=1 AUTO=1 BRAKE=1 ENC=1 VL=0 VR=0 MOTION=1 BOOT=1234abcd SESSION=0 TRAVEL=1 DCAL=1";
+ auto start=[&](bool capable=true,bool permit=true,bool full=false,bool direct=false) {
+   zumo_link::stop();zumo_link::poll();nowMs+=10;
+   handleLine((peer+(capable?" ERET=1":"")+(full?" E100=1":"")+(direct?" EDIRECT=1":"")).c_str(),nowMs);
+   zumo_link::superviseMotion();zumo_link::armMotion();zumo_link::poll();
+   handleLine(m2Reply(0x1234abcd,motionSession,0,"ARMED","NONE").c_str(),nowMs);
+   assert(zumo_link::travelJob(100,15000,permit));zumoUart.outgoing.clear();zumo_link::poll();
+ };
+ auto edgeFrame=[&](const char* phase,const char* reason,int mask=1,int back=0) {
+   char body[256],packet[300];
+   snprintf(body,sizeof(body),"M2 1234abcd %lu %lu %s %s 500 0 10 TL=0 TR=0 TRAVEL=24 ER=%d BACK=%d",
+      static_cast<unsigned long>(motionSession),static_cast<unsigned long>(status.motionJob),phase,reason,mask,back);
+   snprintf(packet,sizeof(packet),"0 %s *%04X",body,motionCrc(body,strlen(body)));return std::string(packet);
+ };
+ start();assert(zumoUart.outgoing.find("15000 1 *")!=std::string::npos);
+ const auto safety=status.safetyEvents;
+ handleLine(edgeFrame("RECOVERING","EDGE_WAIT").c_str(),nowMs);
+ assert(status.motionActive && !status.ready && status.edge && !stopPending && status.safetyEvents==safety);
+ handleLine(m2Reply(0x1234abcd,motionSession,status.motionJob,"RUNNING","ACCEPTED").c_str(),nowMs);
+ assert(!strcmp(status.motionState,"RECOVERING"));
+ const auto terminal=edgeFrame("DONE","EDGE_RETREATED",1,16);
+ handleLine(terminal.c_str(),nowMs);assert(status.ready && !status.edge && status.motionRetreatMm==16 && !status.motionActive);
+ handleLine(terminal.c_str(),nowMs);assert(status.safetyEvents==safety && status.motionRetreatMm==16);
+ zumo_link::stop();zumo_link::poll();handleLine(terminal.c_str(),nowMs);assert(!motionWanted && !status.motionActive);
+ start(false);assert(zumoUart.outgoing.find("15000 1 *")==std::string::npos); // Older peer uses normal hard stop.
+ start();handleLine(edgeFrame("RECOVERING","EDGE_WAIT").c_str(),nowMs);
+ handleLine(m2Reply(0x1234abcd,motionSession,status.motionJob,"DONE","TRAVEL_DONE").c_str(),nowMs);
+ assert(!motionWanted && stopPending && !strcmp(status.lastError,"EDGE_PROTOCOL"));
+ start();handleLine(m2Reply(0x1234abcd,motionSession,status.motionJob,"RECOVERING","EDGE_WAIT").c_str(),nowMs);
+ assert(!motionWanted && stopPending && !strcmp(status.lastError,"EDGE_PROTOCOL"));
+ for(int failure=0;failure<5;++failure) {
+   start(true,failure!=0);
+   const auto before=status.safetyEvents;
+   auto packet=edgeFrame("RECOVERING","EDGE_WAIT",failure==1?32:1,failure==2?21:0);
+   if(failure==3) handleLine("0 EVENT BUTTON_C",nowMs);
+   if(failure==4) packet=edgeFrame("DONE","EDGE_RETREATED",1,0);
+   handleLine(packet.c_str(),nowMs);
+   assert(!motionWanted && stopPending && status.safetyEvents>before);
+   if(failure==3) assert(!status.ready && !strcmp(status.fault,"BUTTON_C"));
+ }
+ start(true,false,true);const auto fullSafety=status.safetyEvents;
+ handleLine(edgeFrame("RECOVERING","EDGE_WAIT").c_str(),nowMs);
+ handleLine(edgeFrame("RECOVERING","EDGE_BACK",16,50).c_str(),nowMs);
+ assert(motionWanted && !stopPending && status.safetyEvents==fullSafety);
+ handleLine(edgeFrame("DONE","EDGE_RETREATED",16,100).c_str(),nowMs);
+ assert(status.ready && !status.edge && status.motionRetreatMm==100 && status.safetyEvents==fullSafety);
+ for(const int invalid:{20,103}) {
+   start(true,false,true);
+   handleLine(edgeFrame("DONE","EDGE_RETREATED",16,invalid).c_str(),nowMs);
+   assert(!motionWanted && stopPending && !strcmp(status.lastError,"EDGE_PROTOCOL"));
+ }
+ start(true,false,true,true);
+ handleLine(edgeFrame("RECOVERING","EDGE_BACK").c_str(),nowMs);
+ handleLine(edgeFrame("DONE","EDGE_RETREATED",16,104).c_str(),nowMs);
+ assert(status.edgeDirectReverseCapable && status.ready && status.motionRetreatMm==104 && !stopPending);
+ start(true,false,true,true);
+ handleLine(edgeFrame("DONE","EDGE_RETREATED",16,111).c_str(),nowMs);
+ assert(!motionWanted && stopPending && !strcmp(status.lastError,"EDGE_PROTOCOL"));
+ zumo_link::stop();zumo_link::poll();nowMs+=10;
+ handleLine((peer+" ERET=1 E100=1").c_str(),nowMs);
+ assert(zumo_link::drive(3000,3000));
+ handleLine("0 EVENT EDGE_AUTO_START",nowMs);
+ assert(status.automaticEdgeRecovery && !driveWanted && !stopPending);
+ assert(zumo_link::drive(6000,6000) && !driveWanted && !stopPending);
+ handleLine((peer+" ERET=1 E100=1 EREC=0").c_str(),nowMs);
+ assert(status.ready && !status.automaticEdgeRecovery);
+ assert(zumo_link::drive(6000,6000) && !driveWanted); // Held button cannot replay after recovery.
+ zumo_link::stop();assert(stopPending);
+ zumo_link::poll();assert(zumo_link::drive(3000,3000) && driveWanted);
+ zumo_link::stop();zumo_link::poll();
+ std::cout<<"PASS negotiated edge retreat, correlated states/results, old-peer fallback, duplicate/stale replies and concurrent hard faults\n";
+}
+void localRecoveryAndPushTests() {
+ const std::string peer="1 OK READY=1 FAULT=NONE L=0 R=0 BAT=5800 EDGE=0 VOICE=1 DIST=20 RANGE=1 AUTO=1 BRAKE=1 ENC=1 VL=0 VR=0 MOTION=1 BOOT=1234abcd SESSION=0 TRAVEL=1 DCAL=1 ERET=1 EREV=1";
+ auto start=[&](bool capable=true) {
+   zumo_link::stop();zumo_link::poll();nowMs+=10;
+   handleLine((peer+(capable?" RECOVERY=1 PUSH=1":"")).c_str(),nowMs);
+   zumo_link::superviseMotion();zumo_link::armMotion();zumo_link::poll();
+   handleLine(m2Reply(0x1234abcd,motionSession,0,"ARMED","NONE").c_str(),nowMs);
+   zumoUart.outgoing.clear();
+ };
+ auto frame=[&](const char* phase,const char* reason,unsigned recoveries=1,const char* cause="RANGE_STALE",const char* extra="KNOWN=1") {
+   char body[256],packet[300];
+   snprintf(body,sizeof(body),"M2 1234abcd %lu %lu %s %s -1 25 260 TRAVEL=24 REC=%u CAUSE=%s %s",
+       static_cast<unsigned long>(motionSession),static_cast<unsigned long>(status.motionJob),phase,reason,recoveries,cause,extra);
+   snprintf(packet,sizeof(packet),"0 %s *%04X",body,motionCrc(body,strlen(body)));return std::string(packet);
+ };
+ start(false);assert(!status.localRecoveryCapable && !status.pushCapable && !zumo_link::pushJob(100));
+ zumo_link::poll();assert(zumoUart.outgoing.find(" DRIVE ")==std::string::npos);
+ start();assert(status.localRecoveryCapable && status.pushCapable);
+ for(const int mm:{-10,0,9,301}) assert(!zumo_link::pushJob(mm));
+ const auto job=zumo_link::pushJob(300);assert(job);zumo_link::poll();
+ assert(zumoUart.outgoing.find(" PUSH 300 *")!=std::string::npos && motionEdgeAllowed);
+ const auto safety=status.safetyEvents;
+ handleLine(frame("PAUSED","RANGE_STALE").c_str(),nowMs);
+ assert(status.motionActive && status.motionArmed && !stopPending && status.safetyEvents==safety && !status.edge);
+ assert(status.motionRecoveryCount==1 && !strcmp(status.motionRecoveryReason,"RANGE_STALE"));
+ handleLine(frame("RUNNING","ACCEPTED",0,"NONE").c_str(),nowMs);
+ assert(!strcmp(status.motionState,"PAUSED")); // Stale pre-recovery reply ignored.
+ nowMs+=100;zumo_link::superviseMotion();zumoUart.outgoing.clear();zumo_link::poll();
+ assert(zumoUart.outgoing.find(" HB ")!=std::string::npos);
+ handleLine(frame("RUNNING","ACCEPTED").c_str(),nowMs);assert(status.motionActive);
+ const auto done=frame("DONE","PUSH_DONE");handleLine(done.c_str(),nowMs);
+ assert(!status.motionActive && status.motionTravelledMm==24 && status.motionRecoveryCount==1 && status.safetyEvents==safety);
+ handleLine(frame("PAUSED","RANGE_STALE").c_str(),nowMs);assert(!strcmp(status.motionState,"DONE"));
+ zumo_link::stop();zumo_link::poll();handleLine(done.c_str(),nowMs);assert(!motionWanted && !status.motionActive);
+ start();assert(zumo_link::travelJob(100,15000,true));
+ handleLine(frame("RECOVERING","GYRO_STALE",1,"GYRO_STALE","KNOWN=0").c_str(),nowMs);
+ assert(status.motionActive && !status.edge && !stopPending && !status.motionPositionKnown);
+ handleLine(frame("RECOVERING","GYRO_STALE",1,"GYRO_STALE","KNOWN=1").c_str(),nowMs);
+ assert(!status.motionPositionKnown); // Same-job stale replies cannot restore certainty.
+ handleLine("0 EVENT BUTTON_C",nowMs);zumo_link::poll();assert(!motionWanted && !status.motionActive);
+ start();assert(zumo_link::travelJob(100,15000,true));
+ handleLine(frame("RECOVERING","BLOCK_WAIT",1,"ENCODER_STALL","KNOWN=1 ER=0 BACK=0").c_str(),nowMs);
+ assert(status.motionActive && !status.edge && !stopPending && motionBlockedBackoff);
+ handleLine(frame("RECOVERING","BLOCK_BACK",1,"ENCODER_STALL","KNOWN=1 ER=0 BACK=10").c_str(),nowMs);
+ assert(status.motionRetreatMm==10 && !status.motionEdgeMask && !stopPending);
+ handleLine(frame("DONE","BLOCKED_RECOVERED",1,"ENCODER_STALL","KNOWN=1 ER=0 BACK=12").c_str(),nowMs);
+ assert(!status.motionActive && status.ready && status.motionRetreatMm==12 && !stopPending);
+ // A stall without safe backoff can also settle and request a new plan; it
+ // must not be misreported as a physical retreat or rejected for missing ER.
+ start();assert(zumo_link::travelJob(100,15000,true));
+ handleLine(frame("RECOVERING","ENCODER_STALL",1,"ENCODER_STALL").c_str(),nowMs);
+ handleLine(frame("DONE","BLOCKED_RECOVERED",1,"ENCODER_STALL").c_str(),nowMs);
+ assert(!status.motionActive && !status.motionRetreatMm && !stopPending);
+ start(false);assert(zumo_link::travelJob(100));handleLine(frame("PAUSED","RANGE_STALE").c_str(),nowMs);
+ assert(stopPending && !motionWanted && !strcmp(status.lastError,"RECOVERY_PROTOCOL"));
+ zumo_link::stop();zumo_link::poll();
+ std::cout<<"PASS negotiated bounded PUSH without legacy fallback, local recovery leases, diagnostics, stale reply rejection and hard-stop precedence\n";
 }
 int main() {
   zumo_link::begin();
@@ -245,6 +598,13 @@ int main() {
   const std::string jobs=std::string(modern)+" CLOSE=2 ENC=1 VL=0 VR=0 MOTION=1 BOOT=1234abcd SESSION=9 GAP=12 OVERRUN=2 DSUS=4300 TL=0 TR=0";
   handleLine(jobs.c_str(),nowMs);zumo_link::superviseMotion();
   assert(zumo_link::snapshot().controlMaxGapMs==12 && zumo_link::snapshot().controlOverruns==2 && zumo_link::snapshot().displayMaxSliceUs==4300);
+  for (const auto velocity : {51, -51}) {
+    status.encoderLeftCps=velocity;
+    assert(!zumo_link::armMotion() && !motionWanted);
+    status.encoderLeftCps=0;status.encoderRightCps=velocity;
+    assert(!zumo_link::armMotion() && !motionWanted);
+    status.encoderRightCps=0;
+  }
   assert(zumo_link::snapshot().motionCapable && !zumo_link::armMotion());
   assert(motionSession==10); // A restarted XIAO advances the peer's high-water mark.
   zumoUart.outgoing.clear();zumo_link::poll();
@@ -431,6 +791,103 @@ int main() {
   zumo_link::stop();zumo_link::poll();handleLine((jobs+" EXPR=1").c_str(),nowMs);
   assert(zumo_link::scene("HAPPY","NONE",2000));zumoUart.outgoing.clear();zumo_link::poll();
   assert(zumoUart.outgoing.find(" SCENE HAPPY NONE 2000\n")!=std::string::npos);
+  // EDGE keeps motion disarmed while all 13 display-only expressions remain usable.
+  zumo_link::stop();zumo_link::poll();
+  std::string edgePeer=jobs+" TRAVEL=1 DCAL=1 EXPR=1";
+  edgePeer.replace(edgePeer.find("READY=1 FAULT=NONE"),strlen("READY=1 FAULT=NONE"),"READY=0 FAULT=EDGE");
+  edgePeer.replace(edgePeer.find("EDGE=0"),strlen("EDGE=0"),"EDGE=1");
+  handleLine(edgePeer.c_str(),nowMs);
+  handleLine("0 EVENT EDGE",nowMs);
+  assert(!zumo_link::scene("HAPPY","NONE",2000)); // The immediate safety Stop goes first.
+  zumoUart.outgoing.clear();zumo_link::poll();assertCommand("STOP","SCENE HAPPY NONE 2000");
+  for (const char* face : kFaceNames) {
+    handleLine(edgePeer.c_str(),nowMs);
+    assert(zumo_link::scene(face,"NONE",2000));zumoUart.outgoing.clear();zumo_link::poll();
+    assert(zumoUart.outgoing.find(" SCENE "+std::string(face)+" NONE 2000\n")!=std::string::npos);
+    handleLine((std::to_string(sceneId)+" OK SCENE_VISIBLE").c_str(),nowMs);
+    const auto edgeStatus=zumo_link::snapshot();
+    assert(!strcmp(edgeStatus.sceneResult,"APPLIED") && edgeStatus.edge && !edgeStatus.ready);
+    assert(!strcmp(edgeStatus.fault,"EDGE") && !edgeStatus.left && !edgeStatus.right);
+    assert(!zumo_link::drive(3000,3000) && !zumo_link::safeDrive(3000,3000));
+    zumo_link::superviseMotion();assert(!zumo_link::armMotion());
+    assert(!zumo_link::travelJob(100) && !zumo_link::turnJob(30));
+    assert(!zumo_link::wiggle(edgeStatus.controlGeneration));
+    assert(!motionWanted && !driveWanted && !lookPending);
+  }
+  assert(zumo_link::scene("NEUTRAL","NONE"));zumo_link::cancelScene();
+  assert(zumo_link::scene("HAPPY","NONE",2000));
+  zumo_link::stop();zumoUart.outgoing.clear();zumo_link::poll();
+  assertCommand("STOP","SCENE HAPPY NONE 2000");assert(!scenePending && !sceneId);
+  handleLine(edgePeer.c_str(),nowMs);
+  status.calibrating=true;assert(!zumo_link::scene("HAPPY","NONE",2000));status.calibrating=false;
+  strcpy(status.fault,"BUTTON_C");assert(!zumo_link::scene("HAPPY","NONE",2000));
+  handleLine(edgePeer.c_str(),nowMs);nowMs+=501;assert(!zumo_link::scene("HAPPY","NONE",2000));
+  std::cout<<"PASS all expressions under EDGE, unchanged motion lock, Stop priority, calibration/fault/link guards\n";
+  const auto edgeSafetyEvents=status.safetyEvents;
+  handleLine((jobs+" TRAVEL=1 DCAL=1 EXPR=1").c_str(),nowMs);
+  assert(status.ready && !status.edge && !strcmp(status.fault,"NONE"));
+  assert(!strcmp(status.lastError,"NONE") && status.safetyEvents==edgeSafetyEvents);
+  assert(!motionWanted && !driveWanted && !lookPending);
+  assert(!zumo_link::travelJob(100)); // Restored floor never reopens the old session.
+  strcpy(status.lastError,"SENSOR");
+  handleLine(jobs.c_str(),nowMs);
+  assert(!strcmp(status.lastError,"SENSOR")); // Other diagnostics are not erased.
+  std::cout<<"PASS restored floor clears only stale EDGE warning without resuming movement\n";
   std::cout<<"PASS measured travel negotiation/limits/signed result, raw calibration counts and bounded expression duration\n";
   std::cout<<"PASS persistent M2 jobs, CRC, retry, monotonic sessions, completion latching, heading-specific measurement, independent heartbeat, supervisor timeout and restart cancellation\n";
+  // The physical edge's M2 result and legacy event preserve one failure identity.
+  zumo_link::stop();zumo_link::poll();nowMs+=20;
+  handleLine((jobs+" TRAVEL=1 DCAL=1 EREV=1 REV=0").c_str(),nowMs);
+  zumo_link::superviseMotion();zumo_link::armMotion();zumo_link::poll();
+  const auto edgeSession=motionSession;
+  handleLine(m2Reply(status.motionBoot,edgeSession,0,"ARMED","NONE").c_str(),nowMs);
+  const auto edgeJob=zumo_link::travelJob(100);assert(edgeJob);zumo_link::poll();
+  const auto beforeEdge=status.safetyEvents;
+  std::string faultBody="M2 1234abcd "+std::to_string(edgeSession)+" "+std::to_string(edgeJob)+" FAULT EDGE 500 0 10 TRAVEL=30 REV=1 EREJ=ACC_STALE EDETAIL=floor:1024,100,100,100,100;limit:853,853,853,853,853;acc_mg:0,0,1000;age_ms:130,5,5;path_mm:40";
+  char faultPacket[768];snprintf(faultPacket,sizeof(faultPacket),"0 %s *%04X",faultBody.c_str(),motionCrc(faultBody.c_str(),faultBody.size()));
+  faultPacket[strlen(faultPacket)-1]^=1;
+  handleLine(faultPacket,nowMs);assert(!status.edgeRetreatReject[0]);
+  faultPacket[strlen(faultPacket)-1]^=1;
+  handleLine(faultPacket,nowMs);assert(status.safetyEvents==beforeEdge+1 && status.edgeReverseAllowed);
+  assert(!strcmp(status.edgeRetreatReject,"ACC_STALE"));
+  assert(strstr(status.edgeRetreatDetail,"age_ms:130,5,5;path_mm:40"));
+  assert(!status.motionEdgeMask && !status.motionRetreatMm);
+
+  handleLine("0 EVENT EDGE",nowMs);assert(status.safetyEvents==beforeEdge+1 && status.edgeReverseAllowed);
+  assert(!strcmp(status.edgeRetreatReject,"ACC_STALE"));
+  handleLine("0 EVENT BUTTON_C",nowMs);assert(status.safetyEvents==beforeEdge+2 && !status.edgeReverseAllowed);
+  // Explicitly negotiated reverse-only recovery works across readiness polling.
+  zumo_link::stop();zumo_link::poll();nowMs+=20;
+  handleLine((edgePeer+" EREV=1 REV=1").c_str(),nowMs);
+  assert(status.edgeReverseAllowed && !status.ready);
+  assert(!zumo_link::drive(3000,3000) && !zumo_link::drive(-3000,3000) && !zumo_link::drive(-3000,-4000));
+  assert(zumo_link::drive(-3000,-3000));zumoUart.outgoing.clear();zumo_link::poll();
+  nowMs+=100;handleLine((edgePeer+" EREV=1 REV=1").c_str(),nowMs);zumo_link::poll();
+  assert(driveWanted && zumoUart.outgoing.find(" DRIVE -3000 -3000 ")!=std::string::npos);
+  zumo_link::stop();zumo_link::poll();nowMs+=20;handleLine((edgePeer+" EREV=1 REV=1").c_str(),nowMs);
+  zumo_link::superviseMotion();assert(!zumo_link::armMotion());assert(!motionWanted);
+  assert(!zumo_link::armMotion(true));assert(motionWanted);zumo_link::poll();
+  assert(!status.edgeRetreatReject[0] && !status.edgeRetreatDetail[0]);
+  const auto backSession=motionSession;
+  handleLine(m2Reply(status.motionBoot,backSession,0,"ARMED","NONE").c_str(),nowMs);
+  assert(!zumo_link::turnJob(20) && !zumo_link::travelJob(100) && !zumo_link::travelJob(-100));
+  const auto backJob=zumo_link::edgeBackJob(100);assert(backJob);
+  assert(!zumo_link::edgeBackJob(101));zumoUart.outgoing.clear();zumo_link::poll();
+  assert(zumoUart.outgoing.find(" BACK 100 *")!=std::string::npos);
+  std::string doneBody="M2 1234abcd "+std::to_string(backSession)+" "+std::to_string(backJob)+" DONE EDGE_BACK_DONE 500 0 10 TRAVEL=-99";
+  char donePacket[256];snprintf(donePacket,sizeof(donePacket),"0 %s *%04X",doneBody.c_str(),motionCrc(doneBody.c_str(),doneBody.size()));
+  handleLine(donePacket,nowMs);assert(status.ready && !status.edge && !status.edgeReverseAllowed && status.motionTravelledMm==-99);
+  zumo_link::stop();zumo_link::poll();
+  // Old firmware and independent hard faults never grant this exception.
+  handleLine(edgePeer.c_str(),nowMs);assert(!status.edgeReverseAllowed && !zumo_link::drive(-3000,-3000));
+  handleLine((edgePeer+" EREV=1 REV=1").c_str(),nowMs);handleLine("0 EVENT BUTTON_C",nowMs);
+  assert(!status.edgeReverseAllowed && !zumo_link::drive(-3000,-3000));zumo_link::poll();
+  std::cout<<"PASS negotiated reverse-only manual and M2 gates, 100 mm bounds, readiness polls, completion and old-peer/hard-fault lock\n";
+  calibrationTests();
+  edgeRetreatTests();
+  localRecoveryAndPushTests();
+  gestureAudioTests();
+  stillEmotionAudioTests();
+  wakeAudioTests();
+  danceCueTests();
 }

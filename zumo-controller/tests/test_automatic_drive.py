@@ -189,7 +189,7 @@ class AutomaticDriveTests(unittest.TestCase):
         self.assertEqual(self.fixture.motors.speeds, (0, 0))
         status = self.send("6 STATUS")
         self.assertIn("SCENE=1 SAFE2=1", status)
-        self.assertLess(len(status), 320)
+        self.assertLess(len(status), 768)  # XIAO receiveLine capacity, including capabilities.
 
     def setUp(self):
         self.fixture = fixtures.UARTControlTests()

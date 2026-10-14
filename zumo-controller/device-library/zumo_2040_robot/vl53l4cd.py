@@ -185,5 +185,10 @@ class VL53L4CD:
         self._write(self._SYSTEM_START, 0x00)
         self._ranging = False
 
+    def restart_ranging_nonblocking(self):
+        """Restart already configured ranging without waiting in the motor loop."""
+        self._write(self._SYSTEM_START, 0x21)
+        self._ranging = True
+
     def clear_interrupt(self):
         self._write(self._SYSTEM_INTERRUPT_CLEAR, 0x01)

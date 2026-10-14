@@ -40,17 +40,17 @@ int main() {
 
   enable();
   tick();
-  assert(mock::allocatedBytes() == 415744 && state.hasResult && state.personDetected);
+  assert(mock::allocatedBytes() == 219136 && state.hasResult && state.personDetected);
   assert(mock::modelCreated == 1 && mock::modelRuns == 1);
   assert(vision_service::setEnabled(false));
   // The control caller must not free anything still owned by the worker.
-  assert(mock::allocatedBytes() == 415744);
+  assert(mock::allocatedBytes() == 219136);
   tick();
   checkReleased();
   assert(mock::modelDestroyed == 1 && !state.hasResult);
   enable();
   tick();
-  assert(mock::modelCreated == 2 && mock::allocatedBytes() == 415744 && state.hasResult);
+  assert(mock::modelCreated == 2 && mock::allocatedBytes() == 219136 && state.hasResult);
 
   reset();
   enable();
@@ -60,7 +60,7 @@ int main() {
   assert(state.enabled && state.error[0] && mock::modelCreated == 0);
   mock::failAllocationAt = 0;
   tick();
-  assert(state.hasResult && !state.error[0] && mock::allocatedBytes() == 415744);
+  assert(state.hasResult && !state.error[0] && mock::allocatedBytes() == 219136);
 
   reset();
   enable();

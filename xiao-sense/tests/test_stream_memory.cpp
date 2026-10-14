@@ -40,7 +40,13 @@ int main() {
   assert(mock::captures == 0 && mock::sendCalls == 0 && mock::status == "503 Service Unavailable");
   assert(mock::contentType == "text/plain" && mock::errorResponses == 1);
 
-  for (size_t length : {size_t(0), size_t(256 * 1024 + 1)}) {
+  reset();
+  mock::frameLength = camera_service::kMaxJpegBytes;
+  assert(streamHandler(&request) == ESP_FAIL); // Full frame sent, then no fresh frame.
+  noLeaks();
+  assert(mock::bodySends == 1 && mock::allocationsCalled == 1 && mock::errorResponses == 0);
+
+  for (size_t length : {size_t(0), camera_service::kMaxJpegBytes + 1}) {
     reset();
     mock::frameLength = length;
     assert(streamHandler(&request) == ESP_OK);

@@ -11,12 +11,32 @@ retired. See [Gemini robot control](GEMINI_ROBOT_CONTROL.md).
 
 ## Wire contract
 
+Idle expression gestures additionally report `<wire-id> EVENT GESTURE START
+<EXPRESSION>` after their first motor pulse starts, and
+`<wire-id> EVENT GESTURE END <EXPRESSION> DONE|CANCEL` after stopping.
+The ID matches the originating `SCENE`/`FACE` request. These optional events
+trigger the original XIAO droid phrases only for a current moving request.
+`DONE` lets the full finite phrase finish after the short body gesture; `CANCEL`
+and a legacy bare `END` cancel sound immediately. Explicit bounded SERIOUS and
+SLEEPING requests instead use the matching `SCENE_VISIBLE` acknowledgment to
+trigger their own sound without movement. NEUTRAL is always quiet. Automatic neutral
+resets and Stop stay silent; they never create a new audio request.
+Unknown/late/repeated starts are ignored. Old peers simply remain silent.
+
+The matching `WAKE_VISIBLE` acknowledgment starts one 780 ms local whistle and
+chatter reply. Stale or cancelled wake acknowledgments are ignored. Cue playback
+and its 180 ms acoustic tail are withheld from cloud microphone input, while the
+local emergency Stop detector continues to receive microphone frames. Both
+controllers need the updated gesture completion reason to preserve full phrases.
+
 Legacy commands retain their format. `STATUS` advertises `MOTION=1 BOOT=xxxxxxxx SESSION=<high-water>`
 and, after any session has been opened, emits a second checksummed M2 snapshot.
 The legacy status also includes GAP, OVERRUN, DSUS, TL and TR so timing and
 encoder targets can be inspected while idle without arming a motion session.
 `TRAVEL=1 DCAL=<0|1> EXPR=1 CL=<signed count> CR=<signed count>` advertise travel,
 measured distance readiness, bounded expressions and raw encoder counts.
+`ERET=1` advertises the separately negotiated local edge-retreat capability
+(accelerometer available); its runtime eligibility is checked on every event.
 Boot is a random eight-character lowercase hexadecimal token generated on boot.
 Autonomous missions must require MOTION=1, ENC=1 and VOICE=1; they must not silently
 fall back to the legacy repeatedly refreshed SAFE/LOOK commands.
@@ -46,6 +66,7 @@ included. Both requests and snapshots have CRCs.
 | UPDATE | revision left right | Update current DRIVE target without restarting its ramp/deadline. Positive revision increases; duplicate identical revision is harmless. |
 | TURN | degrees acceleration max_ms | Relative gyro turn, positive left; -180..180 degrees, acceleration 500..6000, deadline 100..30000 ms. |
 | TRAVEL | signed_mm speed acceleration max_ms | Encoder distance with gyro heading hold; -100..300 mm, nonzero, speed 3000, acceleration 500..6000, deadline 100..15000 ms. Requires TRAVEL=1 DCAL=1 and encoder/gyro feedback. |
+| TRAVEL | signed_mm speed acceleration max_ms 1 | With ERET=1, forward-only opt-in to one local edge retreat under the same job identity, deadline and heartbeat. No fallback flag is sent to old peers. |
 | SPIN | max_ms | One continuous in-place gyro revolution, positive left; fixed fast opposite track targets, deadline 1000..30000 ms. Requires SPIN=1. |
 | MEASURE | max_ms | Wait for encoder-confirmed rest, then return median of three new valid ToF samples; deadline 100..5000 ms. |
 | ACK | none | Acknowledge current job snapshot; job ID must match. Stops terminal retransmission, does not erase result. No reply. |
@@ -79,6 +100,41 @@ Local edge, Button C, encoder errors, invalid/stale range, missed heartbeat,
 motion deadline and excessive active control-loop delay stop locally. No job
 automatically resumes after any fault, Stop, reboot or session closure.
 
+`ERET=1 E100=1 EDIRECT=1` advertises the current direct 100 mm edge reverse.
+A detected edge commits the existing job to `RECOVERING EDGE_BACK`, with equal
+-3000 targets primed immediately. It does not wait for gyro/accelerometer
+stability or inspect further floor readings during the reverse. The original
+motion is abandoned; boot/session/job, heartbeat and powered deadline survive.
+`ER` is the original sensor mask, `BACK` is measured encoder retreat, and
+`TRAVEL` includes the interrupted forward displacement and reverse.
+
+Power is cut at the 100 mm target, then the job reports `EDGE_SETTLE` while
+waiting for fresh encoder-confirmed rest. `DONE EDGE_RETREATED` requires 200 ms
+of rest and accepts measured final encoder travel from 98 to 110 mm to include
+coast. It does not certify clear floor or actual ground displacement. The same
+continuous edge episode is suppressed until each sensor first reads below its
+preserved threshold. A new edge after a clear reading is detected normally.
+
+The XIAO preserves the task and reports the measured outcome with an instruction
+to choose another heading. Stop/BRAKE, Button C, encoder/control failures, host
+lease and job/10-second deadlines remain authoritative. Obstruction backoff
+(`CAUSE=ENCODER_STALL`) retains its independent 20 mm guarded policy.
+
+Legacy manual motion uses `EDGE_AUTO_START`/`EREC=1`; held drive commands are
+ignored during recovery and until release/Stop. STATUS maintains the 750 ms
+host lease. No stopped/cancelled recovery resumes through a floor-clear event.
+
+### Requested reverse-only edge recovery
+
+`EREV=1 REV=1` permits a new reverse-only session from a plain latched edge with
+preserved calibration. `BACK <mm>` accepts 10-100 mm, uses the same direct
+encoder-only reverse and cannot invoke forward/turn/arc motion. Normal ARM still
+requires its ordinary feedback; reverse-only ARM does not require a gyro.
+`DONE EDGE_BACK_DONE` reports signed actual encoder travel. Stop and a new normal
+ARM are required to return to ordinary motion. Direct peers may report up to
+110 mm including coast. Calibration failures and cancelled/failed reverse remain
+locked. Dashboard equal-negative Back commands use the same behavior.
+
 Legacy BRAKE closes the session immediately but decelerates normally; the
 local ToF hard guard and stale-range checks remain active throughout that
 brake. STOP and faults remove motor output immediately.
@@ -110,8 +166,8 @@ revolution; small braking yaw is retained in the snapshot. Rotation beyond
 390 degrees faults with `SPIN_OVERSHOOT` even during final settling.
 `SPIN_DONE` requires
 gyro settling plus zero output and encoder-confirmed rest for 150 ms.
-Fresh ToF status 2 (no return) is usable while rotating, without inventing a
-distance. Sensor failures, stale observations, sustained unreliable status,
+Fresh ToF status 2 is displayed as **>1 metre** and is usable while rotating,
+without inventing an exact distance. Sensor failures, stale observations, sustained unreliable status,
 and a valid distance below 50 mm still stop the job locally. Starting at 50 mm
 is permitted; local floor-edge, Button C, heartbeat and timeout guards remain
 active throughout calibration, rotation and settling.
@@ -209,3 +265,45 @@ capability-based task API and
 Tasks created with the capability API require its matching deletion API on
 failure paths. Internal free bytes and largest free block still need hardware
 measurement under active dashboard, camera, voice and vision load.
+
+
+Edge retreat diagnostics (2026-10-12): a rejected local retreat appends
+`EREJ=<first_failed_condition>` and `EDETAIL=<single_token>` to its checksummed
+M2 result. These diagnostic fields do not imply an active or completed retreat;
+`ER`/`BACK` retain their existing meaning. The XIAO accepts diagnostics only for
+the current boot/session/job, preserves them through cancellation, and clears
+them for a new job or peer boot. Dashboard status and copied action events expose
+`edge_retreat_rejected_reason` and `edge_retreat_rejected_detail`.
+The detail records the five floor readings, five frozen thresholds, acceleration
+in mg, sample ages (accelerometer/gyro/encoders; -1 means missing), clean forward
+path in mm, heading error in tenths of a degree, track disagreement in mm, and
+job state. Reasons identify permission, job state/direction, short path, heading,
+track disagreement, calibration, accelerometer I/O/invalid/stale/tilt or force,
+gyro freshness/rotation, encoders, heartbeat, deadline, or button cancellation.
+
+Orientation and both retreat paths now share one timestamped accelerometer
+sample; consuming its hardware data-ready flag cannot starve another check.
+Cached reads never refresh the sample age. Global orientation stops require
+near-gravity acceleration and more than 75 degrees from upright for 200 ms.
+Guarded retreat permits a steady ramp up to 60 degrees; gyro, encoder, floor,
+lease, distance and rest checks continue to apply. This is a software threshold,
+not a tested mechanical climbing capability.
+
+Floor calibration uses baseline + max(180, 75% of remaining range to 1024) + 60,
+capped at 975. A baseline of 100 now gives 853 instead of 622. Strong readings
+at or above max(950, threshold) still stop immediately; moderate readings above
+the adjusted threshold still require 20 ms confirmation. Color transitions
+below that threshold no longer stop. Reflectance alone cannot guarantee that a
+very dark surface can be distinguished from a drop; floor/ramp acceptance needs
+a supervised physical test.
+
+Deployment verification on 2026-10-12: 394 Zumo tests, XIAO action/UART tests,
+dashboard layout tests and the production build passed. XIAO flashed on COM7;
+Zumo files backed up, installed and hash-verified on COM6. Runtime started with
+76,960 bytes free after controller initialization and no MemoryError. Saved
+Gemini settings and encoder/distance calibration files were preserved. Three
+stationary checks confirmed the new boot, link connection, zero motor/encoder
+output and no active job. Startup surface calibration remained locked with
+`CAL_FAILED`: floor readings `[1024, 267, 214, 298, 476]`. The firmware is installed;
+successful surface calibration and physical ramp/edge acceptance remain pending.
+No movement was commanded. Evidence: `xiao-sense/test-artifacts/edge-imu-fix/`.

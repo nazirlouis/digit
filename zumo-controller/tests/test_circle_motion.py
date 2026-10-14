@@ -88,6 +88,8 @@ class CircleTests(unittest.TestCase):
                 else:
                     self.tof.range_status = failure
                 self.simulate(300)
+                self.assertEqual(self.job.state, "RECOVERING")
+                self.simulate(2100)
                 self.assertFalse(self.job.active)
                 self.assertFalse(self.control._range_no_return(self.clock.now))
                 self.assertEqual(self.motors.speeds, (0, 0))
@@ -108,8 +110,8 @@ class CircleTests(unittest.TestCase):
     def test_persistent_bad_sample_has_specific_latched_evidence(self):
         self.start_circle(); self.simulate(1200)
         self.tof.range_status = 1; self.tof.distance_mm = 234
-        self.simulate(300)
-        self.assertEqual(self.job.reason, "RANGE_STATUS_1")
+        self.simulate(2350)
+        self.assertEqual(self.job.reason, "RECOVERY_FAILED")
         self.tof.range_status = 0; self.tof.distance_mm = 900
         self.simulate(30)
         self.assertTrue(self.control._range_valid(self.clock.now))
@@ -176,13 +178,16 @@ class CircleTests(unittest.TestCase):
 
     def test_gyro_stall_cancels_without_waiting_full_deadline(self):
         self.start_circle(); self.step(2000)
-        self.assertEqual(self.job.reason, "CIRCLE_STALLED")
+        self.assertEqual(self.job.reason, "BLOCKED_RECOVERED")
+        self.assertEqual(self.job.recovery_cause, "CIRCLE_STALLED")
         self.assertEqual(self.motors.speeds, (0, 0))
 
     def test_sensor_failure_cancels_circle(self):
         self.start_circle(); self.simulate(1200)
         self.gyro.fail = True
         self.step(10)
+        self.assertEqual(self.job.state, "RECOVERING")
+        self.step(2050)
         self.assertFalse(self.job.active)
         self.assertEqual(self.motors.speeds, (0, 0))
 
@@ -196,7 +201,10 @@ class CircleTests(unittest.TestCase):
                 elif failure == "range": self.tof.data_ready = False
                 else: self.clock.now += 200
                 self.step(300 if failure == "range" else 30)
-                self.assertFalse(self.job.active)
+                if failure in ("range", "gap"):
+                    self.assertEqual(self.job.state, "RECOVERING")
+                else:
+                    self.assertFalse(self.job.active)
                 self.assertEqual(self.motors.speeds, (0, 0))
 
 

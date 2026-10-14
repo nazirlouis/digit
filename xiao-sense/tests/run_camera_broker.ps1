@@ -10,6 +10,7 @@ $start = $source.IndexOf('bool copyLatestJpeg(')
 $end = $source.IndexOf('}  // namespace camera_service', $start)
 Set-Content -LiteralPath (Join-Path $output 'camera_copy.inc') -Value $source.Substring($start,$end-$start)
 Copy-Item (Join-Path $project 'src\camera_service.h') $output
+Copy-Item (Join-Path $project 'src\camera_frame_limits.h') $output
 Copy-Item (Join-Path $PSScriptRoot 'test_camera_broker.cpp') $output
 $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
 $vs = & $vswhere -latest -products * -property installationPath

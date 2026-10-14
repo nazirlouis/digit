@@ -37,7 +37,7 @@ void poll() {
     const auto z=zumo_link::snapshot(); const char* result=wake?z.wakeResult:z.sceneResult;
     if (!strcmp(result,"SENDING") || !strcmp(result,"RENDERING")) return;
     if (strcmp(result,"APPLIED")) { skip("Face unavailable"); return; }
-    current.visible=true; current.visibleAt=now; current.state=State::Playing; current.reason="Visible; silent";
+    current.visible=true; current.visibleAt=now; current.state=State::Playing; current.reason="Visible; local cue eligible";
   }
   if (current.state==State::Playing && now-current.visibleAt>=current.durationMs) { current.state=State::Complete; current.reason="Complete"; }
 }

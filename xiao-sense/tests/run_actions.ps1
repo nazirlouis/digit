@@ -2,15 +2,15 @@ $ErrorActionPreference='Stop'
 $project=Split-Path $PSScriptRoot
 $output=Join-Path $project 'test-artifacts\actions'
 New-Item -ItemType Directory -Force (Join-Path $output 'freertos') | Out-Null
-foreach($file in 'robot_actions.cpp','robot_actions.h') { Copy-Item (Join-Path $project "src\$file") $output }
+foreach($file in 'robot_actions.cpp','robot_actions.h','action_console.h') { Copy-Item (Join-Path $project "src\$file") $output }
 Copy-Item (Join-Path $project 'src\zumo_link.h') (Join-Path $output 'real_zumo_link.h')
 Copy-Item (Join-Path $PSScriptRoot 'robot_tools_mocks.h') $output
 Copy-Item (Join-Path $PSScriptRoot 'test_robot_actions.cpp') $output
-foreach($header in 'Arduino.h','audio_engine.h','zumo_link.h','reaction_player.h','personality_events.h','speech_commands.h','local_stop.h','vision_service.h','wake_word.h') { Set-Content (Join-Path $output $header) '#include "robot_tools_mocks.h"' }
+foreach($header in 'Arduino.h','audio_engine.h','zumo_link.h','reaction_player.h','personality_events.h','robot_session.h','local_stop.h','vision_service.h','wake_word.h') { Set-Content (Join-Path $output $header) '#include "robot_tools_mocks.h"' }
 Set-Content (Join-Path $output 'freertos\semphr.h') '#include "robot_tools_mocks.h"'
 $linkOutput=Join-Path $output 'link'
 New-Item -ItemType Directory -Force $linkOutput | Out-Null
-foreach($file in 'zumo_link.cpp','zumo_link.h') { Copy-Item (Join-Path $project "src\$file") $linkOutput }
+foreach($file in 'zumo_link.cpp','zumo_link.h','reaction_catalog.h','dance_music.h') { Copy-Item (Join-Path $project "src\$file") $linkOutput }
 Copy-Item (Join-Path $PSScriptRoot 'link_arduino_mock.h') (Join-Path $linkOutput 'Arduino.h')
 Copy-Item (Join-Path $PSScriptRoot 'test_zumo_link.cpp') $linkOutput
 $vswhere="${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"

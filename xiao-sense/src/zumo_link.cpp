@@ -1,4 +1,6 @@
 #include "zumo_link.h"
+#include "reaction_catalog.h"
+#include "dance_music.h"
 
 #include <cstring>
 #include <algorithm>
@@ -41,6 +43,7 @@ zumo_link::Status status = [] {
   strcpy(value.fault, "NONE"); strcpy(value.lastError, "NONE");
   strcpy(value.ledResult, "NONE"); strcpy(value.wakeResult, "NONE");
   strcpy(value.lookResult, "NONE"); strcpy(value.sceneResult, "NONE");
+  strcpy(value.calibrationResult, "NONE");
   strcpy(value.motionState, "DISARMED"); strcpy(value.motionResult, "NONE");
   return value;
 }();
@@ -49,6 +52,8 @@ int desiredRight = 0;
 int desiredAcceleration = 6000;
 int desiredStopMm = 150;
 bool driveWanted = false;
+bool manualEdgeHoldBlocked = false;
+bool reverseSession = false;
 bool turnWanted = false;
 bool safeWanted = false;
 bool stopPending = false;
@@ -61,6 +66,19 @@ uint32_t sceneDurationMs=0;
 uint16_t sceneId = 0;
 uint32_t sceneSentAt = 0;
 uint32_t presentationGeneration = 1;
+uint16_t gestureWire = 0;
+int gestureFace = 0;
+uint32_t gestureRequestedAt = 0, gestureStartedAt = 0, gestureGeneration = 0;
+bool gestureStarted = false, gestureOnVisibility = false;
+uint32_t danceCueBoot=0,danceCueSession=0;
+uint16_t danceCueJob=0;
+bool danceCueConsumed=true;
+bool stillExpression(int face) { return face == 1 || face == 5 || face == 8; }
+void cancelGestureAudio() {
+  gestureWire = 0; gestureFace = 0; gestureStarted = false;
+  gestureOnVisibility = false;
+  ++gestureGeneration;
+}
 bool ledPending = false;
 int ledTarget = -1;
 uint8_t ledRed = 0, ledGreen = 0, ledBlue = 0, ledBrightness = 0;
@@ -84,6 +102,11 @@ uint32_t lastDriveSent = 0;
 uint32_t lastStatusSent = 0;
 uint16_t nextId = 1;
 uint16_t calibrationId = 0;
+uint16_t calibrationVerifyId = 0;
+uint32_t calibrationStarted = 0, calibrationBoot = 0;
+bool calibrationActive = false, calibrationAccepted = false;
+bool calibrationVerifyPending = false, calibrationStrict = false;
+constexpr uint32_t kCalibrationTimeoutMs = 3000;
 char receiveLine[768];
 size_t received = 0;
 bool dropping = false;
@@ -116,7 +139,13 @@ bool terminalMotion(const char* value) {
   return !strcmp(value, "DONE") || !strcmp(value, "FAULT") || !strcmp(value, "DISARMED");
 }
 
+bool motionEdgeAllowed = false;
+bool motionBlockedBackoff = false;
+uint32_t motionEdgeSafety = 0;
+
 void discardMotion(const char* reason) {
+  motionEdgeAllowed = false;
+  motionBlockedBackoff = false;
   motionWanted = armPending = false;
   motionPending[0] = motionUpdate[0] = 0;
   pendingMotionJob = ackMotionJob = 0;
@@ -164,6 +193,61 @@ bool handleMotionLine(const char* line, uint32_t now) {
   // A retry or delayed ACK must never regress a completed job back to RUNNING.
   if (job && status.motionJob == job && terminalMotion(status.motionState) &&
       !terminalMotion(state)) { portEXIT_CRITICAL(&stateLock); return true; }
+  const bool recovering = !strcmp(state,"RECOVERING") || !strcmp(state,"PAUSED");
+  const bool retreated = !strcmp(state,"DONE") && !strcmp(result,"EDGE_RETREATED");
+  unsigned long recoveryCount=0;
+  char recoveryReason[24] = {};
+  const char* recoveryData=strstr(body," REC=");
+  const bool recoveryFields=recoveryData &&
+      sscanf(recoveryData," REC=%lu CAUSE=%23s",&recoveryCount,recoveryReason)==2;
+  const bool blockedBackoff=status.localRecoveryCapable && !strcmp(recoveryReason,"ENCODER_STALL") &&
+      ((recovering && (!strncmp(result,"EDGE_",5) || !strncmp(result,"BLOCK_",6))) ||
+       (!strcmp(state,"DONE") && !strcmp(result,"BLOCKED_RECOVERED") && (motionBlockedBackoff || strstr(body," BACK="))));
+  const bool retreating = recovering && !strncmp(result,"EDGE_",5) && !blockedBackoff;
+  if (status.localRecoveryCapable && job && recoveryCount<status.motionRecoveryCount) {
+    // An old pre-recovery reply must not overwrite measured progress or state.
+    portEXIT_CRITICAL(&stateLock); return true;
+  }
+  if (recovering && !retreating && (!status.localRecoveryCapable || !job || !recoveryFields ||
+      !recoveryCount || !strcmp(recoveryReason,"NONE") || stopPending || status.safetyEvents!=motionEdgeSafety)) {
+    discardMotion("RECOVERY_PROTOCOL"); ++status.safetyEvents; stopPending=true; brakePending=false;
+    snprintf(status.lastError,sizeof(status.lastError),"RECOVERY_PROTOCOL");
+    portEXIT_CRITICAL(&stateLock); return true;
+  }
+  int edgeMask=0, backMm=0;
+  const char* edgeData = strstr(body," ER=");
+  const bool edgeFields=edgeData && sscanf(edgeData," ER=%d BACK=%d",&edgeMask,&backMm)==2;
+  if (blockedBackoff && (!motionEdgeAllowed || !edgeFields || edgeMask || backMm<0 || backMm>20 ||
+      (!strcmp(state,"DONE") && backMm<10) || stopPending || status.safetyEvents!=motionEdgeSafety)) {
+    discardMotion("RECOVERY_PROTOCOL"); ++status.safetyEvents; stopPending=true; brakePending=false;
+    snprintf(status.lastError,sizeof(status.lastError),"RECOVERY_PROTOCOL");
+    portEXIT_CRITICAL(&stateLock); return true;
+  }
+  if (motionBlockedBackoff && !strcmp(state,"DONE") && !blockedBackoff) {
+    discardMotion("RECOVERY_PROTOCOL"); ++status.safetyEvents; stopPending=true; brakePending=false;
+    snprintf(status.lastError,sizeof(status.lastError),"RECOVERY_PROTOCOL");
+    portEXIT_CRITICAL(&stateLock); return true;
+  }
+  if (blockedBackoff) motionBlockedBackoff=true;
+  if (status.motionEdgeMask && !strcmp(state,"DONE") && !retreated) {
+    discardMotion("EDGE_PROTOCOL"); ++status.safetyEvents; stopPending=true; brakePending=false;
+    snprintf(status.lastError,sizeof(status.lastError),"EDGE_PROTOCOL");
+    portEXIT_CRITICAL(&stateLock); return true;
+  }
+  if (retreating || retreated) {
+    const bool known = retreated || !strcmp(result,"EDGE_WAIT") || !strcmp(result,"EDGE_BACK") || !strcmp(result,"EDGE_SETTLE");
+    if (!job || !motionEdgeAllowed || stopPending || status.safetyEvents!=motionEdgeSafety ||
+        !status.edgeRetreatCapable || !known || !edgeFields ||
+        edgeMask<1 || edgeMask>31 || backMm<0 || backMm>(status.edgeDirectReverseCapable ? 110 : status.edgeRetreat100Capable ? 102 : 20) ||
+        (retreated && backMm<(status.edgeRetreat100Capable ? 98 : 5))) {
+      discardMotion("EDGE_PROTOCOL"); ++status.safetyEvents; stopPending=true; brakePending=false;
+      snprintf(status.lastError,sizeof(status.lastError),"EDGE_PROTOCOL");
+      portEXIT_CRITICAL(&stateLock); return true;
+    }
+  } else if (status.motionEdgeMask && !terminalMotion(state)) {
+    // A delayed pre-edge RUNNING/CALIBRATING reply cannot undo the recovery.
+    portEXIT_CRITICAL(&stateLock); return true;
+  }
   lastReply = now;
   status.connected = true;
   status.motionSession = session;
@@ -175,15 +259,71 @@ bool handleMotionLine(const char* line, uint32_t now) {
   if (rangeDiagnostic) sscanf(rangeDiagnostic," RS=%d RAW=%d",&status.motionRangeStatus,&status.motionRawDistanceMm);
   status.motionHeadingDeciDeg = heading;
   status.motionTravelledMm = 0;
+  status.motionRecoveryCount=static_cast<uint32_t>(recoveryCount);
+  snprintf(status.motionRecoveryReason,sizeof(status.motionRecoveryReason),"%s",recoveryReason);
+  int positionKnown=1;
+  const char* knownData=strstr(body," KNOWN=");
+  if (knownData && sscanf(knownData," KNOWN=%d",&positionKnown)!=1) positionKnown=0;
+  // Lost pose certainty cannot be restored by a delayed or incomplete frame
+  // from the same job. Only a newly submitted movement resets this flag.
+  status.motionPositionKnown=status.motionPositionKnown && positionKnown==1;
+  if (!strcmp(result,"EDGE") && status.edgeReverseCapable) {
+    status.ready=false; status.edge=true;
+    snprintf(status.fault,sizeof(status.fault),"EDGE");
+    status.edgeReverseAllowed=strstr(body," REV=1") != nullptr;
+  }
   const char* travel = strstr(body, " TRAVEL=");
   if (travel) sscanf(travel, " TRAVEL=%d", &status.motionTravelledMm);
+  if (!strcmp(state,"DONE") && !strcmp(result,"EDGE_BACK_DONE")) {
+    if (!reverseSession || !job || !travel || status.motionTravelledMm>0 ||
+        status.motionTravelledMm < (status.edgeDirectReverseCapable ? -110 : -100) ||
+        status.safetyEvents!=motionEdgeSafety || stopPending) {
+      discardMotion("EDGE_PROTOCOL"); ++status.safetyEvents; stopPending=true; brakePending=false;
+      portEXIT_CRITICAL(&stateLock); return true;
+    }
+    status.ready=true; status.edge=false; status.edgeReverseAllowed=false;
+    snprintf(status.fault,sizeof(status.fault),"NONE");
+    snprintf(status.lastError,sizeof(status.lastError),"NONE");
+  }
   status.motionRangeAgeMs = age;
   status.motionSample = job;
+  status.motionEdgeMask = edgeMask;
+  status.motionRetreatMm = backMm;
+  // Diagnostic-only tokens, accepted only after CRC and job correlation.
+  if (const char* rejected=strstr(body," EREJ=")) {
+    sscanf(rejected," EREJ=%23s",status.edgeRetreatReject);
+    if (const char* detail=strstr(body," EDETAIL="))
+      sscanf(detail," EDETAIL=%255s",status.edgeRetreatDetail);
+  }
   snprintf(status.motionState, sizeof(status.motionState), "%s", state);
   snprintf(status.motionResult, sizeof(status.motionResult), "%s", result);
   status.motionArmed = strcmp(state,"DISARMED") && strcmp(state,"FAULT");
   status.motionActive = !strcmp(state,"RUNNING") || !strcmp(state,"CALIBRATING") ||
-      !strcmp(state,"BRAKING") || !strcmp(state,"SETTLING");
+      !strcmp(state,"BRAKING") || !strcmp(state,"SETTLING") || recovering;
+  const bool danceOwner=motionWanted && danceCueJob && job==danceCueJob &&
+      boot==danceCueBoot && session==danceCueSession && !stopPending;
+  if(danceOwner && !danceCueConsumed && !strcmp(state,"RUNNING") && !strcmp(result,"DANCING") &&
+      status.ready && !status.edge && !strcmp(status.fault,"NONE") && !status.calibrating) {
+    danceCueConsumed=true; gestureFace=15; gestureWire=0;
+    gestureOnVisibility=false; gestureStarted=true;
+    gestureRequestedAt=gestureStartedAt=now; ++gestureGeneration;
+  } else if(gestureFace==15) {
+    const bool musicState=(!strcmp(state,"RUNNING")&&!strcmp(result,"DANCING")) ||
+        (!strcmp(state,"SETTLING")&&!strcmp(result,"DANCE_SETTLING"));
+    if(!danceOwner||!musicState) cancelGestureAudio();
+  }
+  if (retreating) {
+    status.ready=false; status.edge=true;
+    snprintf(status.fault,sizeof(status.fault),"EDGE_RETREAT");
+  }
+  if (retreated) {
+    // The matching checksummed completion certifies stopped encoders. Direct
+    // reverse does not certify clear floor or clear any independent event.
+    status.ready=true; status.edge=false;
+    snprintf(status.fault,sizeof(status.fault),"NONE");
+    status.encoderLeftCps=status.encoderRightCps=0;
+    status.targetLeftCps=status.targetRightCps=0;
+  }
   if (!strcmp(state,"DONE")) {
     motionUpdate[0]=0;
     // M2 completion certifies encoder-confirmed rest, unlike legacy ARRIVED.
@@ -223,6 +363,7 @@ uint16_t sendPrefix() {
 }
 
 void queueStop(bool smooth = false) {
+  cancelGestureAudio();
   stopPending = true;
   brakePending = smooth;
 }
@@ -246,7 +387,25 @@ void finishLook(const char* result, bool sendStop) {
   }
 }
 
+void finishCalibration(const char* result) {
+  calibrationActive = calibrationPending = calibrationAccepted = false;
+  calibrationVerifyPending = false;
+  calibrationId = calibrationVerifyId = 0;
+  status.calibrating = false;
+  status.ready = !strcmp(result, "COMPLETED");
+  snprintf(status.calibrationResult, sizeof(status.calibrationResult), "%.23s", result);
+}
+
+bool calibrationStationary() {
+  return !driveWanted && !motionWanted && !status.motionArmed && !status.motionActive &&
+      !status.lookActive && !lookPending && !status.left && !status.right &&
+      !status.targetLeftCps && !status.targetRightCps && status.encoderControl &&
+      std::abs(status.encoderLeftCps) <= 50 && std::abs(status.encoderRightCps) <= 50;
+}
+
 void manualOverride() {
+  cancelGestureAudio();
+  if (calibrationActive) finishCalibration("CANCELLED");
   if (motionWanted) { discardMotion("CANCELLED"); queueStop(); }
   ++status.controlGeneration;
   status.approachArrived = false;
@@ -256,6 +415,28 @@ void manualOverride() {
 }
 
 void handleLine(const char* line, uint32_t now) {
+  unsigned gestureId = 0;
+  char phase[8] = {}, expression[16] = {}, completion[8] = {}, extra = 0;
+  const int gestureFields = sscanf(line, "%u EVENT GESTURE %7s %15s %7s %c", &gestureId, phase, expression, completion, &extra);
+  if (gestureFields == 3 || gestureFields == 4) {
+    portENTER_CRITICAL(&stateLock);
+    if (gestureWire && gestureId == gestureWire && faceIndex(expression) == gestureFace) {
+      if (!strcmp(phase,"END")) {
+        // Natural motor completion must not cut off the approved longer phrase.
+        // A legacy bare END or any cancellation still stops sound immediately.
+        if (gestureStarted && !strcmp(completion,"DONE")) gestureWire = 0;
+        else cancelGestureAudio();
+      }
+      else if (!strcmp(phase,"START") && !completion[0] && !gestureOnVisibility && !gestureStarted && now-gestureRequestedAt < 1500 &&
+               lastReply && now-lastReply < 500 && status.ready && !status.edge &&
+               !strcmp(status.fault,"NONE") && !status.calibrating && !driveWanted &&
+               !motionWanted && !status.lookActive && !stopPending) {
+        gestureStarted = true; gestureStartedAt = now; ++gestureGeneration;
+      }
+    }
+    portEXIT_CRITICAL(&stateLock);
+    return;
+  }
   if (handleMotionLine(line, now)) return;
   unsigned id = 0;
   int ready = 0, left = 0, right = 0, battery = -1, edge = 0, voice = 0;
@@ -317,10 +498,25 @@ void handleLine(const char* line, uint32_t now) {
       snprintf(status.lastError, sizeof(status.lastError), "PEER_RESTART");
       queueStop();
     }
-    if (boot != status.motionBoot) nextMotionSession=0;
+    if (boot != status.motionBoot) { nextMotionSession=0; cancelGestureAudio(); }
+    if (calibrationActive && calibrationBoot && boot != calibrationBoot) {
+      finishCalibration("PEER_RESTART");
+      queueStop();
+    }
     nextMotionSession=std::max(nextMotionSession,static_cast<uint32_t>(sessionFloor));
     status.motionCapable = capableMotion && boot && sessionField;
     status.distanceCalibrated = strstr(line," TRAVEL=1") != nullptr && strstr(line," DCAL=1") != nullptr;
+    status.edgeRetreatCapable = strstr(line," ERET=1") != nullptr;
+    status.edgeRetreat100Capable = status.edgeRetreatCapable && strstr(line," E100=1") != nullptr;
+    status.edgeDirectReverseCapable = status.edgeRetreat100Capable && strstr(line," EDIRECT=1") != nullptr;
+    status.automaticEdgeRecovery = status.edgeRetreat100Capable && edge && !strcmp(fault,"EDGE") && strstr(line," EREC=1");
+    if (status.automaticEdgeRecovery) manualEdgeHoldBlocked=true;
+    status.edgeReverseCapable = strstr(line," EREV=1") != nullptr;
+    status.localRecoveryCapable = status.motionCapable && strstr(line," RECOVERY=1") != nullptr;
+    status.pushCapable = status.localRecoveryCapable && strstr(line," PUSH=1") != nullptr;
+    status.danceCapable = status.motionCapable && strstr(line," DANCE=1") != nullptr;
+    status.edgeReverseAllowed = status.edgeReverseCapable && edge && !strcmp(fault,"EDGE") && strstr(line," REV=1");
+    if (status.motionBoot != boot) status.edgeRetreatReject[0]=status.edgeRetreatDetail[0]=0;
     status.motionBoot = boot;
     status.distanceMm = distance;
     status.rangeValid = valid == 1;
@@ -343,8 +539,20 @@ void handleLine(const char* line, uint32_t now) {
     status.chaseCloseCapable = strstr(line, " CLOSE=2") != nullptr;
     status.closeApproachCapable = status.chaseCloseCapable || strstr(line, " CLOSE=1") != nullptr;
     snprintf(status.fault, sizeof(status.fault), "%s", fault);
+    // A confirmed normal floor status supersedes the historical edge warning.
+    // Readiness never restores cancelled drive requests or motion sessions.
+    if (status.ready && !status.edge && !strcmp(fault,"NONE") && !strcmp(status.lastError,"EDGE"))
+      snprintf(status.lastError, sizeof(status.lastError), "NONE");
+    if (calibrationActive && calibrationAccepted && calibrationVerifyId && id == calibrationVerifyId) {
+      calibrationVerifyId = 0;
+      if (ready && !edge && !strcmp(fault,"NONE") &&
+          (!calibrationStrict || calibrationStationary())) {
+        finishCalibration("COMPLETED");
+        snprintf(status.lastError, sizeof(status.lastError), "NONE");
+      }
+    }
     if (!status.ready) {
-      clearDrive();
+      if (!(status.edgeReverseAllowed && !safeWanted && !turnWanted && desiredLeft<0 && desiredLeft==desiredRight)) clearDrive();
       finishLook("NOT_READY", true);
     }
     portEXIT_CRITICAL(&stateLock);
@@ -359,6 +567,14 @@ void handleLine(const char* line, uint32_t now) {
   status.connected = true;
   if (id == sceneId && sceneId) {
     const char* error = strstr(line, " ERR ");
+    // Still emotions have their own cue after a complete visible frame.
+    // Only explicit bounded expressions qualify: Stop/expiry/navigation
+    // neutral resets must remain silent and cannot start a new sound.
+    if (id == gestureWire && gestureOnVisibility && !gestureStarted &&
+        now-gestureRequestedAt < 1500 && strstr(line," OK SCENE_VISIBLE")) {
+      gestureStarted = true; gestureStartedAt = now; ++gestureGeneration;
+    }
+    if (id == gestureWire && error) cancelGestureAudio();
     snprintf(status.sceneResult, sizeof(status.sceneResult), "%s",
              strstr(line, " OK SCENE_VISIBLE") ? "APPLIED" : strstr(line, " OK SCENE") ? "RENDERING" : error ? error + 5 : "BAD_REPLY");
     if (!status.motionCapable && !strcmp(status.sceneResult,"RENDERING"))
@@ -386,10 +602,20 @@ void handleLine(const char* line, uint32_t now) {
              strstr(line, " OK WAKE_VISIBLE") ? "APPLIED" :
              strstr(line, " OK WAKE") ? (status.motionCapable ? "RENDERING" : "APPLIED") :
              error ? error + 5 : "BAD_REPLY");
+    if (!strcmp(status.wakeResult, "APPLIED")) {
+      cancelGestureAudio();
+      gestureWire = static_cast<uint16_t>(id);
+      gestureFace = 14;  // The local wake acknowledgment, not a new face.
+      gestureStarted = true;
+      gestureStartedAt = now;
+      ++gestureGeneration;
+    }
     if (strcmp(status.wakeResult, "RENDERING")) wakeCommandId = 0;
   }
-  if (strcmp(line, "0 EVENT WAKE_FAILED") == 0)
+  if (strcmp(line, "0 EVENT WAKE_FAILED") == 0) {
     snprintf(status.wakeResult, sizeof(status.wakeResult), "WAKE_IO");
+    if (gestureFace == 14) cancelGestureAudio();
+  }
   if (id == ledCommandId && ledCommandId != 0) {
     if (strstr(line, " OK LED") != nullptr) {
       snprintf(status.ledResult, sizeof(status.ledResult), "APPLIED");
@@ -400,25 +626,47 @@ void handleLine(const char* line, uint32_t now) {
     ledCommandId = 0;
   }
   if (strcmp(line, "0 EVENT READY") == 0) {
-    status.ready = true;
-    status.calibrating = false;
-    status.edge = false;
-    snprintf(status.fault, sizeof(status.fault), "NONE");
-    snprintf(status.lastError, sizeof(status.lastError), "NONE");
+    if (calibrationActive) {
+      // Unnumbered events cannot complete a request. A current acknowledgement,
+      // the sampling interval, and a subsequent numbered STATUS are all needed.
+      if (calibrationAccepted && now-calibrationStarted >= 500) {
+        calibrationVerifyPending = true;
+        snprintf(status.calibrationResult, sizeof(status.calibrationResult), "VERIFYING");
+      }
+    } else if (!status.calibrationGeneration) {
+      status.ready = true;
+      status.calibrating = false;
+      status.edge = false;
+      snprintf(status.fault, sizeof(status.fault), "NONE");
+      snprintf(status.lastError, sizeof(status.lastError), "NONE");
+    }
+  } else if (!strcmp(line,"0 EVENT EDGE_AUTO_START") && status.edgeRetreat100Capable && !motionWanted && !stopPending) {
+    // The local manual recovery owns the tracks. Status polling maintains its
+    // host lease; discard the held forward command without sending STOP.
+    status.ready=false; status.edge=true; status.automaticEdgeRecovery=true;
+    manualEdgeHoldBlocked=true;
+    snprintf(status.fault,sizeof(status.fault),"EDGE");
+    clearDrive(); cancelGestureAudio();
   } else if (strcmp(line, "0 EVENT CAL_FAILED") == 0 ||
              strcmp(line, "0 EVENT EDGE") == 0 ||
              strcmp(line, "0 EVENT BUTTON_C") == 0 ||
              strcmp(line, "0 EVENT TURN_FAULT") == 0 ||
              strcmp(line, "0 EVENT SENSOR") == 0 ||
-             strcmp(line, "0 EVENT ENCODER") == 0) {
+             strcmp(line, "0 EVENT ENCODER") == 0 || !strncmp(line,"0 EVENT EDGE_",13)) {
     const char* reason = line + strlen("0 EVENT ");
-    ++status.safetyEvents;
+    if (calibrationActive) finishCalibration(reason);
+    // One physical edge produces both a terminal M2 result and an event.
+    const bool duplicateEdge = !strcmp(reason,"EDGE") && status.edge && !strcmp(status.motionResult,"EDGE") &&
+        !strcmp(status.lastError,"EDGE") && now-status.motionTimestampMs<=250;
+    if (!duplicateEdge) ++status.safetyEvents;
     status.ready = false;
     status.calibrating = false;
     status.edge = strcmp(reason, "EDGE") == 0;
+    if (!duplicateEdge) status.edgeReverseAllowed=false;
     status.left = status.right = 0;
     snprintf(status.fault, sizeof(status.fault), "%.23s", reason);
     snprintf(status.lastError, sizeof(status.lastError), "%.31s", reason);
+    if (motionWanted) discardMotion(reason);
     clearDrive();
     finishLook(reason, true);
     queueStop();
@@ -430,15 +678,24 @@ void handleLine(const char* line, uint32_t now) {
   } else if (strcmp(line, "0 EVENT TIMEOUT") == 0 ||
              strcmp(line, "0 EVENT OBSTACLE") == 0) {
     const char* reason = line + strlen("0 EVENT ");
+    if (calibrationActive) finishCalibration(reason);
     snprintf(status.lastError,sizeof(status.lastError),"%.31s",reason);
+    if (motionWanted) discardMotion(reason);
     ++status.safetyEvents;
     status.left = status.right = 0;
     clearDrive();
     finishLook(reason, true);
     queueStop();
   } else if (strstr(line, " OK CALIBRATING") != nullptr) {
-    status.calibrating = true;
-    status.ready = false;
+    if (calibrationActive && calibrationId && id == calibrationId) {
+      calibrationAccepted = true;
+      calibrationStarted = now;
+      status.calibrating = true;
+      status.ready = false;
+      snprintf(status.calibrationResult, sizeof(status.calibrationResult), "CALIBRATING");
+    } else if (!id && !status.calibrationGeneration) {
+      status.calibrating = true; status.ready = false;
+    }
   } else if (strstr(line, " ERR ") != nullptr) {
     const char* reason = strstr(line, " ERR ") + 5;
     if (!strncmp(reason,"M2_",3)) {
@@ -454,10 +711,7 @@ void handleLine(const char* line, uint32_t now) {
       ++status.safetyEvents; clearDrive(); queueStop();
     }
     snprintf(status.lastError, sizeof(status.lastError), "%s", reason);
-    if (id == calibrationId) {
-      status.calibrating = false;
-      status.ready = false;
-    }
+    if (calibrationActive && calibrationId && id == calibrationId) finishCalibration(reason);
   }
   portEXIT_CRITICAL(&stateLock);
 }
@@ -510,30 +764,60 @@ Status snapshot() {
   return result;
 }
 
+void gestureAudio(uint32_t& generation, uint8_t& expression) {
+  portENTER_CRITICAL(&stateLock);
+  const uint32_t now = millis();
+  const bool dance=gestureFace==15&&motionWanted&&status.motionArmed&&status.motionActive&&
+      status.motionBoot==danceCueBoot&&status.motionSession==danceCueSession&&status.motionJob==danceCueJob&&
+      (!strcmp(status.motionResult,"DANCING")||!strcmp(status.motionResult,"DANCE_SETTLING"));
+  const bool safe = lastReply && now-lastReply < 500 && status.ready && !status.edge &&
+      !strcmp(status.fault,"NONE") && !status.calibrating && !driveWanted && (dance||(!motionWanted&&!status.motionArmed)) &&
+      !status.lookActive && !stopPending && !wakePending && !wakeCommandId &&
+      (!gestureOnVisibility || (!status.left && !status.right));
+  const uint32_t cueDuration = gestureFace == 15 ? DanceMusic::kDurationMs : gestureFace == 14 ? reaction_catalog::wake[1].voiceMs :
+      gestureFace >= 1 && gestureFace <= 13 ? reaction_catalog::expression[gestureFace-1].voiceMs : 0;
+  if ((gestureWire || gestureStarted) &&
+      (!safe || (gestureStarted ? now-gestureStartedAt >= cueDuration+180 : now-gestureRequestedAt >= 1500)))
+    cancelGestureAudio();
+  generation = gestureGeneration;
+  expression = gestureStarted ? static_cast<uint8_t>(gestureFace) : 0;
+  portEXIT_CRITICAL(&stateLock);
+}
+
 void superviseMotion() {
   portENTER_CRITICAL(&stateLock);
   supervisorAt = millis();
   portEXIT_CRITICAL(&stateLock);
 }
 
-bool armMotion() {
+bool armMotion(bool reverseOnly) {
   portENTER_CRITICAL(&stateLock);
   const auto now = millis();
   if (motionWanted) {
     const bool armed = status.motionArmed && !armPending;
     portEXIT_CRITICAL(&stateLock); return armed;
   }
-  const bool allowed = status.motionCapable && status.encoderControl && status.ready &&
-      !status.edge && !strcmp(status.fault,"NONE") && lastReply && now-lastReply < 1000 &&
+  const bool edgeBack = reverseOnly && status.edgeReverseAllowed && status.edge && !strcmp(status.fault,"EDGE");
+  const bool allowed = status.motionCapable && status.encoderControl &&
+      ((status.ready && !status.edge && !strcmp(status.fault,"NONE")) || edgeBack) && lastReply && now-lastReply < 1000 &&
       !status.calibrating && !driveWanted && !status.lookActive && !stopPending &&
+      // A gesture pause can have zero PWM while the tracks are still settling.
+      std::abs(status.encoderLeftCps) <= 50 && std::abs(status.encoderRightCps) <= 50 &&
       !status.left && !status.right && nextMotionSession != UINT32_MAX && now-supervisorAt < kSupervisorLeaseMs;
   if (allowed) {
+    reverseSession=edgeBack;
     motionSession = ++nextMotionSession;
     if (!motionSession) motionSession = ++nextMotionSession;
     nextMotionJob = 1; driveRevision = heartbeatCounter = 0;
     motionWanted = armPending = true;
     status.motionSession = motionSession;
     status.motionJob = 0;
+    status.motionEdgeMask=status.motionRetreatMm=0;
+    status.edgeRetreatReject[0]=status.edgeRetreatDetail[0]=0;
+    status.motionRecoveryCount=0; status.motionRecoveryReason[0]=0;
+    status.motionPositionKnown=true;
+    motionEdgeAllowed=false;
+    motionBlockedBackoff=false;
     status.motionArmed = status.motionActive = false;
     snprintf(status.motionState,sizeof(status.motionState),"ARMING");
     snprintf(status.motionResult,sizeof(status.motionResult),"NONE");
@@ -543,13 +827,24 @@ bool armMotion() {
   return false; // Only the peer's acknowledgement grants autonomous authority.
 }
 
-static uint32_t submitJob(const char* verb, const char* args) {
+static uint32_t submitJob(const char* verb, const char* args, bool edgeRetreat=false) {
   portENTER_CRITICAL(&stateLock);
   const bool allowed = motionWanted && status.motionArmed && !armPending &&
+      (reverseSession == !strcmp(verb,"BACK")) &&
       !status.motionActive && !motionPending[0] && !stopPending &&
       millis()-supervisorAt < kSupervisorLeaseMs && nextMotionJob != 0;
   const uint16_t job = allowed ? nextMotionJob++ : 0;
   if (job) {
+    danceCueJob=!strcmp(verb,"DANCE") ? job : 0;
+    danceCueBoot=status.motionBoot; danceCueSession=motionSession;
+    danceCueConsumed=danceCueJob==0;
+    motionEdgeAllowed=edgeRetreat || (status.edgeRetreat100Capable && strcmp(verb,"MEASURE") && strcmp(verb,"BACK"));
+    motionBlockedBackoff=false;
+    motionEdgeSafety=status.safetyEvents;
+    status.motionEdgeMask=status.motionRetreatMm=0;
+    status.edgeRetreatReject[0]=status.edgeRetreatDetail[0]=0;
+    status.motionRecoveryCount=0; status.motionRecoveryReason[0]=0;
+    status.motionPositionKnown=true;
     motionUpdate[0]=0;
     status.motionJob = job; status.motionActive = true;
     snprintf(status.motionState,sizeof(status.motionState),"SENDING");
@@ -569,10 +864,25 @@ uint32_t driveJob(int left, int right, int stopMm, uint32_t maxMs) {
   return submitJob("DRIVE",args);
 }
 
-uint32_t travelJob(int distanceMm, uint32_t maxMs) {
+uint32_t travelJob(int distanceMm, uint32_t maxMs, bool edgeRetreat) {
   if (!distanceMm || distanceMm < -100 || distanceMm > 300 || maxMs < 100 || maxMs > 15000 || !snapshot().distanceCalibrated) return 0;
-  char args[48]; snprintf(args,sizeof(args),"%d 3000 %d %lu",distanceMm,acceleration(),static_cast<unsigned long>(maxMs));
-  return submitJob("TRAVEL",args);
+  const bool permit = edgeRetreat && distanceMm>0 && snapshot().edgeRetreatCapable;
+  char args[48]; snprintf(args,sizeof(args),"%d 3000 %d %lu%s",distanceMm,acceleration(),static_cast<unsigned long>(maxMs),permit?" 1":"");
+  return submitJob("TRAVEL",args,permit);
+}
+
+uint32_t edgeBackJob(int distanceMm) {
+  if (distanceMm<10 || distanceMm>100 || !snapshot().edgeReverseCapable) return 0;
+  char args[12]; snprintf(args,sizeof(args),"%d",distanceMm);
+  return submitJob("BACK",args);
+}
+
+uint32_t pushJob(int distanceMm) {
+  const auto z=snapshot();
+  if (distanceMm<10 || distanceMm>300 || !z.pushCapable || !z.localRecoveryCapable || !z.distanceCalibrated) return 0;
+  char args[12]; snprintf(args,sizeof(args),"%d",distanceMm);
+  // There is deliberately no legacy DRIVE fallback or caller-selected speed.
+  return submitJob("PUSH",args,z.edgeRetreatCapable);
 }
 
 uint32_t turnJob(int degrees, uint32_t maxMs) {
@@ -590,6 +900,10 @@ uint32_t circleJob(int speed) {
 }
 
 uint32_t measureJob() { return submitJob("MEASURE","2500"); }
+uint32_t danceJob() {
+  if(!snapshot().danceCapable) return 0;
+  return submitJob("DANCE","8000");
+}
 
 uint32_t spinJob(uint32_t maxMs) {
   if (maxMs < 1000 || maxMs > 30000 || !snapshot().spinCapable) return 0;
@@ -631,7 +945,14 @@ bool drive(int left, int right, int acceleration) {
   }
   portENTER_CRITICAL(&stateLock);
   const uint32_t now = millis();
-  const bool allowed = status.ready && lastReply != 0 &&
+  if (manualEdgeHoldBlocked && (left || right) && lastReply && now-lastReply<250 && !stopPending &&
+      (!strcmp(status.fault,"EDGE") || !strcmp(status.fault,"NONE"))) {
+    portEXIT_CRITICAL(&stateLock); return true;  // Discard held commands while local reverse owns the tracks.
+  }
+  if (!left && !right) manualEdgeHoldBlocked=false;
+  const bool normal = status.ready && !status.edge && !strcmp(status.fault,"NONE");
+  const bool reverse = status.edgeReverseAllowed && status.edge && !strcmp(status.fault,"EDGE") && left<0 && left==right;
+  const bool allowed = (normal || reverse) && lastReply != 0 &&
                        now - lastReply < kLinkTimeoutMs &&
                        !status.calibrating;
   if (allowed) {
@@ -676,6 +997,7 @@ bool turn(int speed) {
 
 void stop(bool smooth) {
   portENTER_CRITICAL(&stateLock);
+  manualEdgeHoldBlocked=false;
   manualOverride();
   clearDrive();
   wakePending = false;
@@ -717,15 +1039,27 @@ bool safeDrive(int left, int right, int stopDistanceMm) {
   return allowed;
 }
 
-bool calibrate() {
+bool beginCalibration(bool strict) {
   portENTER_CRITICAL(&stateLock);
   const uint32_t now = millis();
   const bool allowed = lastReply != 0 && now - lastReply < kLinkTimeoutMs &&
-                       !driveWanted && !status.calibrating;
+      !driveWanted && !status.calibrating && !calibrationActive &&
+      (!strict || (status.statusTimestampMs && now-status.statusTimestampMs <= 250 &&
+       !stopPending && calibrationStationary() &&
+       (!strcmp(status.fault,"NONE") || !strcmp(status.fault,"EDGE") || !strcmp(status.fault,"CAL_FAILED"))));
   if (allowed) {
     manualOverride();
+    ++status.calibrationGeneration;
+    if (!status.calibrationGeneration) ++status.calibrationGeneration;
+    calibrationActive = true;
+    calibrationStrict = strict;
+    calibrationAccepted = calibrationVerifyPending = false;
+    calibrationId = calibrationVerifyId = 0;
+    calibrationStarted = now;
+    calibrationBoot = status.motionBoot;
     status.ready = false;
     status.calibrating = true;
+    snprintf(status.calibrationResult, sizeof(status.calibrationResult), "QUEUED");
     snprintf(status.lastError, sizeof(status.lastError), "NONE");
     queueStop();
     calibrationPending = true;
@@ -733,6 +1067,9 @@ bool calibrate() {
   portEXIT_CRITICAL(&stateLock);
   return allowed;
 }
+
+bool calibrate() { return beginCalibration(false); }
+bool calibrateSurface() { return beginCalibration(true); }
 
 bool isFaceName(const char* name) {
   return faceIndex(name) != 0;
@@ -745,7 +1082,7 @@ bool wake() {
   const bool allowed = connected && !driveWanted && !status.lookActive && !status.calibrating &&
                        !calibrationPending && !stopPending && !facePending && !ledPending &&
                        !wakePending && !wakeCommandId && status.left == 0 && status.right == 0;
-  if (allowed) { wakePending = true; wakeSentAt = now; }
+  if (allowed) { cancelGestureAudio(); wakePending = true; wakeSentAt = now; }
   snprintf(status.wakeResult, sizeof(status.wakeResult), "%s",
            allowed ? "SENDING" : connected ? "BUSY" : "DISCONNECTED");
   portEXIT_CRITICAL(&stateLock);
@@ -796,10 +1133,12 @@ bool scene(const char* expression, const char* label, uint32_t durationMs) {
   portENTER_CRITICAL(&stateLock);
   const uint32_t now = millis();
   const bool allowed = lastReply && now - lastReply < 500 && status.sceneCapable && (!durationMs || status.expressionCapable) &&
-      !driveWanted && !stopPending && !status.edge && !strcmp(status.fault,"NONE") &&
+      // A latched EDGE fault still blocks every motion path, not display-only scenes.
+      !driveWanted && !stopPending && (!strcmp(status.fault,"NONE") || !strcmp(status.fault,"EDGE")) &&
       !status.calibrating && !scenePending && !sceneId && !facePending && !wakePending && !wakeCommandId;
   if (allowed) {
     scenePending = face; sceneDurationMs=durationMs;
+    cancelGestureAudio();
     snprintf(sceneLabel, sizeof(sceneLabel), "%s", label);
     snprintf(status.sceneResult, sizeof(status.sceneResult), "SENDING");
   }
@@ -809,6 +1148,7 @@ bool scene(const char* expression, const char* label, uint32_t durationMs) {
 
 void cancelScene() {
   portENTER_CRITICAL(&stateLock);
+  cancelGestureAudio();
   ++presentationGeneration;
   scenePending = 0; sceneId = 0;
   snprintf(status.sceneResult, sizeof(status.sceneResult), "CANCELLED");
@@ -817,6 +1157,7 @@ void cancelScene() {
 
 void cancelWake() {
   portENTER_CRITICAL(&stateLock);
+  if (gestureFace == 14) cancelGestureAudio();
   ++presentationGeneration;
   // Cleanup also runs before unrelated face reactions. Only unfinished wake
   // requests are cancelled; retain acknowledged results and diagnostic errors.
@@ -856,6 +1197,7 @@ bool face(const char* name) {
                        status.left == 0 && status.right == 0;
   if (allowed) {
     facePending = index;
+    cancelGestureAudio();
     if (wakePending) snprintf(status.wakeResult, sizeof(status.wakeResult), "CANCELLED");
     wakePending = false;
   }
@@ -918,6 +1260,15 @@ void poll() {
   const bool connected = lastReply != 0 && now - lastReply < kLinkTimeoutMs;
   const uint32_t turnDeadline = lookWiggle ? 5000U :
       6500U + 2U * ((3000000U + lookAcceleration - 1) / lookAcceleration);
+  if (calibrationActive && (!connected || now-calibrationStarted >= kCalibrationTimeoutMs)) {
+    finishCalibration(connected ? "TIMEOUT" : "DISCONNECTED");
+    queueStop();
+  }
+  if (calibrationActive && calibrationStrict &&
+      (now-status.statusTimestampMs > 250 || !calibrationStationary())) {
+    finishCalibration(now-status.statusTimestampMs > 250 ? "STATUS_STALE" : "MOVING");
+    queueStop();
+  }
   if (status.lookActive && (!connected || !status.ready || status.calibrating ||
       driveWanted || stopPending || now - lookStarted > turnDeadline ||
       (!strcmp(status.lookResult, "SENDING") && now - lookStarted > 1000))) {
@@ -985,7 +1336,7 @@ void poll() {
     dispatchJob=static_cast<uint16_t>(status.motionJob);
     snprintf(sendMotion,sizeof(sendMotion),"%s",motionUpdate);
     motionUpdate[0]=0;
-  } else if (calibrationPending) {
+  } else if (calibrationPending && connected) {
     sendCalibration = true;
     calibrationPending = false;
   } else if (facePending != 0) {
@@ -1016,7 +1367,8 @@ void poll() {
   } else if (wakePending && connected) {
     sendWake = true;
     wakePending = false;
-  } else if (driveWanted && connected && status.ready &&
+  } else if (driveWanted && connected && (status.ready ||
+             (status.edgeReverseAllowed && !safeWanted && !turnWanted && desiredLeft<0 && desiredLeft==desiredRight)) &&
              now - lastDriveSent >= kDrivePeriodMs) {
     sendDrive = true;
     sendTurn = turnWanted;
@@ -1052,11 +1404,24 @@ void poll() {
   if (dispatchPresentation != presentationGeneration) {
     sendScene = 0; sendWake = false;
   }
+  if (sendCalibration && calibrationStrict &&
+      (!calibrationActive || millis()-status.statusTimestampMs > 250 || !calibrationStationary())) {
+    sendCalibration = false;
+    if (calibrationActive) { finishCalibration("MOVING"); queueStop(); }
+  }
   const bool hasPrimary=sendStop || sendMotion[0] || sendCalibration || sendFace || sendScene ||
       sendLed || sendWake || sendLook || keepId || sendDrive;
   const uint16_t wire=hasPrimary ? reserveWireId() : 0;
-  if (sendCalibration) calibrationId=wire;
+  if (sendCalibration) { calibrationId=wire; calibrationStarted=now; }
   if (sendScene) { sceneId=wire; sceneSentAt=now; }
+  if (sendScene || sendFace) {
+    cancelGestureAudio();
+    const int expression=sendScene ? sendScene : sendFace;
+    if (!stillExpression(expression) || (sendScene && sendSceneDuration)) {
+      gestureWire=wire; gestureFace=expression; gestureRequestedAt=now;
+      gestureOnVisibility=stillExpression(expression);
+    }
+  }
   if (sendLed) { ledCommandId=wire; ledSentAt=now; }
   if (sendWake) { wakeCommandId=wire; wakeSentAt=now; }
   if (sendLook && status.lookActive) { lookId=wire; lastKeepSent=now; }
@@ -1098,7 +1463,14 @@ void poll() {
   }
   if (now - lastStatusSent >= kStatusPeriodMs) {
     lastStatusSent = now;
-    sendPrefix();
+    portENTER_CRITICAL(&stateLock);
+    const auto statusWire = reserveWireId();
+    if (calibrationActive && calibrationAccepted && calibrationVerifyPending) {
+      calibrationVerifyId = statusWire;
+      calibrationVerifyPending = false;
+    }
+    portEXIT_CRITICAL(&stateLock);
+    zumoUart.print(statusWire); zumoUart.print(' ');
     zumoUart.println("STATUS");
   }
 }

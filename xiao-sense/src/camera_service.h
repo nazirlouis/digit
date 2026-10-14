@@ -1,13 +1,14 @@
 #pragma once
 #include <cstddef>
 #include <cstdint>
+#include "camera_frame_limits.h"
 
 namespace camera_service {
 
 bool begin();
 bool ready();
 const char* lastError();
-inline constexpr size_t kMaxJpegBytes = 256 * 1024;
+inline constexpr size_t kMaxJpegBytes = camera_frame_limits::kMaxJpegBytes;
 struct Frame {
   size_t size = 0;
   uint32_t timestampMs = 0;

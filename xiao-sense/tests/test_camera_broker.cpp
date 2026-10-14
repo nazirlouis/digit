@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <cstring>
 #include <cstdio>
+#include <vector>
 #include "camera_service.h"
 using SemaphoreHandle_t = int*;
 constexpr int pdTRUE=1, PIXFORMAT_JPEG=1;
@@ -36,6 +37,19 @@ int main(){
   now=1000;rejectLock=true;capture();assert(returns==2);
   assert(!camera_service::copyLatestJpeg(out,sizeof(out),&info));rejectLock=false;
   captured.len=camera_service::kMaxJpegBytes+1;capture();assert(returns==3&&latestFrame.size==4);
+  // A full-sized frame must round-trip exactly, without touching either guard.
+  std::vector<uint8_t> full(camera_service::kMaxJpegBytes);
+  for(size_t i=0;i<full.size();++i)full[i]=static_cast<uint8_t>(i);
+  std::vector<uint8_t> boundedCache(full.size()+2,0xA5), boundedOut(full.size()+2,0x5A);
+  latestJpeg=boundedCache.data()+1;captured.buf=full.data();captured.len=full.size();
+  capture();assert(returns==4&&latestFrame.size==full.size());
+  assert(camera_service::copyLatestJpeg(boundedOut.data()+1,full.size(),&info));
+  assert(!memcmp(full.data(),boundedOut.data()+1,full.size()));
+  assert(boundedCache.front()==0xA5&&boundedCache.back()==0xA5);
+  assert(boundedOut.front()==0x5A&&boundedOut.back()==0x5A);
+  assert(!camera_service::copyLatestJpeg(boundedOut.data()+1,full.size()-1,&info));
+  captured.len=full.size()+1;capture();assert(returns==5&&latestFrame.size==full.size());
+  assert(!memcmp(full.data(),latestJpeg,full.size()));
   cameraReady=false;assert(!camera_service::copyLatestJpeg(out,sizeof(out),&info));
   puts("Camera broker ownership, capacity, age, and contention tests passed");
 }

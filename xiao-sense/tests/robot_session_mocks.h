@@ -11,7 +11,7 @@
 #include <vector>
 #include <string>
 #include "gemini_client.h"
-#include "speech_commands.h"
+#include "robot_session.h"
 #include "speech_pipeline.h"
 
 namespace mock {
@@ -34,6 +34,7 @@ inline size_t queueItemSize = 0;
 inline std::deque<std::vector<uint8_t>> queued;
 inline std::function<void()> feedAudio, beforeStartHook;
 inline std::function<void()> afterCriticalExit;
+inline std::function<void()> afterControlRelease;
 inline std::function<void()> afterMutexGive;
 inline std::function<void(const gemini_live::Callbacks&, bool)> liveHook;
 struct StopWorker {};
@@ -58,6 +59,7 @@ constexpr int MALLOC_CAP_SPIRAM = 1, MALLOC_CAP_8BIT = 2;
 using std::max;
 using std::min;
 inline uint32_t millis() { return mock::now; }
+inline uint32_t esp_random() { return 123456; }
 inline uint32_t pdMS_TO_TICKS(uint32_t value) { return value; }
 inline void vTaskDelay(uint32_t) { throw mock::StopWorker{}; }
 inline void* heap_caps_malloc(size_t size, int) { return std::malloc(size); }
@@ -110,8 +112,14 @@ inline uint32_t configurationRevision() { return mock::configurationRevision; }
 }  // namespace gemini_client
 
 namespace zumo_link {
-struct Status { bool connected; uint32_t safetyEvents; bool ready=true,rangeValid=true,rangeNoReturn=false,edge=false,distanceCalibrated=true; int distanceMm=500; uint32_t replyAgeMs=0,rangeAgeMs=0; char sceneResult[24]="APPLIED"; };
-inline Status snapshot() { return {mock::connected,mock::safetyEvents}; }
+struct Status { bool connected; uint32_t safetyEvents; bool ready=true,rangeValid=true,rangeNoReturn=false,edge=false,distanceCalibrated=true; int distanceMm=500; uint32_t replyAgeMs=0,rangeAgeMs=0; char sceneResult[24]="APPLIED";
+  bool localRecoveryCapable=true,pushCapable=true,encoderControl=true,motionActive=false,manualDriving=false;
+  int left=0,right=0,encoderLeftCps=0,encoderRightCps=0;
+  uint32_t statusTimestampMs=0;
+  char motionState[16]="IDLE";
+  uint32_t calibrationGeneration=0; char calibrationResult[24]="NONE", fault[24]="NONE"; };
+inline Status status{};
+inline Status snapshot() { auto copy=status; copy.connected=mock::connected; copy.safetyEvents=mock::safetyEvents; return copy; }
 inline void cancelScene() {}
 }  // namespace zumo_link
 
@@ -145,23 +153,42 @@ inline bool copyLatestJpeg(uint8_t* destination, size_t capacity, Frame* frame) 
 }
 
 namespace robot_actions {
+inline const char* name(Command command) { for(const auto& d:definitions)if(d.command==command)return d.toolName;return "Idle"; }
 inline Guard::Guard() { ++mock::controlDepth; }
-inline Guard::~Guard() { assert(mock::controlDepth>0); --mock::controlDepth; }
+inline Guard::~Guard() {
+  assert(mock::controlDepth>0); --mock::controlDepth;
+  if (!mock::controlDepth && mock::afterControlRelease) {
+    auto hook=mock::afterControlRelease;mock::afterControlRelease=nullptr;hook();
+  }
+}
 inline Result outcome = Result::Running;
-inline Status snapshot() { return {Command::Forward,"Actual movement outcome",mock::actionActive,mock::generation,outcome,100,0}; }
+inline bool recoveryEligible=false;
+inline const char* recoveryFailure="TRACK_MISMATCH";
+inline bool lastEdgePermit=false;
+inline int actualTravelMm=100;
+inline int actualTurn=200;
+inline unsigned actualRecoveries=0;
+inline const char* recoveryCause="";
+inline bool positionKnown=true;
+inline bool recoverableMotionFailure(const zumo_link::Status&) { return recoveryEligible; }
+inline Status snapshot() { return {Command::Forward,"Actual movement outcome",mock::actionActive,mock::generation,outcome,actualTravelMm,actualTurn,
+  outcome==Result::Recoverable ? recoveryFailure : outcome==Result::EdgeRetreated ? "EDGE" : "",
+  outcome==Result::EdgeRetreated ? 17 : 0, outcome==Result::EdgeRetreated ? 100 : 0,actualRecoveries,recoveryCause,positionKnown}; }
 inline uint32_t generation() { return mock::generation; }
 inline const char* unavailableReason(Command) { return mock::actionAvailable ? "" : "Not ready"; }
 inline void stop(const char*, bool) {
   assert(mock::criticalDepth == 0 && mock::controlDepth > 0);
   ++mock::stops; ++mock::generation; mock::actionActive = false; outcome = Result::Cancelled;
-  speech_commands::cancel();
+  robot_session::cancel();
 }
 inline bool setExpression(const char*, uint32_t) {
   if (mock::beforeStartHook) { auto hook=mock::beforeStartHook; mock::beforeStartHook=nullptr; hook(); }
   return mock::actionAvailable;
 }
 inline void cancelExpression() { ++mock::expressionCancels; }
+inline void suspendForReconnect() { ++mock::stops; mock::actionActive=false; outcome=Result::Failed; positionKnown=false; }
 inline bool startFromLive(const ToolRequest& request, uint32_t expectedGeneration) {
+ lastEdgePermit=request.edgeRetreat;
  const auto command=request.command;
   assert(mock::criticalDepth == 0);
   assert(mock::controlDepth > 0);
@@ -172,6 +199,7 @@ inline bool startFromLive(const ToolRequest& request, uint32_t expectedGeneratio
   ++mock::dispatched;
   mock::dispatchedCommand = static_cast<int>(command);
   mock::actionActive = true; outcome = Result::Running;
+  actualRecoveries=0; recoveryCause=""; positionKnown=true;
   return true;
 }
 }  // namespace robot_actions

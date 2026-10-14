@@ -121,6 +121,8 @@ class SpinTests(unittest.TestCase):
                     self.tof.read_result = broken_read
                 else: self.tof.range_status = failure
                 self.simulate(300)
+                self.assertEqual(self.job.state, "RECOVERING")
+                self.simulate(2100)
                 self.assertEqual(self.job.state, "FAULT")
                 self.assertEqual(self.motors.speeds, (0, 0))
 
@@ -149,8 +151,11 @@ class SpinTests(unittest.TestCase):
                 elif failure == "gyro_stale": self.gyro.ready = False
                 else: self.clock.now += 151
                 self.simulate(170 if failure == "gyro_stale" else 25)
-                self.assertFalse(self.job.active)
-                self.assertEqual(self.job.state, "FAULT")
+                if failure in ("gyro", "gyro_stale", "gap"):
+                    self.assertEqual(self.job.state, "RECOVERING")
+                else:
+                    self.assertFalse(self.job.active)
+                    self.assertEqual(self.job.state, "FAULT")
                 self.assertEqual(self.motors.speeds, (0, 0))
 
     def test_direction_stall_deadline_and_stationary_calibration(self):
